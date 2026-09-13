@@ -247,10 +247,12 @@ RDS와 Neptune은 Kubernetes Service가 아니라 VPC 리소스이므로, 그 �
 ### 연결
 
 ```bash
-telepresence connect --context lore-sentry
+telepresence connect --context lore-sentry --namespace prod
 ```
 
 처음 실행하면 로컬 DNS와 라우팅 테이블을 바꾸기 위해 **관리자 권한을 요구한다.** 정상이다.
+
+**`--namespace prod`를 반드시 붙인다.** Traffic Manager는 `prod`만 관리하도록 설정되어 있고, 생략하면 Telepresence가 컨텍스트의 기본 네임스페이스로 붙으려 한다. 그게 `default`면 `namespace default is not managed`로 실패한다.
 
 ```bash
 telepresence status
@@ -336,6 +338,7 @@ telepresence intercept content-api --port 8080:80 --env-file ./content.env
 | 증상 | 원인과 조치 |
 |---|---|
 | `context was not found for specified context: lore-sentry` | kubeconfig에 그 이름의 컨텍스트가 없다. §3의 `--alias lore-sentry`를 실행했는지 확인한다. `kubectl config get-contexts`로 실제 이름을 본다 |
+| `namespace default is not managed` | `--namespace prod`를 빠뜨렸다. Traffic Manager는 `prod`만 관리한다. 컨텍스트 기본값도 맞춰두면 편하다 — `kubectl config set-context lore-sentry --namespace=prod` |
 | 버전 불일치로 연결 거부 | 클라이언트가 Traffic Manager(2.31.2)와 다른 마이너 버전이다. `telepresence version`으로 확인하고 올린다 (§1) |
 | `connect` 후에도 DB에 안 닿는다 | `telepresence status`에서 Root Daemon이 Running인지 본다. 관리자 권한 승인을 놓쳤을 수 있다 |
 | 사내 VPN과 충돌한다 | VPN 대역이 `10.20.0.0/16`과 겹치면 라우팅이 깨진다. VPN을 끄거나 `--proxy-via`를 쓴다 |
