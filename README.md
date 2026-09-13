@@ -1,0 +1,30 @@
+# Lore Sentry 문서
+
+프로젝트의 설계 의도와 실제 구축 상태를 기록한다.
+
+| 문서 | 내용 |
+|---|---|
+| [ENVIRONMENT_SETTING.md](ENVIRONMENT_SETTING.md) | **팀원 온보딩.** AWS 자격 증명과 EKS 클러스터 조회 접근 설정 |
+| [INFRA_AND_CICD.md](INFRA_AND_CICD.md) | EKS · GitOps · CI/CD 구축 기록. 인프라 전반 |
+| [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
+
+## 새로 합류했다면
+
+[ENVIRONMENT_SETTING.md](ENVIRONMENT_SETTING.md)부터 본다. 클러스터 조회 권한을 얻는 절차이고, 부여되는 권한은 `prod` 네임스페이스에 대한 **읽기 전용**이다.
+
+## 식별자 마스킹
+
+AWS 계정 ID, VPC·서브넷·보안 그룹 ID, CloudFront 배포 ID 등은 플레이스홀더로 치환되어 있다.
+
+```text
+<AWS_ACCOUNT_ID>   sg-<CLUSTER>   subnet-<PRIVATE_2A>   vpc-<REDACTED>
+```
+
+실제 값은 AWS 콘솔이나 CLI에서 확인한다.
+
+```bash
+aws sts get-caller-identity --profile lorekeeper
+aws eks describe-cluster --name lore-sentry-k8s --region ap-northeast-2
+```
+
+이 저장소는 private이지만, 저장소 밖으로 내용을 옮길 때를 대비해 마스킹을 유지한다.
