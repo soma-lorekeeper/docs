@@ -590,6 +590,8 @@ DB: PostgreSQL 논리 DB `authentication` (역할 `authentication_svc`)
 
 DB: PostgreSQL 논리 DB `content` (역할 `content_svc`)
 
+이미지 저장: S3 `loresentry-media-prod-<AWS_ACCOUNT_ID>`. content는 presigned PUT을 발급하고 업로드 완료를 검증할 뿐, 바이트를 받지 않는다. 자격 증명은 Pod Identity. 조회는 CloudFront `media.loresentry.com`. **[진행 예정]** — 코드·매니페스트 완료, AWS 리소스 생성 대기. `IMAGE_UPLOAD_S3.md` 참고.
+
 ## 6.4 Agent / AI Chat Service
 
 - AI 대화 세션
@@ -1375,6 +1377,7 @@ GitHub Actions
 
 - [x] `gp3` 기본 StorageClass, `reclaimPolicy: Retain` — PVC를 지워도 EBS 볼륨이 남는다
 - [x] `reclaimPolicy`는 immutable이므로 `argocd.argoproj.io/sync-options: Replace=true,Force=true` 필요
+- [ ] 사용자 이미지는 프론트엔드와 **별도** S3 버킷 + 별도 CloudFront. 브라우저가 presigned URL로 직접 업로드. content pod는 Pod Identity로 서명 (`IMAGE_UPLOAD_S3.md`)
 
 ---
 
@@ -1473,6 +1476,7 @@ CORS는 `http://localhost:[*]`로 열려 있으므로 포트를 다시 바꾸더
 - DB 자격 증명 관리 — 서비스별 Secret 3개가 아직 `kubectl`로 만든 Git 밖 Secret이다. External Secrets Operator + Secrets Manager로 옮기는 것이 다음 단계
 - Neptune IAM 데이터베이스 인증 — 현재 비활성이라 SG만이 접근 통제 수단이다
 - WAF policy
+- 이미지 업로드 인가 — `/projects/{id}/images`는 다른 엔드포인트와 마찬가지로 아직 인증이 없다. 미디어 버킷 CORS는 gateway 단일 CORS 원칙의 의도적 예외 (`IMAGE_UPLOAD_S3.md` §6·§7)
 
 ---
 

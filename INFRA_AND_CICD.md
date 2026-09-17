@@ -806,6 +806,7 @@ concurrency:
 - [ ] 시크릿 관리. `auth-valkey` 비밀번호는 `kubectl`로 직접 만든 Secret이고 Git 밖에 있다. External Secrets Operator + 기존 Secrets Manager로 옮기는 것이 다음 단계
 - [ ] 브로커 AZ 분산. 서브넷이 2개뿐이라 3 브로커가 `2b` 2 / `2a` 1로 나뉜다. `2b`가 통째로 죽으면 `min.insync.replicas=2`를 못 채워 쓰기가 멈춘다
 - [ ] `dev` overlay와 `workload-dev` Application
+- [ ] 사용자 이미지 S3 — 코드·매니페스트는 PR에 있고, `setup-media.sh`와 Cloudflare `media` CNAME이 남았다 (17-A절, `IMAGE_UPLOAD_S3.md`)
 
 ---
 
@@ -917,6 +918,8 @@ loresentry:
 Spring이 `Vary: Origin`을 자동으로 붙인다. Cloudflare나 CDN이 API 응답을 캐시하기 시작하면 이게 없으면 한 오리진에 허용한 응답이 다른 오리진에 서빙될 수 있다.
 
 `localhost`의 **모든 포트**를 허용한 것은 로컬 프론트엔드가 배포된 API를 호출하게 하려는 의도적 편의다. 동시에 `allowCredentials: true`와 짝지어져 있어 이 정책에서 가장 느슨한 부분이다. 지킬 것이 생기면 실제 프론트엔드 오리진으로 좁혀야 한다.
+
+**예외 하나.** 사용자 이미지 업로드는 브라우저가 S3에 직접 `PUT` 하므로 미디어 버킷에 CORS가 따로 있다. `PUT`만, `loresentry.com`과 `localhost`만이다. 이유와 범위는 `IMAGE_UPLOAD_S3.md` §6에 있다. gateway가 유일한 CORS 경계라는 원칙은 **API**에 대해서만 유지된다.
 
 ## 16. 주요 검증 명령
 
@@ -1040,6 +1043,27 @@ ALB용 인증서는 `ap-northeast-2`에 있지만 **CloudFront는 `us-east-1`의
 2. 나머지를 `max-age=60`으로, `--delete`로 오래된 산출물 정리. `--delete`를 1단계에 걸면 현재 서비스 중인 HTML이 쓰는 청크가 사라진다.
 3. `config.json`을 `no-store`로 따로. 이 파일만 교체하면 재빌드 없이 백엔드 주소를 바꿀 수 있고, CloudFront에서도 `CachingDisabled`로 분리해 뒀다.
 
+## 17-A. 사용자 이미지 — 별도 S3 + CloudFront — **[진행 예정]**
+
+프론트엔드 버킷과는 **다른** 버킷이다. frontend CI의 `--delete` sync와 `/*` invalidation이 사용자 데이터에 닿으면 안 되기 때문이다.
+
+```text
+browser ──presigned PUT──> S3 loresentry-media-prod-<AWS_ACCOUNT_ID>
+browser <──GET── CloudFront <CF_MEDIA_ID> (media.loresentry.com, OAC) <── 같은 버킷
+content-api (SA content-api, Pod Identity → lore-sentry-content-role) ── presign · HeadObject
+```
+
+| 리소스 | 값 |
+|---|---|
+| S3 | `loresentry-media-prod-<AWS_ACCOUNT_ID>`, 퍼블릭 접근 전면 차단, `PUT` 전용 CORS |
+| IAM | `lore-sentry-content-role` ← Pod Identity association `prod/content-api` |
+| CloudFront | `<CF_MEDIA_ID>`, alias `media.loresentry.com`, 17절과 같은 `us-east-1` 인증서 |
+| GitOps | `workload/base/media/` ConfigMap, `workload/base/content/serviceaccount.yaml` |
+
+설계·API·구축 절차·검증은 [`IMAGE_UPLOAD_S3.md`](IMAGE_UPLOAD_S3.md)에 있다. 생성 스크립트는 `loresentry-content/docs/aws/setup-media.sh`.
+
+Pod Identity association은 EKS API 객체라 Git에 둘 수 없다. 19-A의 목록에 들어간다.
+
 ---
 
 ## 18. auth-valkey — authentication 서비스 캐시
@@ -1149,6 +1173,8 @@ bootstrap/root-application.yaml       .../loresentry-gitops.git        ← 현�
 GitHub이 이름 변경 리다이렉트를 제공하므로 지금은 `Synced`로 동작하지만, **리다이렉트에 의존하는 상태다.** 옛 이름으로 새 저장소가 만들어지면 조용히 엉뚱한 곳을 보게 된다. `kubectl apply -f bootstrap/root-application.yaml`로 한 번 맞춰두는 것이 맞다.
 
 **`loresentry-lambda` 디렉터리.** GitOps 단계 전체를 움직이는 Lambda 코드(`lambda_function.py`, `deploy.sh`, 테스트)가 **어떤 git 저장소에도 없다.** `.gitignore`와 README까지 있는데 `.git`이 없다. 이 코드가 사라지면 CI→GitOps 연결을 복원할 수 없다.
+
+**`content-api`의 Pod Identity association.** `aws eks create-pod-identity-association`으로 만드는 EKS 객체라 매니페스트가 없다. ServiceAccount 자체는 Git에 있으므로 클러스터를 다시 만들면 SA는 돌아오지만 역할 연결은 `loresentry-content/docs/aws/setup-media.sh`를 다시 돌려야 한다 (17-A절).
 
 **`strimzi-kafka-operator` Application이 `OutOfSync`다.** 대상은 `CustomResourceDefinition/kafkas.kafka.strimzi.io` 하나다. Helm 차트가 만든 CRD를 운영자가 다시 쓰는 전형적인 패턴이므로 `ignoreDifferences`가 필요할 수 있다. `Healthy`이므로 동작에는 지장이 없다.
 
