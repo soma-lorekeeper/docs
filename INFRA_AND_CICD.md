@@ -806,7 +806,7 @@ concurrency:
 - [ ] 시크릿 관리. `auth-valkey` 비밀번호는 `kubectl`로 직접 만든 Secret이고 Git 밖에 있다. External Secrets Operator + 기존 Secrets Manager로 옮기는 것이 다음 단계
 - [ ] 브로커 AZ 분산. 서브넷이 2개뿐이라 3 브로커가 `2b` 2 / `2a` 1로 나뉜다. `2b`가 통째로 죽으면 `min.insync.replicas=2`를 못 채워 쓰기가 멈춘다
 - [ ] `dev` overlay와 `workload-dev` Application
-- [ ] 사용자 이미지 S3 — 코드·매니페스트는 PR에 있고, `setup-media.sh`와 Cloudflare `media` CNAME이 남았다 (17-A절, `IMAGE_UPLOAD_S3.md`)
+- [x] 사용자 이미지 S3 — 버킷·IAM·Pod Identity·CloudFront `media.loresentry.com`·DNS 구축 확인 (17-A절, `IMAGE_UPLOAD_S3.md`). 클러스터 배선과 content 스토리지 서비스는 PR 대기
 
 ---
 
@@ -1043,7 +1043,7 @@ ALB용 인증서는 `ap-northeast-2`에 있지만 **CloudFront는 `us-east-1`의
 2. 나머지를 `max-age=60`으로, `--delete`로 오래된 산출물 정리. `--delete`를 1단계에 걸면 현재 서비스 중인 HTML이 쓰는 청크가 사라진다.
 3. `config.json`을 `no-store`로 따로. 이 파일만 교체하면 재빌드 없이 백엔드 주소를 바꿀 수 있고, CloudFront에서도 `CachingDisabled`로 분리해 뒀다.
 
-## 17-A. 사용자 이미지 — 별도 S3 + CloudFront — **[진행 예정]**
+## 17-A. 사용자 이미지 — 별도 S3 + CloudFront — **[구축 완료/확인]**
 
 프론트엔드 버킷과는 **다른** 버킷이다. frontend CI의 `--delete` sync와 `/*` invalidation이 사용자 데이터에 닿으면 안 되기 때문이다.
 
@@ -1057,10 +1057,11 @@ content-api (SA content-api, Pod Identity → lore-sentry-content-role) ── p
 |---|---|
 | S3 | `loresentry-media-prod-<AWS_ACCOUNT_ID>`, 퍼블릭 접근 전면 차단, `PUT` 전용 CORS |
 | IAM | `lore-sentry-content-role` ← Pod Identity association `prod/content-api` |
-| CloudFront | `<CF_MEDIA_ID>`, alias `media.loresentry.com`, 17절과 같은 `us-east-1` 인증서 |
-| GitOps | `workload/base/media/` ConfigMap, `workload/base/content/serviceaccount.yaml` |
+| CloudFront | `<CF_MEDIA_ID>` / `<CF_MEDIA_DOMAIN>.cloudfront.net`, alias `media.loresentry.com`, `Deployed`, 17절과 같은 `us-east-1` 인증서 |
+| Cloudflare | `media` CNAME, 프록시 끔 |
+| GitOps | `workload/base/media/` ConfigMap, `workload/base/content/serviceaccount.yaml` (PR 대기) |
 
-설계·API·구축 절차·검증은 [`IMAGE_UPLOAD_S3.md`](IMAGE_UPLOAD_S3.md)에 있다. 생성 스크립트는 `loresentry-content/docs/aws/setup-media.sh`.
+AWS 쪽은 `setup-media.sh`로 만들고 CLI로 확인했다. content에는 presign·검증·삭제를 하는 **스토리지 서비스 계층까지만** 있고, 공개 엔드포인트와 `image` 테이블은 도메인 개발 때 붙인다. 설계·제안 계약·구축 절차·검증은 [`IMAGE_UPLOAD_S3.md`](IMAGE_UPLOAD_S3.md)에 있다. 생성 스크립트는 `loresentry-content/docs/aws/setup-media.sh`.
 
 Pod Identity association은 EKS API 객체라 Git에 둘 수 없다. 19-A의 목록에 들어간다.
 

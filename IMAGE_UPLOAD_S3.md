@@ -1,22 +1,24 @@
 # 이미지 업로드 — S3 Presigned URL + CloudFront
 
 > 최신화: 2026-09-18  
-> 대상: 사용자 이미지 업로드(문서 삽화, 표지 등)의 저장·조회 경로  
-> 상태: **코드·매니페스트 완료, AWS 리소스 생성은 [진행 예정]** (§9의 스크립트를 실행하면 끝난다)
+> 대상: 사용자 이미지(문서 삽화, 표지 등)의 저장·조회 인프라  
+> 상태: **AWS 리소스와 클러스터 배선은 구축 완료. content에는 S3 스토리지 서비스 계층까지만 있고, 공개 엔드포인트·DB 기록·프론트엔드는 도메인 개발 때 통합한다.**
 
 ## 0. 한눈에 보는 현재 상태
 
 | 항목 | 상태 |
 |---|---|
-| content `POST /projects/{id}/images` presign 발급 · `complete` 검증 · Flyway `image` 테이블 | 코드 완료, 테스트 통과 (PR) |
-| gateway `/projects/{id}/images…` 릴레이 3개 | 코드 완료, 테스트 통과 (PR) |
-| GitOps: `media` ConfigMap, `content-api` ServiceAccount, `MEDIA_*` env | 매니페스트 완료 (PR) |
-| S3 `loresentry-media-prod-<AWS_ACCOUNT_ID>` | **[진행 예정]** `setup-media.sh` |
-| IAM `lore-sentry-content-role` + Pod Identity association | **[진행 예정]** `setup-media.sh` |
-| CloudFront `<CF_MEDIA_ID>` → `media.loresentry.com` | **[진행 예정]** `setup-media.sh` |
-| Cloudflare `media` CNAME | **[진행 예정]** 수동 |
+| S3 `loresentry-media-prod-<AWS_ACCOUNT_ID>` (퍼블릭 차단, SSE-S3, `PUT` 전용 CORS, 라이프사이클) | **[구축 완료/확인]** |
+| IAM `lore-sentry-content-role` + `lore-sentry-content-media-policy` | **[구축 완료/확인]** |
+| Pod Identity association `lore-sentry-k8s / prod / content-api` | **[구축 완료/확인]** |
+| CloudFront `<CF_MEDIA_ID>` (OAC, alias `media.loresentry.com`, Deployed) | **[구축 완료/확인]** |
+| S3 버킷 정책 — 위 배포만 `GetObject` | **[구축 완료/확인]** |
+| Cloudflare `media` CNAME → `<CF_MEDIA_DOMAIN>.cloudfront.net`, 프록시 끔 | **[구축 완료/확인]** |
+| GitOps: `media` ConfigMap, `content-api` ServiceAccount, `MEDIA_*` env | 매니페스트 완료, PR 대기 (`loresentry-gitops#3`) |
+| content `MediaStorageService` (presign · HeadObject 검증 · 삭제 · 공개 URL) | 코드 완료, 테스트 통과, PR 대기 (`loresentry-content#1`) |
+| content 공개 엔드포인트, `image` 테이블 | **[미구현]** 도메인 개발 때 §4의 제안 계약으로 통합 |
+| gateway 릴레이 | **[미구현]** 엔드포인트와 함께 |
 | 프론트엔드 업로드 UI | **[미구현]** |
-| 업로드 엔드포인트 인가 | **[미구현]** gateway JWT 검증이 아직 없다 |
 
 ---
 
@@ -26,18 +28,15 @@
 
 ```text
 [업로드]
-browser ──POST /projects/{projectId}/images {fileName, contentType, sizeBytes}──> gateway ──> content
-browser <── 201 { imageId, uploadUrl, method: PUT, headers, expiresAt, publicUrl } ──────────┘
+browser ──"png 1234바이트 올릴게"──> gateway ──> content.MediaStorageService.createImageUploadTicket
+browser <── { uploadUrl, method: PUT, headers, expiresAt, publicUrl, key } ─────┘
 browser ──PUT uploadUrl (Content-Type, Content-Length 그대로) + 파일 본체──> S3
-browser ──POST /projects/{projectId}/images/{imageId}/complete──> gateway ──> content ──HeadObject──> S3
-browser <── 200 { status: COMMITTED, publicUrl }
+browser ──"다 올렸어"──> gateway ──> content.MediaStorageService.verifyUploaded ──HeadObject──> S3
 
 [조회]
 <img src="https://media.loresentry.com/projects/{projectId}/images/{uuid}.png">
 CloudFront <CF_MEDIA_ID> ──OAC(SigV4)──> S3 (퍼블릭 접근 전면 차단)
 ```
-
-`image` 테이블의 행은 발급 시점에 `PENDING`으로 생기고, `complete`에서 S3에 객체가 실제로 있고 크기가 선언값과 같을 때만 `COMMITTED`가 된다.
 
 ---
 
@@ -56,25 +55,25 @@ CloudFront <CF_MEDIA_ID> ──OAC(SigV4)──> S3 (퍼블릭 접근 전면 차
 
 ## 3. 구성 요소
 
-### AWS
+### AWS — **[구축 완료/확인]**
 
 | 리소스 | 값 | 비고 |
 |---|---|---|
-| S3 | `loresentry-media-prod-<AWS_ACCOUNT_ID>` (`ap-northeast-2`) | Block Public Access 전부 켬, SSE-S3, 버저닝 없음 |
-| S3 CORS | `https://loresentry.com`, `http://localhost:*`, `http://127.0.0.1:*`에 `PUT`만 | §6 참고 |
+| S3 | `loresentry-media-prod-<AWS_ACCOUNT_ID>` (`ap-northeast-2`) | Block Public Access 4항목 전부 켬, SSE-S3, 버저닝 없음 |
+| S3 CORS | `https://loresentry.com`, `http://localhost:*`, `http://127.0.0.1:*`에 `PUT`만, `ExposeHeaders: ETag` | §6 참고 |
 | S3 라이프사이클 | 미완료 멀티파트 1일 후 abort | |
-| S3 버킷 정책 | `cloudfront.amazonaws.com`이 `s3:GetObject`, `AWS:SourceArn`을 `<CF_MEDIA_ID>`로 제한 | |
+| S3 버킷 정책 | `cloudfront.amazonaws.com`이 `s3:GetObject`, `AWS:SourceArn` = `<CF_MEDIA_ID>` 배포 ARN | 다른 배포·다른 주체는 읽을 수 없다 |
 | IAM 정책 | `lore-sentry-content-media-policy` — `projects/*`에 `PutObject` `GetObject` `DeleteObject` | 버킷 전체가 아니라 접두사 하나 |
-| IAM 역할 | `lore-sentry-content-role`, 신뢰 주체 `pods.eks.amazonaws.com` | |
-| Pod Identity association | `lore-sentry-k8s` / `prod` / `content-api` → 위 역할 | EKS API 객체. Git에 둘 수 없다 |
-| CloudFront OAC | `loresentry-media-oac` (SigV4, always) | |
-| CloudFront | `<CF_MEDIA_ID>` / `<CF_MEDIA_DOMAIN>.cloudfront.net`, alias `media.loresentry.com` | `CachingOptimized`, GET/HEAD, 함수 없음 |
-| ACM | `loresentry.com` + `*.loresentry.com`, **`us-east-1`** | 프론트엔드용으로 이미 있는 인증서를 그대로 쓴다 (§17) |
+| IAM 역할 | `lore-sentry-content-role`, 신뢰 주체 `pods.eks.amazonaws.com` (`AssumeRole` + `TagSession`) | |
+| Pod Identity association | `lore-sentry-k8s` / `prod` / `content-api` → 위 역할 | EKS API 객체. Git에 둘 수 없다 (§19-A) |
+| CloudFront OAC | `loresentry-media-oac` (S3, SigV4, always) | |
+| CloudFront | `<CF_MEDIA_ID>` / `<CF_MEDIA_DOMAIN>.cloudfront.net`, alias `media.loresentry.com`, `Deployed` | `CachingOptimized`, GET/HEAD, http2and3, 함수 없음 |
+| ACM | `loresentry.com` + `*.loresentry.com`, **`us-east-1`** | 프론트엔드용으로 이미 있던 인증서 (§17) |
 | Cloudflare | `media` CNAME → `<CF_MEDIA_DOMAIN>.cloudfront.net`, **프록시 끔** | 다른 호스트와 같은 DNS 전용 |
 
-정책 문서와 생성 스크립트는 `loresentry-content/docs/aws/`에 있다.
+정책 문서와 생성 스크립트는 `loresentry-content/docs/aws/`에 있다. 스크립트는 멱등이라 재실행해도 안전하고, 클러스터를 다시 만들 때 Pod Identity association을 복원하는 수단이기도 하다.
 
-### GitOps (`loresentry-gitops`)
+### GitOps (`loresentry-gitops`, PR #3)
 
 ```text
 workload/base/media/configmap.yaml            bucket, region, public-base-url
@@ -84,79 +83,81 @@ workload/base/content/deployment.yaml         serviceAccountName + MEDIA_BUCKET 
 
 `postgres`·`neptune` ConfigMap과 같은 원칙이다. 비밀이 아닌 값은 Git에, 비밀은 Git 밖에. 여기서는 비밀이 아예 없다.
 
-### content (`loresentry-content`)
+### content (`loresentry-content`, PR #1) — 서비스 계층만
 
 | 파일 | 역할 |
 |---|---|
-| `media/ImageService` | 타입·크기·파일명 검증, 키 생성, presign, `complete`의 `HeadObject` 검증 |
-| `media/ImageRepository` | `JdbcClient`로 `image` 테이블 |
+| `media/MediaProperties` | `media.*` 설정 |
 | `media/MediaConfig` | `S3Client`·`S3Presigner` 빈. 자격 증명 공급자는 SDK 기본 체인 |
-| `web/ImageController` | 엔드포인트 3개 |
-| `db/migration/V1__create_image.sql` | Flyway. **이 기능이 Flyway 도입 시점**이다 |
+| `media/MediaStorageService` | `createImageUploadTicket` · `verifyUploaded` · `delete` · `publicUrl` |
+| `media/UploadTicket`, `media/StoredObject` | 반환 값 |
+| `media/InvalidUploadRequestException`, `media/ObjectNotUploadedException` | 호출자가 400·409로 옮길 예외 |
 
 의존성은 AWS SDK v2 (`software.amazon.awssdk:s3`, BOM 2.46.7)를 직접 쓴다. awspring(Spring Cloud AWS)의 Boot 4.1 지원 여부를 따지지 않아도 되게 하기 위해서다.
 
-### gateway (`loresentry-gateway`)
-
-`/projects/{projectId}/images`, `/{imageId}/complete`, `GET /{imageId}` 세 경로를 content로 그대로 넘긴다. 업스트림 상태 코드와 본문을 보존하므로 content의 `400`·`404`·`409`가 그대로 클라이언트에 닿고, 전송 실패만 gateway 자신의 `502`가 된다. 기존 `/content` 릴레이 프로브와 달리 **도메인 경로**를 쓴다 — PROJECT_CONTEXT §5.3의 `/projects/{projectId}/workspace` 예와 같은 자리다.
+**없는 것:** 컨트롤러, `image` 테이블, 마이그레이션 도구. 프로젝트·파일 도메인을 만들 때 §4를 참고해 붙인다.
 
 ---
 
-## 4. API 계약
+## 4. 서비스 사용법과 통합 시 제안 계약
 
-### `POST /projects/{projectId}/images`
+### 4.1 Java
 
-```json
-{ "fileName": "cover.png", "contentType": "image/png", "sizeBytes": 1234 }
+```java
+UploadTicket ticket = mediaStorageService.createImageUploadTicket(projectId, "image/png", 1234L);
+// ticket.key()        projects/{projectId}/images/{uuid}.png
+// ticket.uploadUrl()  https://loresentry-media-prod-….s3.ap-northeast-2.amazonaws.com/…?X-Amz-Expires=300&…
+// ticket.method()     PUT
+// ticket.headers()    { Content-Type: image/png, Content-Length: 1234 }   ← 브라우저가 그대로 보내야 한다
+// ticket.expiresAt()  now + 5m
+// ticket.publicUrl()  https://media.loresentry.com/projects/{projectId}/images/{uuid}.png
+
+StoredObject stored = mediaStorageService.verifyUploaded(ticket.key(), 1234L);  // 없거나 크기 다르면 ObjectNotUploadedException
+mediaStorageService.delete(ticket.key());
 ```
 
-```json
-201 Created   Location: /projects/{projectId}/images/{imageId}
-{
-  "imageId": "…",
-  "key": "projects/{projectId}/images/{uuid}.png",
-  "uploadUrl": "https://loresentry-media-prod-<AWS_ACCOUNT_ID>.s3.ap-northeast-2.amazonaws.com/projects/…?X-Amz-Algorithm=…&X-Amz-Expires=300&…",
-  "method": "PUT",
-  "headers": { "Content-Type": "image/png", "Content-Length": "1234" },
-  "expiresAt": "2026-09-18T00:05:00Z",
-  "publicUrl": "https://media.loresentry.com/projects/{projectId}/images/{uuid}.png"
-}
+| 규칙 | 값 |
+|---|---|
+| 허용 타입 | `image/png` `image/jpeg` `image/webp` `image/gif` (`media.allowed-content-types`) |
+| 최대 크기 | 10 MiB (`media.max-size-bytes`) |
+| URL 수명 | 5분 (`media.upload-url-ttl`) |
+| 키 | `projects/{projectId}/images/{uuid}.{ext}` — 확장자는 **contentType에서**, 파일명은 믿지 않는다 |
+
+`Content-Type`·`Content-Length`가 서명에 들어 있으므로 다른 타입이나 더 큰 파일은 S3가 `403 SignatureDoesNotMatch`로 거부한다.
+
+### 4.2 통합 시 만들 엔드포인트 — 제안
+
+도메인 API를 붙일 때 기준으로 삼을 계약이다. 경로는 PROJECT_CONTEXT §5.3의 도메인 경로 규칙(`/projects/{projectId}/…`)을 따르고, gateway는 상태 코드와 본문을 그대로 릴레이한다.
+
+```text
+POST /projects/{projectId}/images
+  { "fileName": "cover.png", "contentType": "image/png", "sizeBytes": 1234 }
+  → 201 { imageId, key, uploadUrl, method, headers, expiresAt, publicUrl }
+     content: 인가 확인 → image 행 PENDING INSERT → createImageUploadTicket
+
+POST /projects/{projectId}/images/{imageId}/complete
+  → 200 { imageId, status: COMMITTED, publicUrl, … }
+     content: verifyUploaded(key, size) → COMMITTED. 이미 COMMITTED면 멱등
+
+GET  /projects/{projectId}/images/{imageId}
 ```
-
-브라우저는 `headers`를 **그대로** 붙여 `PUT` 해야 한다. `Content-Type`·`Content-Length`가 서명에 들어 있으므로 다른 타입이나 더 큰 파일은 S3가 `403 SignatureDoesNotMatch`로 거부한다.
-
-### `POST /projects/{projectId}/images/{imageId}/complete`
-
-```json
-200 OK
-{ "imageId": "…", "projectId": "…", "fileName": "cover.png", "key": "…",
-  "contentType": "image/png", "sizeBytes": 1234, "status": "COMMITTED", "publicUrl": "…" }
-```
-
-이미 `COMMITTED`면 S3를 다시 묻지 않고 그대로 돌려준다 (멱등).
-
-### `GET /projects/{projectId}/images/{imageId}`
-
-위와 같은 형태. `status`가 `PENDING`이면 아직 `complete`가 오지 않은 것이다.
-
-### 오류
 
 | `error` | 상태 | 언제 |
 |---|---|---|
-| `invalid_upload_request` | 400 | `fileName` 없음, 허용 목록 밖 `contentType`, 0 이하 또는 10 MiB 초과 `sizeBytes` |
+| `invalid_upload_request` | 400 | `InvalidUploadRequestException` |
 | `image_not_found` | 404 | 그 프로젝트에 그 이미지가 없음 |
-| `object_not_uploaded` | 409 | PUT 전에 `complete`를 불렀거나, 올라간 크기가 선언과 다름 |
-| `upstream_unavailable` | 502 | gateway → content 전송 실패 (gateway 응답) |
+| `object_not_uploaded` | 409 | `ObjectNotUploadedException` — PUT 전에 `complete`, 또는 크기 불일치 |
 
-### 규칙
+`image` 테이블 초안: `id uuid PK, project_id uuid, file_name text, s3_key text unique, content_type text, size_bytes bigint, status PENDING|COMMITTED, created_at, committed_at`. `PENDING`으로 남은 행과 고아 객체를 지우는 배치가 함께 필요하다. ERD 확정 시 `CORE_TABLE_ERD.md`에 맞춘다.
 
-| | 값 |
-|---|---|
-| 허용 타입 | `image/png` `image/jpeg` `image/webp` `image/gif` |
-| 최대 크기 | 10 MiB (`media.max-size-bytes`) |
-| URL 수명 | 5분 (`media.upload-url-ttl`) |
-| 키 | `projects/{projectId}/images/{uuid}.{ext}` — 확장자는 **contentType에서** 결정, 파일명은 믿지 않는다 |
-| 파일명 | 255자 이하, 표시용으로만 저장 |
+### 4.3 프론트엔드가 할 일
+
+1. 티켓을 받는다. `sizeBytes`는 `File.size`.
+2. `fetch(uploadUrl, { method, headers, body: file })`.
+3. `complete`를 부르고 응답의 `publicUrl`을 문서에 넣는다.
+4. 2에서 실패하면 재시도는 **1부터**. 티켓이 5분이면 만료된다.
+
+`config.json`에 새 값은 필요 없다. `publicUrl`은 API가 준다.
 
 ---
 
@@ -175,7 +176,7 @@ pod (SA content-api)
 
 presigned URL은 서명에 쓴 임시 자격 증명이 만료되면 URL 수명이 남아 있어도 무효가 된다. URL 5분은 Pod Identity 세션 수명보다 훨씬 짧으므로 문제되지 않는다. TTL을 시간 단위로 올릴 생각이면 이 관계를 다시 봐야 한다.
 
-Association이 없거나 역할이 틀리면 pod는 정상 기동하고 `/health`·`/health/db`도 200이다. **presign 호출만** `Unable to load credentials`로 실패한다. §10 참고.
+Association이 없거나 역할이 틀리면 pod는 정상 기동하고 `/health`·`/health/db`도 200이다. **presign 호출만** `Unable to load credentials`로 실패한다.
 
 ---
 
@@ -204,20 +205,9 @@ Association이 없거나 역할이 틀리면 pod는 정상 기동하고 `/health
 
 ---
 
-## 8. 프론트엔드가 할 일 — **[미구현]**
+## 8. 구축 기록
 
-1. `POST /projects/{id}/images`로 티켓을 받는다. `sizeBytes`는 `File.size`.
-2. `fetch(uploadUrl, { method, headers, body: file })`. 브라우저가 `Content-Length`를 자동으로 붙이지만, 받은 `headers`를 그대로 넘겨도 무해하다.
-3. `complete`를 부르고, 응답의 `publicUrl`을 문서에 넣는다.
-4. 2에서 실패하면 재시도는 **1부터** 한다. 티켓이 5분이면 만료되기 때문이다.
-
-`config.json`에 새 값은 필요 없다. `publicUrl`은 API가 준다.
-
----
-
-## 9. 구축 절차
-
-### 9.1 AWS — `setup-media.sh`
+### 8.1 AWS — `setup-media.sh` (실행 완료)
 
 ```bash
 aws sso login --profile lorekeeper
@@ -225,18 +215,9 @@ cd loresentry-content/docs/aws
 ./setup-media.sh
 ```
 
-멱등하게 짜여 있어 다시 돌려도 안전하다. 순서대로:
+순서대로 (1) 버킷·Block Public Access·SSE-S3·CORS·라이프사이클, (2) IAM 정책·역할·연결, (3) `eks-pod-identity-agent` 확인과 association, (4) OAC, (5) `us-east-1` 인증서를 찾아 CloudFront 배포, (6) 그 배포만 읽는 버킷 정책. 마지막에 배포 도메인을 출력한다.
 
-1. 버킷 생성, Block Public Access, SSE-S3, CORS, 라이프사이클
-2. IAM 정책 `lore-sentry-content-media-policy` (있으면 새 버전을 기본으로), 역할 `lore-sentry-content-role`, 연결
-3. `eks-pod-identity-agent` 애드온 상태 확인, `prod/content-api` association 생성 또는 갱신
-4. OAC `loresentry-media-oac`
-5. `us-east-1`의 `loresentry.com` 인증서를 찾아 CloudFront 배포 생성 (alias `media.loresentry.com`)
-6. 그 배포만 읽을 수 있는 버킷 정책
-
-마지막에 배포 도메인을 출력한다. 이것으로 9.2를 한다.
-
-### 9.2 Cloudflare — 수동
+### 8.2 Cloudflare — 수동 (완료)
 
 ```text
 media.loresentry.com   CNAME   <CF_MEDIA_DOMAIN>.cloudfront.net   프록시 OFF
@@ -244,19 +225,32 @@ media.loresentry.com   CNAME   <CF_MEDIA_DOMAIN>.cloudfront.net   프록시 OFF
 
 `api`·`argocd`·apex와 마찬가지로 DNS 전용이다. 인증서는 CloudFront가 ACM으로 종료하므로 Cloudflare 쪽 TLS 설정은 없다.
 
-### 9.3 GitOps·서비스 — PR 머지
+### 8.3 확인된 결과 (2026-09-18)
+
+```text
+S3 PublicAccessBlock      True True True True
+S3 CORS                   PUT / loresentry.com, localhost:*, 127.0.0.1:* / ExposeHeaders ETag
+S3 bucket policy          cloudfront.amazonaws.com GetObject, SourceArn = distribution/<CF_MEDIA_ID>
+IAM role                  arn:aws:iam::<AWS_ACCOUNT_ID>:role/lore-sentry-content-role
+  attached                lore-sentry-content-media-policy
+Pod Identity association  lore-sentry-k8s / prod / content-api  (a-…)
+CloudFront                <CF_MEDIA_ID>  <CF_MEDIA_DOMAIN>.cloudfront.net  Deployed  Enabled
+DNS                       media.loresentry.com  CNAME  <CF_MEDIA_DOMAIN>.cloudfront.net
+curl -I https://media.loresentry.com/   HTTP/2 403, x-amz-bucket-region: ap-northeast-2
+```
+
+루트 `403`은 정상이다. 객체가 없는 키를 CloudFront가 S3에 물었고 S3가 거절한 것이며, `x-amz-bucket-region` 헤더가 붙어 있으면 CloudFront → OAC → S3까지 연결된 것이다. 실제 객체를 올리면 `200`이 된다.
+
+### 8.4 GitOps·서비스 — PR 머지
 
 | 저장소 | 브랜치 | 머지하면 |
 |---|---|---|
 | `loresentry-gitops` | `feat/media-s3` | Argo CD가 SA·ConfigMap·env를 적용. 기존 이미지(`build-3-1`)는 `MEDIA_*`를 무시하므로 무해 |
-| `loresentry-content` | `feat/image-upload-presign` | CI → ECR → Lambda → GitOps 태그 갱신. **Flyway가 `image` 테이블을 만든다** |
-| `loresentry-gateway` | `feat/image-upload-relay` | 같은 경로로 배포 |
-
-순서는 gitops → content → gateway가 자연스럽지만 강제는 아니다. content 새 이미지가 SA 없이 먼저 뜨면 presign만 실패하고, gateway가 먼저 뜨면 새 경로가 content에서 404를 받을 뿐이다.
+| `loresentry-content` | `feat/image-upload-presign` | CI → ECR → Lambda → GitOps 태그 갱신. 외부 동작 변화 없음 (엔드포인트 없음) |
 
 ---
 
-## 10. 검증
+## 9. 검증 명령
 
 ```bash
 export AWS_PROFILE=lorekeeper AWS_REGION=ap-northeast-2
@@ -266,57 +260,51 @@ BUCKET=loresentry-media-prod-$ACCOUNT
 # AWS 리소스
 aws s3api get-public-access-block --bucket $BUCKET
 aws s3api get-bucket-cors --bucket $BUCKET
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | jq
+aws iam list-attached-role-policies --role-name lore-sentry-content-role
 aws eks list-pod-identity-associations --cluster-name lore-sentry-k8s --namespace prod
-aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, 'media.loresentry.com')].[Id,DomainName,Status]"
+aws cloudfront list-distributions \
+  --query "DistributionList.Items[?contains(Aliases.Items || \`[]\`, 'media.loresentry.com')].[Id,DomainName,Status]"
+dig +short media.loresentry.com CNAME
 
-# 클러스터 배선
+# 클러스터 배선 (gitops PR 머지 후)
 kubectl -n prod get sa content-api
 kubectl -n prod get configmap media -o yaml
 kubectl -n prod get deploy content-api -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
 kubectl -n prod exec deploy/content-api -- env | grep -E 'MEDIA_|AWS_CONTAINER'
 
-# 전 구간: presign → PUT → complete → CDN
-P=11111111-1111-1111-1111-111111111111
+# 읽기 경로 끝까지: 객체를 하나 올려 CloudFront로 받아 본다
 printf '\x89PNG\r\n\x1a\n' > /tmp/t.png
-SIZE=$(stat -f%z /tmp/t.png)
-T=$(curl -s -X POST https://api.loresentry.com/projects/$P/images \
-  -H 'content-type: application/json' \
-  -d "{\"fileName\":\"t.png\",\"contentType\":\"image/png\",\"sizeBytes\":$SIZE}")
-echo "$T" | jq
-curl -s -o /dev/null -w '%{http_code}\n' -X PUT "$(echo "$T" | jq -r .uploadUrl)" \
-  -H "Content-Type: image/png" --data-binary @/tmp/t.png            # 200
-curl -s -X POST https://api.loresentry.com/projects/$P/images/$(echo "$T" | jq -r .imageId)/complete | jq
-curl -sI "$(echo "$T" | jq -r .publicUrl)" | head -1                  # HTTP/2 200
+aws s3 cp /tmp/t.png s3://$BUCKET/projects/smoke/images/t.png --content-type image/png
+curl -sI https://media.loresentry.com/projects/smoke/images/t.png | head -1     # HTTP/2 200
+aws s3 rm s3://$BUCKET/projects/smoke/images/t.png
 ```
 
 `AWS_CONTAINER_CREDENTIALS_FULL_URI`와 `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`이 pod env에 있으면 Pod Identity가 주입된 것이다. 없으면 association이나 SA 이름을 본다.
 
 ---
 
-## 11. 장애 원인별 확인 위치
+## 10. 장애 원인별 확인 위치
 
 | 증상 | 확인할 곳 |
 |---|---|
-| presign이 500, 로그에 `Unable to load credentials` | Pod Identity association (`aws eks list-pod-identity-associations`), Deployment의 `serviceAccountName`, pod env의 `AWS_CONTAINER_*` |
-| presign이 500, `AccessDenied` | 역할 정책의 Resource가 `projects/*`인지, 키가 그 접두사로 시작하는지 |
+| presign이 `Unable to load credentials` | Pod Identity association (`aws eks list-pod-identity-associations`), Deployment의 `serviceAccountName`, pod env의 `AWS_CONTAINER_*` |
+| presign이 `AccessDenied` | 역할 정책의 Resource가 `projects/*`인지, 키가 그 접두사로 시작하는지 |
 | 브라우저 PUT이 CORS로 막힘 | 버킷 CORS의 `AllowedOrigins`. 프리플라이트(`OPTIONS`)는 S3가 처리한다 |
 | PUT이 `403 SignatureDoesNotMatch` | 보낸 `Content-Type`·`Content-Length`가 티켓의 `headers`와 다르다. 또는 5분 만료 |
-| `complete`가 409 | PUT이 실제로 안 갔거나 크기가 다르다. `aws s3api head-object --bucket $BUCKET --key <key>` |
-| `publicUrl`이 403 | 버킷 정책의 `AWS:SourceArn`과 배포 ID 불일치, 또는 OAC 미연결. CloudFront 오류 페이지의 `x-cache` 헤더로 CloudFront까지는 왔는지 확인 |
-| `publicUrl`이 DNS 실패 | Cloudflare `media` CNAME 누락 (§9.2) |
+| `verifyUploaded`가 `ObjectNotUploadedException` | PUT이 실제로 안 갔거나 크기가 다르다. `aws s3api head-object --bucket $BUCKET --key <key>` |
+| `publicUrl`이 403인데 객체는 있음 | 버킷 정책의 `AWS:SourceArn`과 배포 ID 불일치, 또는 OAC 미연결. `x-amz-bucket-region`이 있으면 CloudFront→S3까지는 갔다 |
+| `publicUrl`이 DNS 실패 | Cloudflare `media` CNAME (§8.2) |
 | `publicUrl`이 옛 내용 | 같은 키에 다시 올린 경우다. 키는 uuid라 정상 흐름에서는 생기지 않는다 |
-| content pod가 `CrashLoopBackOff`, 로그에 Flyway | `content` DB 접근 불가 또는 `content_svc`에 CREATE 권한 없음. Flyway 도입으로 DB 불가 시 기동 실패가 **의도된** 동작이 됐다 |
 | 로컬 `bootRun`에서 presign 실패 | `AWS_PROFILE=lorekeeper`와 SSO 로그인 상태 |
 
 ---
 
-## 12. 남은 것
+## 11. 남은 것
 
-- [ ] `setup-media.sh` 실행과 Cloudflare `media` CNAME — 이 문서 §0의 [진행 예정] 항목
-- [ ] 프론트엔드 업로드 UI (§8)
-- [ ] 업로드 엔드포인트 인가. gateway JWT 검증이 들어오면 `projectId` 소유 확인을 content에 붙인다
-- [ ] `PENDING`으로 남은 행과 고아 객체 정리 배치
-- [ ] 삭제 API (`DeleteObject` 권한은 이미 있다)
+- [ ] `loresentry-gitops#3`, `loresentry-content#1` 머지
+- [ ] 도메인 개발 시 §4.2 엔드포인트와 `image` 테이블, gateway 릴레이, 프론트엔드 업로드 UI
+- [ ] 업로드 인가. gateway JWT 검증이 들어오면 `projectId` 소유 확인을 content에 붙인다
+- [ ] `PENDING` 행과 고아 객체 정리 배치
 - [ ] 필요해지면 썸네일/리사이즈 (업로드 시 Lambda 또는 CloudFront 함수)
 - [ ] 프로젝트 비공개 요구가 생기면 CloudFront signed cookie (§7)
-- [ ] `content` 이미지 태그가 `build-3-1`에서 갱신되는지, Flyway 첫 실행 로그 확인

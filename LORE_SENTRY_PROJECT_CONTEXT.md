@@ -590,7 +590,7 @@ DB: PostgreSQL 논리 DB `authentication` (역할 `authentication_svc`)
 
 DB: PostgreSQL 논리 DB `content` (역할 `content_svc`)
 
-이미지 저장: S3 `loresentry-media-prod-<AWS_ACCOUNT_ID>`. content는 presigned PUT을 발급하고 업로드 완료를 검증할 뿐, 바이트를 받지 않는다. 자격 증명은 Pod Identity. 조회는 CloudFront `media.loresentry.com`. **[진행 예정]** — 코드·매니페스트 완료, AWS 리소스 생성 대기. `IMAGE_UPLOAD_S3.md` 참고.
+이미지 저장: S3 `loresentry-media-prod-<AWS_ACCOUNT_ID>`. content는 presigned PUT을 발급하고 업로드 완료를 검증할 뿐, 바이트를 받지 않는다. 자격 증명은 Pod Identity. 조회는 CloudFront `media.loresentry.com`. **[구축 완료/확인]** AWS 리소스와 DNS. content에는 `MediaStorageService`(서비스 계층)까지 있고 엔드포인트·`image` 테이블은 도메인 개발 때 붙인다. `IMAGE_UPLOAD_S3.md` 참고.
 
 ## 6.4 Agent / AI Chat Service
 
@@ -1377,7 +1377,7 @@ GitHub Actions
 
 - [x] `gp3` 기본 StorageClass, `reclaimPolicy: Retain` — PVC를 지워도 EBS 볼륨이 남는다
 - [x] `reclaimPolicy`는 immutable이므로 `argocd.argoproj.io/sync-options: Replace=true,Force=true` 필요
-- [ ] 사용자 이미지는 프론트엔드와 **별도** S3 버킷 + 별도 CloudFront. 브라우저가 presigned URL로 직접 업로드. content pod는 Pod Identity로 서명 (`IMAGE_UPLOAD_S3.md`)
+- [x] 사용자 이미지는 프론트엔드와 **별도** S3 버킷 + 별도 CloudFront `media.loresentry.com`. 브라우저가 presigned URL로 직접 업로드. content pod는 Pod Identity로 서명 (`IMAGE_UPLOAD_S3.md`)
 
 ---
 
