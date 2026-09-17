@@ -4,7 +4,7 @@
 > 목적: 이후 인프라/백엔드/MSA 설계 대화에서 공통 전제로 사용할 프로젝트 컨텍스트 문서  
 > 범위: 서비스 컨셉, 주요 요구사항, MSA 구성, 인프라 아키텍처, EKS/GitOps/CI/CD 진행 상태, 확정된 설계 결정, 향후 검토 항목
 
-**현재 상태 요약:** 5개 서비스(gateway · authentication · content · ai-chat · graph-rag)의 저장소·CI/CD·Kubernetes 배포가 전부 동작한다. `https://api.loresentry.com`에서 gateway를 통해 4개 내부 서비스까지 호출 체인이 확인됐다. 프론트엔드는 `https://loresentry.com`에 S3 + CloudFront로 배포됐고, **Pencil 기반 데스크톱 UX 설계와 frontend 구현 인계가 완료됐다**(§3.10). Kafka 브로커 3대와 `auth-valkey` 캐시가 클러스터에 올라가 있다. **DB도 프로비저닝됐다** — RDS PostgreSQL(논리 DB 3개)과 Amazon Neptune이 VPC 프라이빗 서브넷에 있고, 4개 서비스가 각자 자기 저장소에 붙는 것을 `https://api.loresentry.com/health/db`로 확인했다. 다만 **각 서비스는 아직 도메인 로직이 없는 스켈레톤**이고, 논리 DB는 비어 있다(테이블 없음). Kafka도 브로커와 토픽만 있고 producer가 없다. 즉 **플랫폼과 화면 설계는 준비됐고, 실제 도메인·API 연동은 시작 단계**다.
+**현재 상태 요약:** 5개 서비스(gateway · authentication · content · ai-chat · graph-rag)의 저장소·CI/CD·Kubernetes 배포가 전부 동작한다. `https://api.loresentry.com`에서 gateway를 통해 4개 내부 서비스까지 호출 체인이 확인됐다. 프론트엔드는 `https://loresentry.com`에 S3 + CloudFront로 배포됐고, **Pencil 기반 데스크톱 UX 설계와 frontend 구현 인계가 완료됐다**(§3.10). Kafka 브로커 3대와 `auth-valkey` 캐시가 클러스터에 올라가 있다. **DB도 프로비저닝됐다** — RDS PostgreSQL(논리 DB 3개)과 Amazon Neptune이 VPC 프라이빗 서브넷에 있고, 4개 서비스가 각자 자기 저장소에 붙는 것을 `https://api.loresentry.com/health/db`로 확인했다. 다만 **각 서비스는 아직 도메인 로직이 없는 스켈레톤**이고, 논리 DB는 비어 있다(테이블 없음). Kafka도 브로커와 잠정 토픽만 있고, 어떤 토픽을 쓸지도 producer도 아직 없다. 즉 **플랫폼과 화면 설계는 준비됐고, 실제 도메인·API 연동은 시작 단계**다.
 
 ---
 
@@ -1112,7 +1112,7 @@ GitOps / CI/CD:
 - [x] `auth-valkey` (Valkey 9.0.6) — 순수 캐시, 영속성 없음, `emptyDir`
 - [x] Strimzi 1.2.0 오퍼레이터 (`strimzi-system`, `watchNamespaces: [prod]`)
 - [x] Kafka `lore-sentry` 4.3.1 KRaft, 브로커 3대가 **노드당 1대**로 분산
-- [x] 토픽 `content.file.changed.v1`(6 파티션) / `.dlq`(3 파티션) 둘 다 `Ready`
+- [x] 잠정 토픽 `content.file.changed.v1`(6 파티션) / `.dlq`(3 파티션) 둘 다 `Ready`. CRD 동작 확인용이며 토픽 설계 자체는 미확정 (§19.3)
 - [x] 브로커 PVC 3개 `Bound`, 10Gi gp3, `deleteClaim: false`
 
 알려진 미해결:
@@ -1127,7 +1127,7 @@ GitOps / CI/CD:
 
 - [ ] 스키마 마이그레이션과 authentication/content/ai-chat의 영속성. **RDS와 논리 DB 3개는 준비되어 연결까지 확인됐고, 테이블이 없다**
 - [ ] graph 모델과 RAG/GraphRAG retrieval. **Neptune 클러스터는 준비되어 연결까지 확인됐고, 그래프가 비어 있다**
-- [ ] content → graph-rag 이벤트. 브로커/토픽/PostgreSQL 모두 준비됨. 남은 것은 Outbox 테이블과 producer다
+- [ ] content → graph-rag 이벤트. 브로커/PostgreSQL은 준비됨. 토픽 설계(§19.3), Outbox 테이블, producer가 남았다
 - [ ] Google OAuth 로그인 흐름, 토큰 발급
 - [ ] Gateway JWT 검증과 내부로의 신원 전달 — **현재 모든 엔드포인트가 인증 없음**
 - [ ] AI 응답 스트리밍 패스스루 (read-timeout 및 ALB idle_timeout 상향 필요)
@@ -1405,10 +1405,11 @@ CORS는 이미 gateway에 있으므로 인증도 같은 경계에 두는 것이 
 
 **[확정] self-managed Kafka on EKS, Strimzi 1.2.0 / Kafka 4.3.1.** 브로커 3대 KRaft, RF 3 / `min.insync.replicas` 2. 토픽은 `KafkaTopic` CRD로 GitOps 저장소에 선언한다. 구체적 구성은 `INFRA_AND_CICD.md` 19절.
 
-`content.file.changed.v1`의 파티션 키는 **projectId**로 정했다. 프로젝트 단위 순서만 지키면 graph-rag의 참조 그래프가 수렴하고, fileId로 잡으면 같은 프로젝트의 변경이 파티션에 흩어져 순서가 깨진다.
+**[미확정] 토픽 설계.** 클러스터에 있는 `content.file.changed.v1`과 `.dlq`는 `KafkaTopic` CRD 동작을 확인하려고 만든 잠정 토픽이다. 어떤 이벤트를 어떤 토픽으로 보낼지, 토픽을 몇 개 둘지, 파티션 키를 무엇으로 할지는 정하지 않았다. 파티션 키 후보로 projectId가 거론된 근거는 프로젝트 단위 순서만 지키면 graph-rag의 참조 그래프가 수렴하고, fileId로 잡으면 같은 프로젝트의 변경이 파티션에 흩어져 순서가 깨진다는 점이다. 근거일 뿐 결정은 아니다.
 
 남은 결정:
 
+- 어떤 도메인 이벤트를 발행할지, 이벤트와 토픽의 대응
 - topic naming
 - partition key
 - event schema/versioning

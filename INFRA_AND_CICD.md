@@ -19,7 +19,7 @@
 | 캐시 | `auth-valkey` (Valkey 9.0.6, 순수 캐시, 영속성 없음) |
 | 관계형 DB | RDS PostgreSQL 18.6 `lore-sentry-postgres` (`db.t4g.micro`, 인스턴스 1개 / 논리 DB 3개) |
 | 그래프 DB | Amazon Neptune 1.4.8.0 `lore-sentry-neptune` (`db.t4g.medium` 1노드) |
-| 메시징 | Strimzi 1.2.0 / Kafka 4.3.1, 브로커 3대 KRaft, 토픽 2개 |
+| 메시징 | Strimzi 1.2.0 / Kafka 4.3.1, 브로커 3대 KRaft, 잠정 토픽 2개 (토픽 설계 미확정) |
 | CI/CD | 5개 저장소 전부 `main` push → ECR → Lambda → Argo CD 검증 완료 |
 | 공개 진입점 | `https://api.loresentry.com` → gateway only. **전 구간 무인증** |
 | 프론트엔드 | `https://loresentry.com` → CloudFront `<CF_FRONTEND_ID>` + S3 (클러스터 밖) |
@@ -172,7 +172,7 @@ ALB            k8s-loresentry-<REDACTED>, idle_timeout 60s, HTTP/2 on
 Target Group   k8s-prod-gatewaya-<REDACTED> (ip, HTTP, HC /health)
 RDS            lore-sentry-postgres (db.t4g.micro, PG 18.6)
 Neptune        lore-sentry-neptune / lore-sentry-neptune-1 (db.t4g.medium)
-Kafka          브로커 3대, content.file.changed.v1 (6p/3r) + .dlq (3p/3r)
+Kafka          브로커 3대, 잠정 토픽 content.file.changed.v1 (6p/3r) + .dlq (3p/3r) — 토픽 설계 미확정
 CloudFront     <CF_FRONTEND_ID> → loresentry.com, www.loresentry.com
 Lambda         loresentry-update-gitops (python3.13, 256MB, 30s, VPC 없음)
 ECR            gateway|ai-chat|authentication|content|graph-rag /api (IMMUTABLE)
@@ -1098,14 +1098,16 @@ operator는 `watchNamespaces: [prod]`로 범위를 좁혔고, `strimzi-system` n
 
 `auto.create.topics.enable: false`다. 토픽은 Git에만 존재해야 하며, 오타 난 토픽 이름이 조용히 실제 토픽을 만드는 일을 막는다.
 
-### 토픽
+### 토픽 — **[미확정]**
 
-| 토픽 | 파티션 | 보존 |
+**어떤 토픽을 쓸지는 아직 정하지 않았다.** 아래 두 토픽은 Strimzi `KafkaTopic` CRD가 동작하는지 확인하려고 만든 **잠정 토픽**이고, 이름·개수·파티션 수·파티션 키 모두 도메인 이벤트 설계와 함께 다시 정한다 (`LORE_SENTRY_PROJECT_CONTEXT.md` §19.3).
+
+| 토픽 (잠정) | 파티션 | 보존 |
 |---|---|---|
 | `content.file.changed.v1` | 6 | 7일 |
 | `content.file.changed.v1.dlq` | 3 | 30일 |
 
-**파티션 키는 `projectId`다.** `fileId`로 잡으면 같은 프로젝트 안의 파일 변경들이 서로 다른 파티션에 흩어져 순서가 보장되지 않고, graph-rag가 파일 참조 관계를 조립할 때 일관성이 깨진다. 프로젝트 단위 순서만 지키면 그래프는 수렴한다.
+파티션 키도 미확정이다. 후보로 `projectId`가 거론된 이유는, `fileId`로 잡으면 같은 프로젝트 안의 파일 변경들이 서로 다른 파티션에 흩어져 순서가 보장되지 않고, 프로젝트 단위 순서만 지키면 graph-rag의 참조 그래프가 수렴하기 때문이다. 이것은 근거이지 결정이 아니다.
 
 DLQ 보존이 원본보다 긴 것은 의도적이다. 처리 실패한 이벤트는 사람이 찾아봤을 때 아직 남아 있어야 의미가 있다.
 

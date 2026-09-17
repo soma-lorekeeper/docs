@@ -61,7 +61,7 @@ sequenceDiagram
     participant C as Content Service
     participant P as Content PostgreSQL
     participant R as Outbox Publisher
-    participant K as Kafka<br/>content.file.changed.v1
+    participant K as Kafka<br/>(토픽 미확정)
     participant G as graph-rag Consumer
     participant N as Neptune
 
@@ -123,7 +123,7 @@ Outbox publisher는 별도 워커다. `published_at IS NULL`인 행을 읽어 Ka
 }
 ```
 
-파티션 키는 projectId다 (§19.3). 같은 프로젝트의 이벤트는 같은 파티션에 순서대로 들어가고, 파티션당 컨슈머는 하나다.
+토픽과 파티션 키는 아직 정하지 않았다 (§19.3). 이 문서는 **같은 프로젝트의 이벤트가 한 파티션에 순서대로 들어가고, 파티션당 컨슈머가 하나**라고 가정한다. 파티션 키를 projectId로 잡으면 이 가정이 성립한다. 다른 키를 고르면 4.3의 revision 가드가 순서 역전까지 흡수해야 하므로 설계를 다시 봐야 한다.
 
 ### 4.3 graph-rag 쪽 — Inbox
 
@@ -218,6 +218,7 @@ RDB Inbox와 다른 점이 하나 있다. 그래프 투영은 upsert이므로 �
 
 ## 6. 남은 결정
 
+- **토픽과 파티션 키.** 어떤 이벤트를 어떤 토픽으로 보낼지, 파티션 키를 무엇으로 할지 미확정이다. 4.2의 순서 가정은 이 결정에 달려 있다.
 - **삭제 이벤트.** `deleted: true`일 때 vertex를 `drop()`할지, `deleted` property만 세워 두고 조회에서 제외할지. 후자여야 늦은 갱신 이벤트가 revision 가드에 걸린다.
 - **대상 vertex 부재.** 관계 대상 파일(`f-C`)의 이벤트가 아직 안 왔을 수 있다. `mergeE`는 양 끝 vertex가 있어야 하므로 대상도 `mergeV`로 placeholder를 만들지 정한다.
 - **InboxEvent 정리.** Neptune에는 TTL이 없다. `processedAt` 기준 며칠 지난 `InboxEvent`를 주기적으로 `drop()`한다. 파티션당 단일 컨슈머이므로 보관 기간은 짧아도 된다.
