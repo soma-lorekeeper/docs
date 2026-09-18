@@ -11,6 +11,7 @@
 | [CORE_TABLE_ERD.md](CORE_TABLE_ERD.md) | 핵심 테이블 ERD 초안. 서비스별 DB 배치와 그래프 투영 경계 |
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
+| [DOCUMENT_EDITING_PROPOSAL.md](DOCUMENT_EDITING_PROPOSAL.md) | **제안.** 문서 본문 저장 형태, 편집기, 버전, diff와 그래프 최신화 결정 플로우 |
 
 ## 새로 합류했다면
 
