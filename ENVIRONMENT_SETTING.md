@@ -1,6 +1,6 @@
 # 로컬 개발 환경 온보딩 — AWS · EKS 접근 설정
 
-> 최신화: 2026-09-13
+> 최신화: 2026-09-19
 > 대상: Lore Sentry 팀원
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-k8s` / namespace `prod`
 
@@ -96,6 +96,8 @@ aws sts get-caller-identity --profile lorekeeper
 ```
 
 `Account`가 `<AWS_ACCOUNT_ID>`이고 `Arn`이 자기 사용자 이름이면 성공이다.
+
+> **`aws login`은 쓸 수 없다.** AWS CLI 2.32부터 생긴 `aws login`(콘솔 로그인으로 CLI 자격 증명 받기)은 `signin:AuthorizeOAuth2Access`·`signin:CreateOAuth2Token` 권한이 필요하다. 이 계정은 Innovation Sandbox 조직에 속해 있고, 조직 SCP가 `signin:*`을 명시적으로 거부한다. IAM 쪽에서 `SignInLocalDevelopmentAccess`를 붙여도 SCP가 우선하므로 풀리지 않는다. 액세스 키 방식만 쓴다.
 
 > **`--profile`을 항상 명시한다.** 다른 AWS 계정을 쓰고 있다면 `default` 프로파일이 엉뚱한 계정을 가리킬 수 있다. 실제로 한 번 겪었다. 매번 치기 번거로우면 셸에 `export AWS_PROFILE=lorekeeper`를 둔다.
 
@@ -366,6 +368,7 @@ GitHub 계정으로 로그인한다 (`soma-lorekeeper` 조직 멤버만 통과).
 | `Error from server (Forbidden): ...` | 권한 밖의 동작이다. **정상이다.** §0 표를 확인한다 |
 | `Unable to connect to the server: dial tcp ... i/o timeout` | 네트워크 문제. 사내망·VPN·방화벽을 확인한다 |
 | `An error occurred (InvalidClientTokenId)` | 액세스 키 오타 또는 비활성화된 키. `aws configure --profile lorekeeper`를 다시 실행한다 |
+| `aws login`이 권한 오류로 실패한다 | **알려진 제약.** 조직 SCP가 `signin:*`을 거부한다 (§2). 관리자에게 액세스 키 발급을 요청한다 |
 | `exec: "aws": executable file not found in $PATH` | `kubectl`이 `aws`를 찾지 못한다. AWS CLI 설치와 PATH를 확인한다 |
 | `The config profile (lorekeeper) could not be found` | 프로파일 이름 불일치. `aws configure list-profiles`로 확인한다 |
 | 엉뚱한 클러스터가 응답한다 | `kubectl config current-context`를 확인한다. 여러 클러스터가 섞여 있으면 `--context lore-sentry`를 명시한다 |
@@ -413,6 +416,16 @@ aws eks create-access-entry \
 
 # 3. 액세스 키 발급 — SecretAccessKey 는 이때 한 번만 출력된다
 aws iam create-access-key --user-name $USER
+```
+
+3번을 건너뛰면 팀원은 CLI에 쓸 자격 증명이 없다. `aws login`은 SCP에 막혀 대안이 되지 못한다 (§2). 조직 SCP가 막는지는 시뮬레이터의 `AllowedByOrganizations`로 확인한다.
+
+```bash
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::<AWS_ACCOUNT_ID>:user/$USER \
+  --action-names signin:CreateOAuth2Token \
+  --query 'EvaluationResults[].[EvalDecision,OrganizationsDecisionDetail.AllowedByOrganizations]'
+# ["explicitDeny", false] — SCP 거부. IAM 정책으로는 풀 수 없다
 ```
 
 `associate-access-policy`는 쓰지 않는다. AWS 관리형 정책을 붙이면 권한이 AWS 쪽에 갇혀 Git으로 관리할 수 없다. 권한은 `workload/overlays/prod/rbac.yaml`의 RoleBinding이 결정한다.
