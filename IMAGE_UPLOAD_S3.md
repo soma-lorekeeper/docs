@@ -148,7 +148,7 @@ GET  /projects/{projectId}/images/{imageId}
 | `image_not_found` | 404 | 그 프로젝트에 그 이미지가 없음 |
 | `object_not_uploaded` | 409 | `ObjectNotUploadedException` — PUT 전에 `complete`, 또는 크기 불일치 |
 
-`image` 테이블 초안: `id uuid PK, project_id uuid, file_name text, s3_key text unique, content_type text, size_bytes bigint, status PENDING|COMMITTED, created_at, committed_at`. `PENDING`으로 남은 행과 고아 객체를 지우는 배치가 함께 필요하다. ERD 확정 시 `CORE_TABLE_ERD.md`에 맞춘다.
+`image` 테이블 초안: `id uuid PK, project_id uuid, file_name text, s3_key text unique, content_type text, size_bytes bigint, status PENDING|COMMITTED, created_at, committed_at`. `PENDING`으로 남은 행과 고아 객체를 지우는 배치가 함께 필요하다. 테이블을 만들 때 `TABLE_AND_LOGIC.md`에 추가하고 content의 다음 Flyway 버전으로 반영한다.
 
 ### 4.3 프론트엔드가 할 일
 

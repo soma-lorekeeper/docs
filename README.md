@@ -8,10 +8,9 @@
 | [INFRA_AND_CICD.md](INFRA_AND_CICD.md) | EKS · GitOps · CI/CD 구축 기록. 인프라 전반 |
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |
-| [CORE_TABLE_ERD.md](CORE_TABLE_ERD.md) | 핵심 테이블 ERD 초안. 서비스별 DB 배치와 그래프 투영 경계 |
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
-| [DOCUMENT_EDITING_PROPOSAL.md](DOCUMENT_EDITING_PROPOSAL.md) | **제안.** 문서 본문 저장 형태, 편집기, 버전, diff와 그래프 최신화 결정 플로우 |
+| [TABLE_AND_LOGIC.md](TABLE_AND_LOGIC.md) | Authentication·Content·AI Chat 테이블(Flyway로 운영 DB 반영됨)과 3-way 문서 최신화·diff·저장 흐름 |
 
 ## 새로 합류했다면
 

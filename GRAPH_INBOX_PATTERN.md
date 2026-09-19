@@ -2,7 +2,7 @@
 
 > 갱신일: 2026-09-18  
 > 목적: Content 서비스의 문서 변경이 GraphRAG의 Neptune 그래프에 반영되는 흐름을 한 가지 핵심 기능을 예로 들어 설명하고, 그 안에서 Outbox와 Inbox가 각각 어디에서 무엇을 보장하는지 정리한다.  
-> 전제: [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §4.4·§16.2·§19.3, [`CORE_TABLE_ERD.md`](CORE_TABLE_ERD.md) §3·§4
+> 전제: [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §4.4·§16.2·§19.3, [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4·§5
 
 ## 1. 한 줄 요약
 

@@ -1,6 +1,6 @@
 # Lore Sentry EKS · GitOps · CI/CD 구축 기록
 
-> 최신화: 2026-09-13  
+> 최신화: 2026-09-20  
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-k8s`  
 > 상태: **파이프라인 전 구간이 실제로 동작하는 것을 확인했다.** 서비스 5개가 `prod` namespace에서 Running이고, `https://api.loresentry.com`으로 공개 응답한다.
 
@@ -788,7 +788,7 @@ concurrency:
 
 ### 남은 것 — **[미구현]**
 
-- [ ] 스키마 마이그레이션 도구 (Flyway/Liquibase 또는 Alembic). 현재 논리 DB는 **비어 있고** 테이블이 없다
+- [x] 스키마 마이그레이션 — Flyway. authentication·content는 Spring Boot 기동 시, ai-chat은 entrypoint에서 `flyway migrate` 후 uvicorn 시작. 테이블 정의와 반영 현황은 `TABLE_AND_LOGIC.md` §9
 - [ ] JPA/ORM 매핑과 도메인 모델. 지금 붙어 있는 것은 연결 확인용 드라이버까지다
 - [ ] `loresentry-lambda`를 git 저장소로 만들기. **파이프라인을 움직이는 코드가 버전 관리 밖에 있다** (§19-A)
 - [ ] 클러스터 `root` Application의 저장소 URL 정정 — `kubectl apply -f bootstrap/root-application.yaml` (§19-A)
@@ -800,7 +800,7 @@ concurrency:
 - [ ] AI 스트리밍 패스스루: `spring.http.clients.read-timeout`(10s)과 ALB `idle_timeout.timeout_seconds`(기본 60s) 상향
 - [ ] 업스트림 retry / circuit breaking
 - [ ] 관측성 (로그 수집, 메트릭, 트레이싱)
-- [ ] content → graph-rag 이벤트 연동. 브로커·토픽·PostgreSQL이 모두 준비됐으므로 **이제 Outbox 테이블을 만들 수 있다.** 남은 것은 마이그레이션과 producer다
+- [ ] content → graph-rag 이벤트 연동. 브로커·토픽·PostgreSQL이 모두 준비됐으므로 `outbox_events` 테이블은 content DB에 생성됐다. 남은 것은 outbox publisher와 graph-rag consumer다
 - [ ] `auth-valkey`를 authentication 서비스에 실제 연결
 - [ ] NetworkPolicy. vpc-cni의 `ENABLE_NETWORK_POLICY`가 꺼져 있어 **지금 NetworkPolicy를 써도 조용히 무시된다**
 - [ ] 시크릿 관리. `auth-valkey` 비밀번호는 `kubectl`로 직접 만든 Secret이고 Git 밖에 있다. External Secrets Operator + 기존 Secrets Manager로 옮기는 것이 다음 단계

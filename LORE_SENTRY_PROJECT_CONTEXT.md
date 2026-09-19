@@ -1,10 +1,10 @@
 # Lore Sentry 프로젝트 핵심 컨텍스트
 
-> 최신화: 2026-09-13  
+> 최신화: 2026-09-20  
 > 목적: 이후 인프라/백엔드/MSA 설계 대화에서 공통 전제로 사용할 프로젝트 컨텍스트 문서  
 > 범위: 서비스 컨셉, 주요 요구사항, MSA 구성, 인프라 아키텍처, EKS/GitOps/CI/CD 진행 상태, 확정된 설계 결정, 향후 검토 항목
 
-**현재 상태 요약:** 5개 서비스(gateway · authentication · content · ai-chat · graph-rag)의 저장소·CI/CD·Kubernetes 배포가 전부 동작한다. `https://api.loresentry.com`에서 gateway를 통해 4개 내부 서비스까지 호출 체인이 확인됐다. 프론트엔드는 `https://loresentry.com`에 S3 + CloudFront로 배포됐고, **Pencil 기반 데스크톱 UX 설계와 frontend 구현 인계가 완료됐다**(§3.10). Kafka 브로커 3대와 `auth-valkey` 캐시가 클러스터에 올라가 있다. **DB도 프로비저닝됐다** — RDS PostgreSQL(논리 DB 3개)과 Amazon Neptune이 VPC 프라이빗 서브넷에 있고, 4개 서비스가 각자 자기 저장소에 붙는 것을 `https://api.loresentry.com/health/db`로 확인했다. 다만 **각 서비스는 아직 도메인 로직이 없는 스켈레톤**이고, 논리 DB는 비어 있다(테이블 없음). Kafka도 브로커와 잠정 토픽만 있고, 어떤 토픽을 쓸지도 producer도 아직 없다. 즉 **플랫폼과 화면 설계는 준비됐고, 실제 도메인·API 연동은 시작 단계**다.
+**현재 상태 요약:** 5개 서비스(gateway · authentication · content · ai-chat · graph-rag)의 저장소·CI/CD·Kubernetes 배포가 전부 동작한다. `https://api.loresentry.com`에서 gateway를 통해 4개 내부 서비스까지 호출 체인이 확인됐다. 프론트엔드는 `https://loresentry.com`에 S3 + CloudFront로 배포됐고, **Pencil 기반 데스크톱 UX 설계와 frontend 구현 인계가 완료됐다**(§3.10). Kafka 브로커 3대와 `auth-valkey` 캐시가 클러스터에 올라가 있다. **DB도 프로비저닝됐다** — RDS PostgreSQL(논리 DB 3개)과 Amazon Neptune이 VPC 프라이빗 서브넷에 있고, 4개 서비스가 각자 자기 저장소에 붙는 것을 `https://api.loresentry.com/health/db`로 확인했다. 논리 DB 3개에는 Flyway로 테이블이 생성됐다(`TABLE_AND_LOGIC.md` §9). 다만 **각 서비스는 아직 도메인 로직이 없는 스켈레톤**이라 테이블을 읽고 쓰는 코드는 없다. Kafka도 브로커와 잠정 토픽만 있고, 어떤 토픽을 쓸지도 producer도 아직 없다. 즉 **플랫폼과 화면 설계는 준비됐고, 실제 도메인·API 연동은 시작 단계**다.
 
 ---
 
@@ -1127,7 +1127,8 @@ GitOps / CI/CD:
 
 ## 14.2 아직 만들지 않은 것 — **[미구현]**
 
-- [ ] 스키마 마이그레이션과 authentication/content/ai-chat의 영속성. **RDS와 논리 DB 3개는 준비되어 연결까지 확인됐고, 테이블이 없다**
+- [x] 스키마 마이그레이션. Flyway로 authentication/content/ai-chat 테이블 생성 (`TABLE_AND_LOGIC.md` §9)
+- [ ] authentication/content/ai-chat의 영속성 코드. 테이블은 있고 repository·도메인 로직이 없다
 - [ ] graph 모델과 RAG/GraphRAG retrieval. **Neptune 클러스터는 준비되어 연결까지 확인됐고, 그래프가 비어 있다**
 - [ ] content → graph-rag 이벤트. 브로커/PostgreSQL은 준비됨. 토픽 설계(§19.3), Outbox 테이블, producer가 남았다
 - [ ] Google OAuth 로그인 흐름, 토큰 발급
@@ -1424,14 +1425,14 @@ CORS는 이미 gateway에 있으므로 인증도 같은 경계에 두는 것이 
 
 제품과 분리 방식은 확정했다. 구체적인 리소스 식별자·SG·검증 결과는 `INFRA_AND_CICD.md` §19-B에 있다.
 
-**초기 논리 스키마와 PostgreSQL/Neptune 저장 경계는 [`CORE_TABLE_ERD.md`](CORE_TABLE_ERD.md)를 기준으로 한다.** Content PostgreSQL이 프로젝트·파일·명시적 참조의 원본이고, Neptune은 Kafka 이벤트로 재생성 가능한 활성 파일 관계의 투영본이다.
+**논리 스키마와 PostgreSQL/Neptune 저장 경계는 [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md)를 기준으로 한다.** Content PostgreSQL이 프로젝트·파일·명시적 참조의 원본이고, Neptune은 Kafka 이벤트로 재생성 가능한 활성 파일 관계의 투영본이다.
 
 - **[확정] RDS PostgreSQL 18.6** (Aurora 아님). `lore-sentry-postgres`, `db.t4g.micro`, Single-AZ, gp3 20GB, 프라이빗 전용
 - **[확정] 물리 분리가 아니라 인스턴스 1개 + 논리 DB 3개로 시작한다.** Database per Service의 요점은 소유권 분리이지 물리 분리가 아니고, 현 단계에서 인스턴스 3대는 비용만 3배다. 논리 DB(`authentication`/`content`/`ai_chat`)마다 소유자 역할을 두고 `REVOKE CONNECT ... FROM PUBLIC`으로 교차 접근을 차단했다 — 다른 서비스 역할로는 **접속 자체가 거부된다**
 - **[확정] Amazon Neptune 1.4.8.0** `lore-sentry-neptune`, `db.t4g.medium` writer 1노드. `db.t4g.medium`이 Neptune의 최소 사양이다(t3/t4g는 medium 사이즈만 제공)
 - **[확정] connection pool** — Spring은 Hikari `maximum-pool-size: 5`, `initialization-fail-timeout: -1`. 후자는 DB가 죽어도 컨테이너가 살아서 `/health/db`로 이유를 보고하게 하려는 것이다
 - **[확정] backup** — RDS/Neptune 모두 보관 7일 + deletion protection
-- **[추후 검토] migration 도구.** Flyway/Liquibase(Spring) 와 Alembic(FastAPI) 중 선택. **현재 논리 DB는 비어 있고 테이블이 없다** — Outbox를 포함한 모든 스키마 작업의 선행 조건
+- **[확정] migration 도구 — Flyway.** Spring 서비스는 기동 시 자동 실행, ai-chat(FastAPI)도 언어를 섞지 않도록 Alembic 대신 이미지에 Flyway CLI를 넣어 entrypoint에서 실행한다. 적용된 버전은 `TABLE_AND_LOGIC.md` §9
 - **[추후 검토] 서비스별 물리 분리 시점.** 특정 서비스만 부하가 커지면 그 DB만 `pg_dump`로 떼어 별도 인스턴스로 옮긴다. 애플리케이션에서 바뀌는 값은 `DB_HOST` 하나다
 - **[주의] 이 AWS 계정은 Innovation Sandbox다.** 리스 만료·예산 초과 시 리소스가 자동 정리되므로 여기 쌓은 데이터의 영구 보존을 기대할 수 없다
 
@@ -1559,11 +1560,11 @@ Gateway → 4개 서비스 → PostgreSQL / Neptune          ✅ /health/db 200 
 **아직 그림뿐인 부분:**
 
 ```text
-PostgreSQL      △  RDS 18.6 + 논리 DB 3개 Ready, 연결 확인. 테이블은 없음
+PostgreSQL      △  RDS 18.6 + 논리 DB 3개 Ready, 테이블 생성됨. 읽기/쓰기 코드 없음
 Amazon Neptune  △  클러스터 Ready, 연결 확인. 그래프 모델/쿼리 코드 없음
 Kafka           △  브로커 3대 + 토픽 2개는 Ready. producer/consumer 코드 없음
 auth-valkey     △  캐시 서버는 Ready. authentication 서비스가 아직 연결 안 함
-마이그레이션    ❌ Flyway/Alembic 미도입. 모든 스키마 작업의 선행 조건
+마이그레이션    ✅ Flyway. 3개 서비스 기동 시 적용
 인증            ❌ 모든 엔드포인트가 무인증
 Frontend        ✅ S3 + CloudFront, https://loresentry.com (클러스터 밖)
 ```
@@ -1629,7 +1630,7 @@ Messaging:
 Data:
   Database per Service (PostgreSQL 18.6) ← 인스턴스 1개 + 논리 DB 3개, 연결 확인
   Neptune for graph/GraphRAG (1.4.8.0)   ← writer 1노드, 연결 확인
-  스키마는 양쪽 모두 비어 있음 (마이그레이션 미도입)
+  PostgreSQL 테이블은 Flyway로 생성됨, Neptune 그래프는 비어 있음
 
 MSA patterns:
   Outbox / Inbox / Saga where appropriate
