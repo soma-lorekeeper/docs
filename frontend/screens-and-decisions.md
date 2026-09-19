@@ -72,4 +72,4 @@
 5. **툴바 기본값** — 14 · 1.5(토큰) 대 16 · 1.78(와이어프레임 라벨).
 6. **외부 연결 값** — `public/config.json` 의 `feedbackUrl`·`privacyPolicyUrl`·`termsOfServiceUrl` 이 비어 있다. 비어 있으면 피드백 열기는 실패 화면(081)으로 간다.
 7. **가이드 콘텐츠 출처** — 정적 번들로 둘지 서버·CMS 에서 받을지. 정적이면 `HelpService` 를 걷어내면 된다.
-8. **병합 시점** — 작업은 `feat/wireframe-sync-foundation` 에만 올라가 있다. `main` 에 합치면 S3·CloudFront 배포가 바로 돈다.
+8. **배포 설정** — main 에 병합돼 https://loresentry.com 에 mock 데이터로 배포돼 있다. API 어댑터가 생기면 `config.json` 의 `dataSource` 를 `api` 로 바꾼다.
