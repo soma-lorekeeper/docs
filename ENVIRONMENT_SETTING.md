@@ -61,7 +61,7 @@ AWS CLI v1은 쓰지 않는다. `aws eks get-token`의 동작이 다르다.
 
 ## 2. AWS 자격 증명 설정
 
-관리자에게 **액세스 키 2종**을 받는다.
+관리자에게 **액세스 키 2종**을 받는다. 콘솔 로그인 URL과 암호는 웹 콘솔 전용이라 CLI에는 쓸 수 없다 (아래 `aws login` 참고).
 
 ```text
 AWS Access Key ID        AKIA...            식별자
@@ -98,6 +98,8 @@ aws sts get-caller-identity --profile lorekeeper
 `Account`가 `<AWS_ACCOUNT_ID>`이고 `Arn`이 자기 사용자 이름이면 성공이다.
 
 > **`aws login`은 쓸 수 없다.** AWS CLI 2.32부터 생긴 `aws login`(콘솔 로그인으로 CLI 자격 증명 받기)은 `signin:AuthorizeOAuth2Access`·`signin:CreateOAuth2Token` 권한이 필요하다. 이 계정은 Innovation Sandbox 조직에 속해 있고, 조직 SCP가 `signin:*`을 명시적으로 거부한다. IAM 쪽에서 `SignInLocalDevelopmentAccess`를 붙여도 SCP가 우선하므로 풀리지 않는다. 액세스 키 방식만 쓴다.
+
+> **`lorekeeper` 프로파일이 이미 있으면 먼저 확인한다.** `~/.aws/config`의 `[profile lorekeeper]`에 `sso_session`·`sso_account_id` 같은 `sso_*` 줄이 남아 있으면 CLI가 액세스 키 대신 SSO를 쓰려다 `Token has expired`로 실패한다. 그 줄을 지우고 `region`·`output`만 남긴다.
 
 > **`--profile`을 항상 명시한다.** 다른 AWS 계정을 쓰고 있다면 `default` 프로파일이 엉뚱한 계정을 가리킬 수 있다. 실제로 한 번 겪었다. 매번 치기 번거로우면 셸에 `export AWS_PROFILE=lorekeeper`를 둔다.
 
@@ -368,6 +370,7 @@ GitHub 계정으로 로그인한다 (`soma-lorekeeper` 조직 멤버만 통과).
 | `Error from server (Forbidden): ...` | 권한 밖의 동작이다. **정상이다.** §0 표를 확인한다 |
 | `Unable to connect to the server: dial tcp ... i/o timeout` | 네트워크 문제. 사내망·VPN·방화벽을 확인한다 |
 | `An error occurred (InvalidClientTokenId)` | 액세스 키 오타 또는 비활성화된 키. `aws configure --profile lorekeeper`를 다시 실행한다 |
+| `Error when retrieving token from sso` | `lorekeeper` 프로파일에 SSO 설정이 남아 있다. `~/.aws/config`에서 `sso_*` 줄을 지운다 (§2) |
 | `aws login`이 권한 오류로 실패한다 | **알려진 제약.** 조직 SCP가 `signin:*`을 거부한다 (§2). 관리자에게 액세스 키 발급을 요청한다 |
 | `exec: "aws": executable file not found in $PATH` | `kubectl`이 `aws`를 찾지 못한다. AWS CLI 설치와 PATH를 확인한다 |
 | `The config profile (lorekeeper) could not be found` | 프로파일 이름 불일치. `aws configure list-profiles`로 확인한다 |
@@ -416,9 +419,12 @@ aws eks create-access-entry \
 
 # 3. 액세스 키 발급 — SecretAccessKey 는 이때 한 번만 출력된다
 aws iam create-access-key --user-name $USER
+
+# 4. (선택) 콘솔 암호 — 웹 콘솔을 볼 때만 필요하다. CLI에는 쓰이지 않는다
+aws iam create-login-profile --user-name $USER --password '<임시 암호>' --password-reset-required
 ```
 
-3번을 건너뛰면 팀원은 CLI에 쓸 자격 증명이 없다. `aws login`은 SCP에 막혀 대안이 되지 못한다 (§2). 조직 SCP가 막는지는 시뮬레이터의 `AllowedByOrganizations`로 확인한다.
+3번을 건너뛰면 팀원은 CLI에 쓸 자격 증명이 없다. 콘솔 암호만 발급한 상태가 이 경우다. `aws login`은 SCP에 막혀 대안이 되지 못한다 (§2). 조직 SCP가 막는지는 시뮬레이터의 `AllowedByOrganizations`로 확인한다.
 
 ```bash
 aws iam simulate-principal-policy \
@@ -429,6 +435,20 @@ aws iam simulate-principal-policy \
 ```
 
 `associate-access-policy`는 쓰지 않는다. AWS 관리형 정책을 붙이면 권한이 AWS 쪽에 갇혀 Git으로 관리할 수 없다. 권한은 `workload/overlays/prod/rbac.yaml`의 RoleBinding이 결정한다.
+
+**팀원 입장에서 검증** — 키를 전달하기 전에 관리자 노트북에서 팀원 설정을 그대로 재현한다. `AWS_CONFIG_FILE`·`AWS_SHARED_CREDENTIALS_FILE`·`KUBECONFIG`를 임시 디렉터리로 돌리므로 관리자 자신의 `~/.aws`와 `~/.kube`는 건드리지 않는다. 이 셸을 닫으면 원상태다.
+
+```bash
+T=$(mktemp -d)
+export AWS_CONFIG_FILE=$T/config AWS_SHARED_CREDENTIALS_FILE=$T/credentials KUBECONFIG=$T/kubeconfig
+unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+
+# 이후 §2~§4 를 팀원과 똑같이 실행한다
+aws configure --profile lorekeeper
+# ...
+
+rm -rf $T      # 끝나면 키가 담긴 임시 파일을 지운다
+```
 
 **제거**
 
