@@ -32,6 +32,6 @@ pnpm check:cdn           # CI 와 같은 검사: 포맷·토큰·테스트·린�
 ## 한눈에 보는 현황
 
 - 와이어프레임 150장(다크 75 + 라이트 75) 가운데 화면 단위로 따지면 전 화면을 구현했다. 화면별 대응은 [screens-and-decisions.md](screens-and-decisions.md).
-- 테스트 187개(vitest). graph-visualization 에서 옮긴 레이아웃·물리·펼침·필터·타임라인·줄 diff 테스트를 시드 데이터로 다시 돌린다.
+- 테스트 190개(vitest). graph-visualization 에서 옮긴 레이아웃·물리·펼침·필터·타임라인·줄 diff 테스트를 시드 데이터로 다시 돌린다.
 - `pnpm check:cdn` 통과. 정적 export(`out/`)는 CloudFront 재작성 함수가 기대하는 `/<route>/index.html` 구조를 검증한다.
 - **확인이 필요한 결정**이 남아 있다. 특히 2026-09-18 자 `TABLE_AND_LOGIC.md` 가 이전 `DOCUMENT_EDITING_PROPOSAL.md` 를 대체하면서 폴더 모델과 최신화 병합 방식이 달라졌다. [screens-and-decisions.md의 남은 결정](screens-and-decisions.md#남은-결정-사항)을 먼저 봐 주세요.

@@ -11,7 +11,7 @@
 | `ProjectService` | 목록·생성·이름 변경·휴지통·복원·영구 삭제·설정 |
 | `FileService` | 파일 트리, 생성·이름 변경·이동, 휴지통·복원·영구 삭제, 즐겨찾기, 섹션·에피소드 삭제 |
 | `DocumentService` | 문서 읽기, 저장(If-Match·X-Save-Id), 잠금, 내보내기 |
-| `VersionService` | 버전 목록·저장·복원·삭제 |
+| `VersionService` | 버전 목록·저장·복원 (삭제는 두지 않는다) |
 | `MemoService` | 프로젝트·파일 메모 목록·생성·수정·삭제 |
 | `SearchService` | 프로젝트 검색 |
 | `GraphService` | 프로젝트 그래프(노드·엣지·에피소드) |
@@ -24,7 +24,7 @@
 
 ## mock 구현 (`src/services/mock/`)
 
-- 데이터는 `MockDb` 한 덩어리이고 `localStorage` 에 저장된다. 스키마가 바뀌면 `MOCK_DB_VERSION` 을 올려 시드로 초기화한다(현재 7).
+- 데이터는 `MockDb` 한 덩어리이고 `localStorage` 에 저장된다. 스키마가 바뀌면 `MOCK_DB_VERSION` 을 올려 시드로 초기화한다(현재 8).
 - 시드는 새로 쓴 이야기 "유리 정원의 기록"이다. graph-visualization 의 ORV 픽스처는 저작권 문제로 가져오지 않았다.
 - 모든 호출은 `simulate(operation, fn)` 을 지나며 지연(기본 280ms, ±30%)과 실패 규칙을 적용하고, 결과를 `structuredClone` 해서 돌려준다(화면이 mock 데이터를 직접 고치지 못하게).
 
@@ -65,7 +65,9 @@ URL 의 `?mock=` 로 실패·지연을 넣는다. 쉼표로 여러 규칙을 잇
 | 추출 뒤 실제 문서가 또 바뀌었으면 반영을 거절한다(STALE). mock 은 제안의 `baseRevisionNo` 와 문서 revision 을 견준다 | TABLE_AND_LOGIC §7.6 | `mock/refresh.ts`, `graph-refresh/graph-diff-modal.tsx` |
 | 최신화 추출 중에는 같은 요청을 다시 실행할 수 없다 | 요구사항 §8.2 | `ports.ts` RefreshService |
 | AI 답변은 스트리밍하고, 중단된 미완성 답변은 기록에 남지 않는다 | 요구사항 §8.1 | `ports.ts` ChatService |
-| 메모는 본문 전체를 덮어쓰고 버전 충돌을 검사하지 않는다(마지막 저장 우선). 그래서 편집기는 자기가 편집 중이 아닐 때 다른 편집기의 저장으로 다시 맞춘다 | 미확정 | `memos/use-memo-autosave.ts` |
+| 메모는 본문 전체를 덮어쓰고 버전 충돌을 검사하지 않는다(마지막 저장 우선). 저장은 사용자가 저장 단추를 누를 때만 보낸다. 편집 중이 아닐 때는 다른 편집기의 저장으로 다시 맞춘다 | 미확정 | `memos/use-memo-draft.ts` |
+| 파일 메모도 프로젝트 메모처럼 여러 개를 둘 수 있다 | 요구사항 §10 "프로젝트 메모와 복수 파일 메모" | `ports.ts` MemoService, `memos/memo-panel.tsx` |
+| 관계마다 설명을 붙일 수 있다. 대상 문서 id 를 열쇠로 문서 속성에 담아 보낸다 | 요구사항 §10 "문서 간 관계와 관계 설명". **TABLE_AND_LOGIC §4.7 의 `document_relations` 에는 아직 이 칸이 없다** | `domain/models.ts`, `documents/property-table.tsx` |
 | 작업공간(탭·패널·그래프 보기)은 서버에 저장해 프로젝트를 다시 열 때 복원한다 | 요구사항 §3 | `ports.ts` WorkspaceStateService |
 | 사용 가이드는 서버·CMS 에서 받아온다(불러오기 실패 화면이 있어서) | 와이어프레임 90, 미확정 | `ports.ts` HelpService |
 | 피드백은 외부 폼 URL(`config.json` 의 `feedbackUrl`)로 연다 | 미확정 | `help/workspace-help-view.tsx` |
