@@ -27,7 +27,7 @@ pnpm check:cdn           # CI 와 같은 검사: 포맷·토큰·테스트·린�
 
 - 로그인은 mock 이라 버튼만 누르면 된다. 데이터는 브라우저 `localStorage` 에 저장되고, 시드 프로젝트 "유리 정원의 기록"이 들어 있다.
 - 실패·지연 화면을 보려면 URL 에 `?mock=` 을 붙인다(예: `/workspace/?projectId=glass-garden&mock=search.query:fail`). 자세한 규칙은 [mock-and-server-contract.md](mock-and-server-contract.md#mock-제어).
-- 테마는 프로젝트 목록 오른쪽 위 계정 메뉴의 "화면 테마"에서 바꾼다(시스템·다크·라이트).
+- 테마는 프로젝트 목록 왼쪽 위 계정 메뉴의 "화면 테마"에서 바꾼다(시스템·다크·라이트).
 
 ## 한눈에 보는 현황
 
