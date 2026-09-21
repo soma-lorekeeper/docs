@@ -1,7 +1,7 @@
 # Content — 프로젝트 CRUD API 계획
 
 > 작성일: 2026-09-22
-> 상태: **계획, 결정 완료.** §9의 네 가지를 확정했고 구현 전이다. 구현이 끝나면 이 문서를 구현 기록으로 갱신한다.
+> 상태: **구현됨, 머지 대기.** `loresentry-content#3`. 여덟 개 엔드포인트와 `V3` 마이그레이션이 테스트와 함께 들어갔다. gateway 릴레이와 프론트 어댑터는 아직이다(§4.3, §9.1).
 > 범위: `projects` 테이블만 다루는 CRUD. 파일·문서·메모·그래프·Kafka는 제외한다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4.2, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md) §2.2, [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3.2
 
@@ -276,7 +276,19 @@ ALTER TABLE refresh_runs      ADD  CONSTRAINT fk_refresh_runs_project
 
 `V1`·`V2`는 이미 운영 DB에 적용됐으므로 **고치지 않는다.** 고치면 Flyway 체크섬 검증이 실패해 pod가 뜨지 않는다(`TABLE_AND_LOGIC.md` §9).
 
-## 8. 구현 계획
+## 8. 구현 — `loresentry-content#3`
+
+계획대로 구현했고, 아래 §8.1~§8.3은 실제 들어간 코드를 기술한다. 계획과 달라진 점은 하나뿐이다.
+`@WebMvcTest`로 컨트롤러를 따로 떼어 검증하려던 것을 **통합 테스트 하나로 합쳤다.** 어차피 Testcontainers가
+필요한 빌드이고, 신원 헤더·오류 매핑·상태 전이는 실제 HTTP와 실제 DB를 함께 지나야 의미가 있다.
+
+| | |
+|---|---|
+| 신규 | `project/` 8개 파일, `web/` 6개 파일, `V3__project_constraints.sql` |
+| 테스트 | `ProjectApiTest` 16개, `MigrationTest` 4개 추가 |
+| 미포함 | gateway 릴레이, 프론트 어댑터 |
+
+## 8-A. 계획
 
 ### 8.1 계층
 
