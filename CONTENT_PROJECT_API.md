@@ -1,7 +1,7 @@
 # Content API — 구현 현황과 계약
 
 > 작성일: 2026-09-22 · 최신화: 2026-09-24
-> 상태: **content 26개 엔드포인트가 운영에서 동작한다.** authentication 6개는 main 에 있으나 운영에서 기동 실패(§0.2). gateway BFF 는 브랜치에서 진행 중이고 내 중계를 대체한다(§0.3-A).
+> 상태: **content 29개 엔드포인트가 운영에서 동작한다.** authentication 6개는 main 에 있으나 운영에서 기동 실패(§0.2). gateway BFF 는 브랜치에서 진행 중이고 내 중계를 대체한다(§0.3-A).
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
 
@@ -11,17 +11,17 @@
 
 ```text
 브라우저 → Cloudflare → ALB → gateway ──네임스페이스 3개 중계──▶ content ─▶ RDS(content)
-                                 │                                    26개 엔드포인트
+                                 │                                    29개 엔드포인트
                                  └── 무인증. X-User-Id 를 클라이언트가 고른다
 ```
 
 | 저장소 | 배포 | 테스트 |
 |---|---|---|
-| `loresentry-content` | `build-8-1`, Flyway `V5` | 92 |
+| `loresentry-content` | `build-11-1`, Flyway `V6` | 113 |
 | `loresentry-gateway` | `build-7-1` | 55 |
 | `loresentry-frontend` | 배포됨, 기본값은 mock (`?data=api` 로 전환) | 215 |
 
-## 0.1 구현된 엔드포인트 26개
+## 0.1 구현된 엔드포인트 29개
 
 전부 `X-User-Id` 가 필요하고, 호출자 소유 프로젝트로만 한정된다.
 
@@ -63,6 +63,18 @@
 | `DELETE` | `/files/{id}/versions/{vid}` | |
 
 **검색 1개** — `GET /projects/{id}/search?q=`. 활성 문서의 제목·본문, 관련도 순, 스니펫 포함.
+
+**이미지 업로드 3개** — `loresentry-content#6`
+
+| Method | Path | 비고 |
+|---|---|---|
+| `POST` | `/projects/{id}/images` | presigned 티켓 발급 + `image` 행 `PENDING` |
+| `POST` | `/projects/{id}/images/{iid}/complete` | `HeadObject` 로 확인 후 `COMMITTED`. 멱등 |
+| `GET` | `/projects/{id}/images/{iid}` | `public_url` 은 `COMMITTED` 이후에만 |
+
+브라우저가 S3 에 직접 올리므로 서버는 바이트가 도착했는지 알 수 없다. 그래서 `complete` 가 클라이언트의 말을 믿지 않고 `HeadObject` 로 존재와 크기를 확인한다. `PENDING` 상태에서 `public_url` 을 주지 않는 이유는, 그 주소를 문서에 넣은 뒤 업로드가 실패하면 깨진 이미지가 남기 때문이다.
+
+이미지는 **프로젝트와 id 를 함께** 조회한다. id 만으로 찾으면 같은 소유자의 다른 프로젝트를 통해서도 보인다.
 
 ## 0.2 구현되지 않은 엔드포인트 — **main 기준**
 
@@ -108,9 +120,10 @@ POST /auth/oauth/google/callback     POST /auth/tokens/revoke     PATCH /auth/us
 
 | 항목 | 상태 |
 |---|---|
-| `last_file` (프로젝트 응답) | 항상 `null`. 문서는 이제 있으므로 질의 한 번이면 채운다 |
+| ~~`last_file`~~ | **[해소됨]** `loresentry-content#6`. 가장 최근에 수정된 활성 문서다(§0.4) |
 | `outbox_events` 쓰기 | 테이블만 있다. 토픽 설계 미확정(`LORE_SENTRY_PROJECT_CONTEXT.md` §19.3) |
-| 이미지 업로드 엔드포인트 | `MediaStorageService` 까지만. `image` 테이블과 공개 경로가 없다(`IMAGE_UPLOAD_S3.md`) |
+| ~~이미지 업로드 엔드포인트~~ | **[해소됨]** `loresentry-content#6`. `V6` 이 `image` 테이블을 만든다 |
+| 남은 `PENDING` 이미지 정리 | 배치가 없다. 행은 `ix_image_pending` 으로 찾을 수 있게 해 뒀다 |
 | `refresh_runs` · `refresh_document_drafts` | 테이블만 있다. 설계는 `TABLE_AND_LOGIC.md` §7 |
 
 ## 0.3 gateway 쪽에서 한 일
@@ -130,7 +143,7 @@ POST /auth/oauth/google/callback     POST /auth/tokens/revoke     PATCH /auth/us
 
 | 항목 | 상태 |
 |---|---|
-| **JWT 검증** | ❌ **없다.** `ClientHeaderIdentityResolver` 가 클라이언트의 `X-User-Id` 를 그대로 믿는다 → §0.4 |
+| **JWT 검증** | ❌ **없다.** `ClientHeaderIdentityResolver` 가 클라이언트의 `X-User-Id` 를 그대로 믿는다 → §0.6 |
 | auth 경로 중계 | `/auth/**` 릴레이가 없다. 프로브 `GET /auth` 뿐이다 |
 | composition | 없다. **프론트가 요구하는 것도 없다** — 54개 포트 메서드 중 두 서비스를 합쳐야 하는 것이 하나도 없다 |
 | AI 스트리밍 패스스루 | 없다. 타임아웃 두 개를 올려야 한다 |
@@ -160,7 +173,30 @@ POST /auth/oauth/google/callback     POST /auth/tokens/revoke     PATCH /auth/us
 
 **둘을 합칠 수는 없고 하나를 골라야 한다.** 고르지 않으면 브랜치가 머지되는 순간 §11 전체가 사실과 어긋난다. `docs/EXTERNAL_API.md` 가 "도메인 API의 경로·응답 조합은 별도로 설계한다"고 적어 둔 것도 이 결정이 남아 있다는 뜻이다.
 
-## 0.4 지금 가장 급한 것 — 무인증
+## 0.4 프로젝트 "최근 작업" 은 버그였다 — `loresentry-content#6`
+
+`last_worked_at` 이 **프로젝트 자기 행을 고칠 때만** 움직였다. 그래서 원고를 한 시간 써도, 이름만 바꾼 다른 프로젝트가 목록 위에 남았다. 목록은 최근 작업 순이라고 정해 두었으므로(요구사항 §2.2) 이것은 정렬이 요구사항과 달랐던 것이다.
+
+이제 파일·문서 변경이 같은 트랜잭션에서 프로젝트 시각을 올린다. `ProjectActivity` 를 따로 둔 이유는 문서·파일·버전 세 곳이 같은 일을 해야 하고, 그때마다 프로젝트 저장소를 끌어오면 패키지 사이에 순환이 생기기 때문이다.
+
+`last_file` 은 **가장 최근에 수정된 활성 문서**다. 열람 기록 테이블을 두지 않았다 — 사용자가 "그 파일을 작업했다"고 말할 때 뜻하는 것은 편집이다. 휴지통 문서는 제외한다. 열 수 없으므로 "마지막으로 작업한 파일"로 내놓으면 막힌 링크가 된다.
+
+목록 질의는 행마다 질의하지 않고 `LATERAL` 조인을 쓴다. 프로젝트 목록은 여전히 한 문장이다.
+
+## 0.5 검증이 잡은 S3 동작 — `loresentry-content#7`, `#8`
+
+올리지 않고 `complete` 를 부르면 `OBJECT_NOT_UPLOADED`(409)여야 하는데 **`INTERNAL_ERROR`(500)** 였다. 기대된 결과에 스택 트레이스까지 남겼다.
+
+두 단계로 틀렸고, 둘 다 **배포된 서비스에 실제로 호출해서** 찾았다. mock 단위 테스트는 두 번 다 통과했다.
+
+1. **`HeadObject` 는 없는 키에 `NoSuchKeyException` 을 던지지 않는다.** 본문 없는 404 라서 SDK 가 매핑할 것이 없고 평범한 `S3Exception` 이 나온다. 기존 테스트는 **그 경로가 실제로는 내지 않는 예외**를 mock 해서 통과했다.
+2. **그 상태 코드가 404 도 아니었다.** `s3:ListBucket` 이 없으면 S3 는 없는 객체를 404 대신 **403** 으로 감춘다 — 볼 수 없는 버킷에 무엇이 있는지 알려 주지 않기 위해서다. 미디어 정책에 객체 권한만 있었으므로 모든 miss 가 403 이었다. 1번을 고칠 때 쓴 테스트가 "403 은 권한 오류이므로 통과시킨다"고 **정반대로 못 박아** 통과했다.
+
+지금은 404 와 403 을 모두 "올라오지 않았다"로 본다. 500 같은 실제 장애는 그대로 올린다 — 장애를 "아직 안 올라왔다"로 바꾸면 클라이언트가 재시도로 고칠 수 없는 것을 영원히 재시도한다.
+
+**남은 조치 하나:** `iam-content-media-policy.json` 에 `s3:ListBucket` 을 넣었지만 **AWS 의 실제 정책에는 아직 반영되지 않았다.** 적용하면 S3 가 제대로 404 를 주고 "없음"과 "권한 없음"의 구분이 다시 살아난다. 지금은 403 분기가 그것을 가리고 있다.
+
+## 0.6 지금 가장 급한 것 — 무인증
 
 `api.loresentry.com` 의 프로젝트·파일·문서 엔드포인트는 **누구나 읽고 쓸 수 있다.** 헤더에 아무 UUID나 넣으면 그 사용자의 자료가 된다.
 
@@ -647,7 +683,7 @@ Authorization · Cookie · 그 외             전달하지 않는다
 
 ## 12. 남은 작업
 
-**2026-09-24 재작성.** authentication 이 main 으로 머지되고 gateway BFF 작업이 진행되면서 순서가 바뀌었다. 끝난 것도 남겨 둔다 — 무엇이 어떤 순서로 풀렸는지가 다음 순서를 정하는 근거다.
+**2026-09-24 갱신.** 끝난 것도 남겨 둔다 — 무엇이 어떤 순서로 풀렸는지가 다음 순서를 정하는 근거다.
 
 | # | 작업 | 저장소 | 상태 |
 |---|---|---|---|
@@ -657,26 +693,33 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 4 | gateway 중계 + 신원 주입 (§11) | gateway | ✅ `#2` `#3` — **§0.3-A 가 대체할 수 있다** |
 | 5 | 프론트 API 어댑터 (포트 5개) | frontend | ✅ `#5` |
 | 6 | Google OAuth·JWT·계정·세션 | auth | ✅ main (`e9d5b5b`) |
-| **7** | **auth 기동 설정** — `AUTH_GOOGLE_*` 3개 + `AUTH_JWT_*` 3개. 지금 운영에서 `CrashLoopBackOff` | gitops | ☐ **막고 있다** |
-| **8** | **중계 방식 결정** — 네임스페이스 통과 대 라우트별 DTO (§0.3-A) | 팀 결정 | ☐ **막고 있다** |
-| 9 | gateway BFF 머지 — 쿠키·CSRF·환경 분리 | gateway | 🔄 `deliverable/LOREKEEPER-555` |
-| 10 | **gateway AT 검증을 `IdentityResolver` 에 연결** (§0.4) | gateway | ☐ |
-| 11 | 프론트 로그인 결과 처리 — `/login` 이 콜백 복귀를 받는다 (`EXTERNAL_API.md`) | frontend | ☐ |
-| 12 | 프론트 `auth`·`account` 포트를 어댑터로 | frontend | ☐ |
-| 13 | 프론트 설정 화면 글자 수 40/200 → 255/500 (§9.1) | frontend | ☐ |
-| 14 | 즐겨찾기·메모·작업공간 상태를 서버에 둘지 결정, 테이블 | docs · content | ☐ |
-| 15 | 폴더 모델 확정 → 사용자 섹션 (§9-1) | docs · content | ☐ |
-| 16 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
-| 17 | Outbox publisher · graph-rag Inbox consumer → `GraphService` | content · graph-rag | ☐ |
-| 18 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
-| 19 | AI 챗 + 스트리밍 패스스루 (타임아웃 2개 상향) | ai-chat · gateway | ☐ |
-| 20 | 내보내기 DOCX·HWP | content | ☐ |
-| 21 | `last_file` 채우기 | content | ☐ |
-| 22 | `auth-valkey` 영속성 결정 — **세션이 거기 있어 재시작 시 전원 로그아웃** (§10.2) | gitops | ☐ |
-| 23 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
+| 7 | 이미지 업로드 3개 + `V6`, `last_file`, 프로젝트 활동 시각 (§0.4) | content | ✅ `#6` |
+| 8 | `HeadObject` 404·403 처리 (§0.5) | content | ✅ `#7` `#8` |
+| **9** | **auth 기동 설정** — `AUTH_GOOGLE_*` 3개 + `AUTH_JWT_*` 3개. 지금 운영에서 `CrashLoopBackOff` | gitops | ☐ **막고 있다** |
+| **10** | **중계 방식 결정** — 네임스페이스 통과 대 라우트별 DTO (§0.3-A) | 팀 결정 | ☐ **막고 있다** |
+| 11 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
+| 12 | gateway BFF 머지 — 쿠키·CSRF·환경 분리 | gateway | 🔄 `deliverable/LOREKEEPER-555` |
+| 13 | **gateway AT 검증을 `IdentityResolver` 에 연결** (§0.6) | gateway | ☐ |
+| 14 | 프론트 로그인 결과 처리 — `/login` 이 콜백 복귀를 받는다 (`EXTERNAL_API.md`) | frontend | ☐ |
+| 15 | 프론트 `auth`·`account` 포트를 어댑터로 | frontend | ☐ |
+| 16 | 프론트 이미지 업로드 UI — 티켓 → S3 PUT → complete (`IMAGE_UPLOAD_S3.md` §4.3) | frontend | ☐ |
+| 17 | 프론트 설정 화면 글자 수 40/200 → 255/500 (§9.1) | frontend | ☐ |
+| 18 | 남은 `PENDING` 이미지·고아 객체 정리 배치 | content | ☐ |
+| 19 | 만료된 자동 버전 정리 — `expires_at` 을 세우지만 지우는 것이 없다 | content | ☐ |
+| 20 | 즐겨찾기·메모·작업공간 상태를 서버에 둘지 결정, 테이블 | docs · content | ☐ |
+| 21 | 폴더 모델 확정 → 사용자 섹션 (§9-1) | docs · content | ☐ |
+| 22 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
+| 23 | Outbox publisher · graph-rag Inbox consumer → `GraphService` | content · graph-rag | ☐ |
+| 24 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
+| 25 | AI 챗 + 스트리밍 패스스루 (타임아웃 2개 상향) | ai-chat · gateway | ☐ |
+| 26 | 내보내기 DOCX·HWP | content | ☐ |
+| 27 | `auth-valkey` 영속성 결정 — **세션이 거기 있어 재시작 시 전원 로그아웃** (§10.2) | gitops | ☐ |
+| 28 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
 
-**7번과 8번이 먼저다.**
+**9번과 10번이 먼저다.**
 
-7번은 **이미 만든 것이 운영에서 동작하지 않는 상태**다. 인증을 붙이는 모든 후속 작업(10·11·12)이 여기서 막힌다. 값이 Google Cloud 콘솔의 OAuth 클라이언트와 RSA 키라서 코드로 해결되지 않는다.
+9번은 **이미 만든 것이 운영에서 동작하지 않는 상태**다. 인증을 붙이는 모든 후속 작업(13·14·15)이 여기서 막힌다. 값이 Google Cloud 콘솔의 OAuth 클라이언트와 RSA 키라서 코드로 해결되지 않는다.
 
-8번은 **두 사람이 같은 자리를 다르게 만들고 있는 상태**다. 늦게 고를수록 한쪽 작업이 더 많이 버려진다.
+10번은 **두 사람이 같은 자리를 다르게 만들고 있는 상태**다. 늦게 고를수록 한쪽 작업이 더 많이 버려진다.
+
+content 쪽에서 **결정을 기다리지 않고 더 할 수 있는 것**은 18·19번(정리 배치)뿐이다. 나머지는 전부 팀 결정이나 다른 서비스를 기다린다.
