@@ -1,7 +1,7 @@
 # Content API — 구현 현황과 계약
 
 > 작성일: 2026-09-22 · 최신화: 2026-09-24
-> 상태: **26개 엔드포인트가 운영에서 동작한다.** graph-rag·Kafka·AI가 필요한 것만 남았다.
+> 상태: **content 26개 엔드포인트가 운영에서 동작한다.** authentication 6개는 main 에 있으나 운영에서 기동 실패(§0.2). gateway BFF 는 브랜치에서 진행 중이고 내 중계를 대체한다(§0.3-A).
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
 
@@ -64,31 +64,54 @@
 
 **검색 1개** — `GET /projects/{id}/search?q=`. 활성 문서의 제목·본문, 관련도 순, 스니펫 포함.
 
-## 0.2 구현되지 않은 엔드포인트
+## 0.2 구현되지 않은 엔드포인트 — **main 기준**
 
-프론트 `ports.ts` 의 13개 서비스 기준이다. **막는 것이 무엇인지**가 이 표의 요점이다.
+> **2026-09-24 정정.** 앞선 판에서 authentication 을 "브랜치에만 있다"고 적었는데 **틀렸다.** 그 사이 main 으로 머지됐다(PR 없이 main 직접 푸시, `e9d5b5b`). 저장소를 다시 읽고 이 표를 고쳤다. 아래는 **각 저장소 main 기준**이다.
 
-| 포트 | 없는 엔드포인트 | 막는 것 |
-|---|---|---|
-| `AuthService` (3) | Google 로그인 시작·세션·로그아웃 | authentication 서비스가 `deliverable/LOREKEEPER-506` 브랜치에 있고 main 에 없다. gateway 릴레이도 없다 |
-| `AccountService` (2) | 계정 조회·표시 이름 | 같음. auth 는 `/auth/users/me` 로 이미 구현돼 있다 |
-| `GraphService` (1) | `GET /projects/{id}/graph` | **graph-rag + Neptune.** 투영본을 만들 Outbox publisher 와 Inbox consumer 가 없다 |
-| `RefreshService` (4) | 최신화 실행·조회·반영·폐기 | **AI 추출 모듈**, 그리고 반영이 관계를 바꿔 `outbox_events` 를 만든다 |
-| `ChatService` (6) | 세션 CRUD, 메시지, 스트리밍 | LLM provider 미정. ALB `idle_timeout` 60초와 gateway `read-timeout` 10초를 올려야 SSE 가 산다 |
-| `MemoService` (4) | 프로젝트·파일 메모 | **테이블이 없다.** `TABLE_AND_LOGIC.md` 가 의도적으로 제외했고, 서버에 둘지 자체가 미결(§9) |
-| `WorkspaceStateService` (2) | 작업공간 저장·복원 | 같음. 테이블 없음 |
-| `FileService` 일부 (4) | 즐겨찾기 2개, 사용자 섹션 2개 | 즐겨찾기는 테이블 없음. 섹션은 **폴더 모델 결정**이 안 났다(§9-1) |
-| `DocumentService` 일부 (1) | `export` (PDF·DOCX·HWP) | 서버 렌더링 미구현. PDF 는 화면 인쇄로 대체 |
-| `HelpService` (1) | 사용 가이드 | 정적 번들로 갈지 서버에서 받을지 미결 |
+### 서버 코드가 아예 없는 것
 
-content 안에서 코드가 없는 것도 함께 적는다.
+| 포트 | 없는 엔드포인트 | 어디에 | 막는 것 |
+|---|---|---|---|
+| `GraphService` (1) | 프로젝트 관계 그래프 | graph-rag | **스켈레톤이다**(`/`·`/health`·`/health/db` 뿐). Neptune 투영본을 만들 Outbox publisher·Inbox consumer 가 없다 |
+| `ChatService` (6) | 세션 CRUD·메시지·스트리밍 | ai-chat | **스켈레톤이다.** LLM provider 미정. ALB `idle_timeout` 60초 + gateway `read-timeout` 10초를 올려야 SSE 가 산다 |
+| `RefreshService` (4) | 최신화 실행·조회·반영·폐기 | content | AI 추출 모듈. 반영이 관계를 바꿔 `outbox_events` 를 만든다 |
+| `MemoService` (4) | 프로젝트·파일 메모 | content | **테이블이 없다.** 서버에 둘지 자체가 미결(§9) |
+| `WorkspaceStateService` (2) | 작업공간 저장·복원 | content | 같음 |
+| `FileService` 즐겨찾기 (2) | 목록·토글 | content | 같음. 지금은 프론트 `localStorage` |
+| `FileService` 섹션 (2) | 생성·삭제 | content | **폴더 모델 결정**이 안 났다(§9-1) |
+| `DocumentService.export` (1) | PDF·DOCX·HWP | content | 서버 렌더링 없음. PDF 는 화면 인쇄로 대체 |
+| `HelpService` (1) | 사용 가이드 | 미정 | 정적 번들로 갈지 서버에서 받을지 |
+
+### 서버에는 있으나 브라우저가 쓸 수 없는 것
+
+`AuthService`(3)·`AccountService`(2)가 여기 속한다. **authentication main 에 엔드포인트 6개가 다 있다.**
+
+```text
+POST /auth/oauth/google/prepare      POST /auth/tokens/refresh    GET   /auth/users/me
+POST /auth/oauth/google/callback     POST /auth/tokens/revoke     PATCH /auth/users/me
+```
+
+두 가지가 막고 있다.
+
+1. **운영에서 기동하지 못한다.** `build-5-1` pod 가 `CrashLoopBackOff`(재시작 14회)이고 `build-4-1` 구버전이 트래픽을 받는다. 그래서 `/auth/**` 가 전부 404다. 원인은 설정 누락이다.
+
+   ```text
+   APPLICATION FAILED TO START
+     auth.google.clientId / clientSecret / redirectUri  must not be blank
+   ```
+
+   GitOps 의 `authentication` Deployment 에 `AUTH_GOOGLE_*` 3개가 없다. `AUTH_JWT_*` 3개도 같은 이유로 곧 걸린다. **CI·Argo CD·`/health` 가 모두 초록인데 구버전이 도는 형태**여서 아무도 알려주지 않는다 — `readinessProbe` 가 깨진 pod 를 트래픽에서 빼 준 것은 설계대로 동작한 결과다.
+
+2. **브라우저가 부를 수 있는 형태가 아니다.** auth 의 `/auth/**` 는 BFF 전용 내부 API 다. 브라우저는 쿠키·CSRF·리다이렉트가 필요하고, 그것은 gateway 의 일이다(§0.3-A).
+
+### content 안에서 코드가 없는 것
 
 | 항목 | 상태 |
 |---|---|
 | `last_file` (프로젝트 응답) | 항상 `null`. 문서는 이제 있으므로 질의 한 번이면 채운다 |
-| `outbox_events` 쓰기 | 테이블만 있고 쓰는 코드가 없다. 토픽 설계 미확정(`LORE_SENTRY_PROJECT_CONTEXT.md` §19.3) |
+| `outbox_events` 쓰기 | 테이블만 있다. 토픽 설계 미확정(`LORE_SENTRY_PROJECT_CONTEXT.md` §19.3) |
 | 이미지 업로드 엔드포인트 | `MediaStorageService` 까지만. `image` 테이블과 공개 경로가 없다(`IMAGE_UPLOAD_S3.md`) |
-| `refresh_runs` · `refresh_document_drafts` | 테이블만 있고 로직이 없다(§7 이하 설계는 `TABLE_AND_LOGIC.md` §7) |
+| `refresh_runs` · `refresh_document_drafts` | 테이블만 있다. 설계는 `TABLE_AND_LOGIC.md` §7 |
 
 ## 0.3 gateway 쪽에서 한 일
 
@@ -113,6 +136,30 @@ content 안에서 코드가 없는 것도 함께 적는다.
 | AI 스트리밍 패스스루 | 없다. 타임아웃 두 개를 올려야 한다 |
 | retry · circuit breaking · 관측성 | 없다 |
 
+## 0.3-A gateway BFF 작업이 별도로 진행 중이다 — **내 중계를 대체한다**
+
+`loresentry-gateway` 의 `deliverable/LOREKEEPER-555` 브랜치(2026-09-24)가 브라우저용 BFF 계층을 만들고 있다. main 에는 문서만 들어왔고(`docs/EXTERNAL_API.md`, `BROWSER_SECURITY.md`, `auth/*`) **코드는 아직 브랜치에 있다.**
+
+| 그 브랜치가 더하는 것 | |
+|---|---|
+| `security/CsrfFilter` | 인증보다 먼저 CSRF 검증 |
+| `web/auth/AuthCookies` · `SensitiveResponseFilter` | AT·RT 쿠키 정책, 민감 응답 처리 |
+| `config/EnvironmentConfiguration` | 환경 분리 + CORS 제한 |
+| `web/content/ContentApiController` · `ContentDtos` | **라우트마다 타입 있는 컨트롤러와 DTO** |
+
+**그 브랜치는 `web/ContentRelayController` 를 삭제한다.** 즉 §11의 설계 판단이 뒤집힌다.
+
+| | 내가 넣은 것 (main) | 그 브랜치 |
+|---|---|---|
+| 선언 단위 | 네임스페이스 3개 | 라우트마다 하나 |
+| 본문 | `byte[]` 무가공 통과 | DTO 로 파싱·재직렬화 |
+| content 계약 변경 시 | gateway 무수정 | gateway DTO 도 고쳐야 한다 |
+| 계약 위반 감지 | content 가 답한 대로 통과 | gateway 가 검증해 거절 |
+
+둘 다 근거가 있다. 내 쪽은 content 에 엔드포인트를 더할 때 gateway 를 고치지 않아도 되고(실제로 18개를 추가하며 한 줄도 안 고쳤다), 저쪽은 외부 API 계약을 gateway 가 문서이자 코드로 들고 있어 content 가 몰래 모양을 바꾸면 잡힌다.
+
+**둘을 합칠 수는 없고 하나를 골라야 한다.** 고르지 않으면 브랜치가 머지되는 순간 §11 전체가 사실과 어긋난다. `docs/EXTERNAL_API.md` 가 "도메인 API의 경로·응답 조합은 별도로 설계한다"고 적어 둔 것도 이 결정이 남아 있다는 뜻이다.
+
 ## 0.4 지금 가장 급한 것 — 무인증
 
 `api.loresentry.com` 의 프로젝트·파일·문서 엔드포인트는 **누구나 읽고 쓸 수 있다.** 헤더에 아무 UUID나 넣으면 그 사용자의 자료가 된다.
@@ -120,6 +167,8 @@ content 안에서 코드가 없는 것도 함께 적는다.
 프론트엔드를 실제 API에 붙이기 위해 의도적으로 택한 단계이고, 되돌리는 방법은 정해져 있다 — gateway의 `IdentityResolver` 구현 하나를 JWT 검증으로 바꾸면 된다. 중계는 그 결과만 읽고, 업스트림 헤더를 **복사가 아니라 설정**하므로 클라이언트가 보낸 값은 자동으로 무력화된다.
 
 그때 반드시 함께 들어가야 하는 것: **클라이언트가 보낸 `X-User-Id` 제거.** 이미 `forward` 가 허용 목록에서 그 헤더를 걸러내지만, 새 경로를 추가할 때 같은 실수를 반복하지 않도록 테스트로 고정해 뒀다.
+
+**검증에 필요한 조각은 이미 다 있다.** authentication 이 RS256 토큰을 발급하고(main), gateway BFF 브랜치가 쿠키·CSRF 를 만들고 있다. 남은 것은 **AT 검증을 `IdentityResolver` 에 꽂는 것**과, 그 앞에 auth 를 실제로 기동시키는 설정이다(§0.2).
 
 ---
 
@@ -539,9 +588,9 @@ com.loresentry.content.web
 
 읽는 과정에서 확인했고, 이 문서가 고칠 것은 아니다.
 
-- **`auth/INTERNAL_API.md`가 없다.** authentication README가 "The API contract is maintained in the Loresentry docs repository at `auth/INTERNAL_API.md`"라고 가리키는데 이 저장소에 그 파일이 없다. 위 표의 근거가 지금은 코드뿐이다.
+- ~~`auth/INTERNAL_API.md`가 없다~~ — **[해소됨]** 생겼다. 다만 이 저장소가 아니라 **authentication 저장소 안**(`docs/INTERNAL_API.md`)이다. gateway 도 같은 방식으로 `docs/EXTERNAL_API.md` 를 자기 저장소에 뒀다. 계약 문서가 코드와 같은 저장소에 있으면 함께 고쳐진다는 점에서 이쪽이 낫고, 대신 **이 docs 저장소는 서비스 간 계약의 단일 색인 역할을 잃었다.**
 - **`auth_sessions` 테이블을 쓰지 않는다.** [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §3.2는 refresh token 해시를 PostgreSQL에 두는데, 구현은 refresh token과 OAuth state를 **Redis(`auth-valkey`)**에 둔다. 마이그레이션 이름도 `V1__create_auth_accounts.sql`로 달라졌다. `TABLE_AND_LOGIC.md` §3을 구현에 맞춰 고쳐야 한다.
-- **`auth-valkey`가 "순수 캐시"가 아니다.** [`INFRA_AND_CICD.md`](INFRA_AND_CICD.md) §18과 [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §14.1은 `auth-valkey`를 영속성 없는 캐시(`emptyDir`)로 기록한다. 그런데 refresh token과 OAuth state가 거기 있으면 **pod가 재시작되면 전원이 로그아웃된다.** 영속성을 줄지, 그 동작을 받아들일지 결정이 필요하다.
+- **`auth-valkey`가 "순수 캐시"가 아니다 — 더 뾰족해졌다.** 구현이 `RedisRefreshTokenStore` 에서 `RedisSessionStore` 로 바뀌어 **사용자당 단일 활성 세션**을 거기 둔다. [`INFRA_AND_CICD.md`](INFRA_AND_CICD.md) §18과 [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §14.1은 `auth-valkey`를 영속성 없는 캐시(`emptyDir`)로 기록한다. 그런데 refresh token과 OAuth state가 거기 있으면 **pod가 재시작되면 전원이 로그아웃된다.** 영속성을 줄지, 그 동작을 받아들일지 결정이 필요하다.
 
 ---
 
@@ -598,28 +647,36 @@ Authorization · Cookie · 그 외             전달하지 않는다
 
 ## 12. 남은 작업
 
-이 문서가 계속 추적하는 목록이다. 끝난 것도 남겨 둔다 — 무엇이 어떤 순서로 풀렸는지가 다음 순서를 정하는 근거다.
+**2026-09-24 재작성.** authentication 이 main 으로 머지되고 gateway BFF 작업이 진행되면서 순서가 바뀌었다. 끝난 것도 남겨 둔다 — 무엇이 어떤 순서로 풀렸는지가 다음 순서를 정하는 근거다.
 
 | # | 작업 | 저장소 | 상태 |
 |---|---|---|---|
 | 1 | 프로젝트 CRUD 8개 + `V3` | content | ✅ `#3` |
 | 2 | authentication 계약 정렬 (헤더·오류·snake case) | content | ✅ `#4` |
 | 3 | 파일·문서·버전·검색 18개 + `V4` `V5` | content | ✅ `#5` |
-| 4 | gateway 중계 + 신원 주입 (§11) | gateway | ✅ `#2` `#3` |
+| 4 | gateway 중계 + 신원 주입 (§11) | gateway | ✅ `#2` `#3` — **§0.3-A 가 대체할 수 있다** |
 | 5 | 프론트 API 어댑터 (포트 5개) | frontend | ✅ `#5` |
-| 6 | **gateway JWT 검증** (§0.4) | gateway | ☐ **다음** |
-| 7 | authentication `deliverable/LOREKEEPER-506` 을 main 으로 + `/auth/**` 중계 | auth · gateway | ☐ |
-| 8 | 프론트 설정 화면 글자 수 40/200 → 255/500 (§9.1) | frontend | ☐ |
-| 9 | 즐겨찾기·메모·작업공간 상태를 서버에 둘지 결정, 테이블 (§0.2) | docs · content | ☐ |
-| 10 | 폴더 모델 확정 → 사용자 섹션 (§9-1) | docs · content | ☐ |
-| 11 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
-| 12 | Outbox publisher · graph-rag Inbox consumer → `GraphService` | content · graph-rag | ☐ |
-| 13 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
-| 14 | AI 챗 + 스트리밍 패스스루 (타임아웃 2개 상향) | ai-chat · gateway | ☐ |
-| 15 | 내보내기 DOCX·HWP | content | ☐ |
-| 16 | `last_file` 채우기 | content | ☐ |
-| 17 | `auth/INTERNAL_API.md`, `TABLE_AND_LOGIC.md` §3 구현 반영 (§10.2) | docs | ☐ |
-| 18 | `auth-valkey` 영속성 결정 — refresh token 이 거기 있으면 재시작 시 전원 로그아웃 (§10.2) | gitops | ☐ |
-| 19 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
+| 6 | Google OAuth·JWT·계정·세션 | auth | ✅ main (`e9d5b5b`) |
+| **7** | **auth 기동 설정** — `AUTH_GOOGLE_*` 3개 + `AUTH_JWT_*` 3개. 지금 운영에서 `CrashLoopBackOff` | gitops | ☐ **막고 있다** |
+| **8** | **중계 방식 결정** — 네임스페이스 통과 대 라우트별 DTO (§0.3-A) | 팀 결정 | ☐ **막고 있다** |
+| 9 | gateway BFF 머지 — 쿠키·CSRF·환경 분리 | gateway | 🔄 `deliverable/LOREKEEPER-555` |
+| 10 | **gateway AT 검증을 `IdentityResolver` 에 연결** (§0.4) | gateway | ☐ |
+| 11 | 프론트 로그인 결과 처리 — `/login` 이 콜백 복귀를 받는다 (`EXTERNAL_API.md`) | frontend | ☐ |
+| 12 | 프론트 `auth`·`account` 포트를 어댑터로 | frontend | ☐ |
+| 13 | 프론트 설정 화면 글자 수 40/200 → 255/500 (§9.1) | frontend | ☐ |
+| 14 | 즐겨찾기·메모·작업공간 상태를 서버에 둘지 결정, 테이블 | docs · content | ☐ |
+| 15 | 폴더 모델 확정 → 사용자 섹션 (§9-1) | docs · content | ☐ |
+| 16 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
+| 17 | Outbox publisher · graph-rag Inbox consumer → `GraphService` | content · graph-rag | ☐ |
+| 18 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
+| 19 | AI 챗 + 스트리밍 패스스루 (타임아웃 2개 상향) | ai-chat · gateway | ☐ |
+| 20 | 내보내기 DOCX·HWP | content | ☐ |
+| 21 | `last_file` 채우기 | content | ☐ |
+| 22 | `auth-valkey` 영속성 결정 — **세션이 거기 있어 재시작 시 전원 로그아웃** (§10.2) | gitops | ☐ |
+| 23 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
 
-**6번이 다음이다.** 그것 하나가 나머지 전부의 전제다 — 인증 없이 기능을 더 얹으면 공개 쓰기 표면만 넓어진다.
+**7번과 8번이 먼저다.**
+
+7번은 **이미 만든 것이 운영에서 동작하지 않는 상태**다. 인증을 붙이는 모든 후속 작업(10·11·12)이 여기서 막힌다. 값이 Google Cloud 콘솔의 OAuth 클라이언트와 RSA 키라서 코드로 해결되지 않는다.
+
+8번은 **두 사람이 같은 자리를 다르게 만들고 있는 상태**다. 늦게 고를수록 한쪽 작업이 더 많이 버려진다.
