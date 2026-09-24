@@ -12,6 +12,7 @@
 | --- | --- |
 | [architecture.md](architecture.md) | 기술 스택, 폴더 구조, 라우팅, 작업공간 탭·분할 모델, 상태 관리, 문서 편집 세션 |
 | [design-system.md](design-system.md) | Pencil → 토큰 파이프라인, 테마 모드, 프리미티브, 아이콘, 화면 카탈로그 |
+| [api-adapter.md](api-adapter.md) | **서버 연결.** 포트 단위 전환, 서버·화면 모델 차이를 흡수하는 곳, 아직 안 되는 기능 |
 | [mock-and-server-contract.md](mock-and-server-contract.md) | 서비스 포트와 mock 구현, `?mock=` 실패·지연 주입, 서버에 대한 잠정 가정 목록 |
 | [graph-visualization-port.md](graph-visualization-port.md) | graph-visualization 실험 레포에서 옮겨 온 알고리즘과 바꾼 점 |
 | [screens-and-decisions.md](screens-and-decisions.md) | 와이어프레임 화면별 구현 위치, 와이어프레임과 다르게 한 점, 남은 결정 사항 |
