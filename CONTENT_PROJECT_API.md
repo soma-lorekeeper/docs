@@ -1,7 +1,8 @@
 # Content — 프로젝트 CRUD API 계획
 
 > 작성일: 2026-09-22
-> 상태: **구현됨, 머지 대기.** `loresentry-content#3`. 여덟 개 엔드포인트와 `V3` 마이그레이션이 테스트와 함께 들어갔다. gateway 릴레이와 프론트 어댑터는 아직이다(§4.3, §9.1).
+> 상태: **구현·머지 완료.** `loresentry-content#3`. 여덟 개 엔드포인트와 `V3` 마이그레이션이 테스트와 함께 들어갔다.
+> 이후 `loresentry-content#4`에서 authentication 서비스와 계약을 맞췄다(§10). gateway 릴레이와 프론트 어댑터는 아직이다(§4.3, §9.1).
 > 범위: `projects` 테이블만 다루는 CRUD. 파일·문서·메모·그래프·Kafka는 제외한다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4.2, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md) §2.2, [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3.2
 
@@ -67,16 +68,18 @@ gateway 공개 : /api/projects  (인증이 붙은 뒤에 추가, §4.3)
   "id": "0199a3f2-8c41-7c2a-9f3d-2b7e1c4a5d60",
   "name": "유리 정원의 기록",
   "description": "유리 온실에서 시작되는 장편",
-  "lastWorkedAt": "2026-09-21T14:03:11+09:00",
-  "trashedAt": null,
-  "createdAt": "2026-09-01T10:00:00+09:00",
-  "lastFile": null
+  "last_worked_at": "2026-09-21T05:03:11Z",
+  "trashed_at": null,
+  "created_at": "2026-09-01T01:00:00Z",
+  "last_file": null
 }
 ```
 
+필드 이름은 **snake case**다. authentication 서비스가 이미 그렇게 답하고 있고, 두 서비스가 같은 gateway를 지나 같은 프론트엔드로 간다(§10).
+
 - **`name`이다, `title`이 아니다.** 테이블 컬럼과 `TABLE_AND_LOGIC.md`가 `name`이다. 프론트 모델은 `title`이므로 어댑터(`services/api/projects.ts`) 한 곳에서 매핑한다(§9-1).
-- **`lastWorkedAt`은 지금 `updated_at` 값을 싣는다.** 프로젝트 목록 정렬 기준이다. 문서 저장이 구현되면 같은 트랜잭션에서 `projects.updated_at`을 touch하고, 그때도 API 필드명은 바뀌지 않는다. 별도 컬럼이 필요해지면 그때 나눈다.
-- **`lastFile`은 `null` 고정이다.** `document` 테이블이 이번 범위 밖이다. 프론트 모델이 이미 `| null`이므로 화면은 깨지지 않는다. 문서 CRUD가 붙으면 `project_id`의 최근 수정 활성 문서로 채운다.
+- **`last_worked_at`은 지금 `updated_at` 값을 싣는다.** 프로젝트 목록 정렬 기준이다. 문서 저장이 구현되면 같은 트랜잭션에서 `projects.updated_at`을 touch하고, 그때도 API 필드명은 바뀌지 않는다. 별도 컬럼이 필요해지면 그때 나눈다.
+- **`last_file`은 `null` 고정이다.** `document` 테이블이 이번 범위 밖이다. 프론트 모델이 이미 `| null`이므로 화면은 깨지지 않는다. 문서 CRUD가 붙으면 `project_id`의 최근 수정 활성 문서로 채운다.
 - **`icon`은 서버에 두지 않는다.** 프론트 모델에 있지만 mock이 생성 순번으로 정하는 표시용 값이고, 사용자가 고르는 UI가 와이어프레임에 없다. 어댑터가 `id`에서 결정론적으로 고른다. 사용자가 아이콘을 고르게 되는 날 컬럼을 추가한다.
 - `description`은 **항상 문자열**이다. 비어 있으면 `""`를 저장하고 `""`를 돌려준다. `null`을 쓰지 않으므로 어댑터에 `?? ""`가 필요 없다.
 - 시각은 전부 ISO-8601 offset 문자열이다.
@@ -88,16 +91,26 @@ gateway 공개 : /api/projects  (인증이 붙은 뒤에 추가, §4.3)
 `projects.owner_user_id`가 `NOT NULL`이므로 모든 요청은 사용자 신원을 필요로 한다. 인증이 구현될 때까지의 잠정 계약이다.
 
 ```text
-X-Lore-User-Id: <authentication 서비스의 users.id (UUID)>
+X-User-Id: <authentication 서비스의 사용자 id (정규 UUID)>
 ```
 
-- content는 이 헤더가 없거나 UUID가 아니면 **`401 unauthenticated`**로 거절한다. 내부 서비스 입장에서 신원 없는 호출은 호출 규약 위반이다.
+헤더 이름과 아래 거절 규칙은 **authentication 서비스의 `AccountController`와 같다.** gateway가 서비스마다 다른 이름으로 신원을 실을 이유가 없다.
+
+| 헤더 상태 | 응답 | 이유 |
+|---|---|---|
+| 없음 | `401 USER_CONTEXT_REQUIRED` | 신원이 아예 없다 |
+| 정규 UUID가 아님 | `400 INVALID_REQUEST` | 신원을 읽었는데 값이 틀렸다 |
+| 두 번 이상 실림 | `400 INVALID_REQUEST` | 어느 것이 gateway의 것인지 알 수 없다 |
+
+"신원이 없다"와 "신원을 읽었는데 틀렸다"를 구분하는 것이 요점이다. 전자는 로그인이 필요하고, 후자는 호출자가 잘못 만든 요청이다.
+
 - content는 이 헤더를 **무조건 신뢰한다.** 검증은 gateway의 책임이다(`INFRA_AND_CICD.md` §1-A). 서비스마다 토큰을 검증하면 인증 로직이 4곳으로 복제된다.
 - 인증이 붙으면 gateway는 **클라이언트가 보낸 동일 헤더를 먼저 제거하고** 자기가 검증한 값을 넣는다. 이 한 줄이 빠지면 누구나 남의 사용자 ID를 사칭할 수 있다.
+- `UUID.fromString`은 `1-2-3-4-5` 같은 비정규 표기도 받아들인다. 그래서 왕복 비교로 정규형만 통과시킨다 — authentication 서비스가 하는 것과 같다.
 
 ### 4.2 소유권
 
-모든 조회·변경은 `owner_user_id = <헤더 값>`으로 한정한다. 남의 프로젝트에 접근하면 **403이 아니라 404**를 돌려준다. 403은 "그 id는 존재한다"를 알려주고, 프론트에도 그 둘을 구분할 오류 코드가 없다(`ServiceError`는 `not-found` 하나뿐).
+모든 조회·변경은 `owner_user_id = <헤더 값>`으로 한정한다. 남의 프로젝트에 접근하면 **403이 아니라 `PROJECT_NOT_FOUND`(404)**를 돌려준다. 403은 "그 id는 존재한다"를 알려주고, 프론트에도 그 둘을 구분할 오류 코드가 없다(`ServiceError`는 `not-found` 하나뿐).
 
 ### 4.3 gateway 릴레이는 지금 붙이지 않는다
 
@@ -107,17 +120,17 @@ X-Lore-User-Id: <authentication 서비스의 users.id (UUID)>
 
 ```bash
 kubectl port-forward -n prod svc/content-api 8080:80
-curl -H 'X-Lore-User-Id: <uuid>' localhost:8080/projects
+curl -H 'X-User-Id: <uuid>' localhost:8080/projects
 
 # 또는 Telepresence 연결 후
-curl -H 'X-Lore-User-Id: <uuid>' http://content-api/projects
+curl -H 'X-User-Id: <uuid>' http://content-api/projects
 ```
 
 gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 함께 하나의 작업으로 묶는다. 프론트 `config.json`의 `dataSource`를 `api`로 바꾸는 것도 그때다.
 
 ## 5. 엔드포인트 스펙
 
-공통: 요청·응답 `Content-Type: application/json`, 요청에 `X-Lore-User-Id` 필수.
+공통: 요청·응답 `Content-Type: application/json`, 요청에 `X-User-Id` 필수.
 
 ### 5.1 `GET /projects` — 활성 프로젝트 목록
 
@@ -125,7 +138,7 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 200  { "projects": [ Project, ... ] }
 ```
 
-- `trashed_at IS NULL`인 것만, `lastWorkedAt DESC` 정렬이다(요구사항 §2.2 "최근 작업 순").
+- `trashed_at IS NULL`인 것만, `last_worked_at DESC` 정렬이다(요구사항 §2.2 "최근 작업 순").
 - 빈 목록은 오류가 아니라 `{"projects": []}`다. 프론트에 빈 상태 화면이 있다(와이어프레임 093).
 - 페이지네이션 없음. 한 사용자의 프로젝트 수가 수십 개를 넘을 근거가 없다(§9).
 - 배열을 최상위로 돌려주지 않고 객체로 감싼다. 나중에 `total` 같은 필드를 더할 자리가 필요하다.
@@ -148,8 +161,10 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 ```text
 201  Location: /projects/{id}
      Project
-400  validation    이름이 비었거나 255자를 넘음
-409  duplicate     같은 사용자의 활성 프로젝트에 같은 이름이 있음
+400  INVALID_PROJECT_NAME          이름이 비었거나 255자를 넘음
+400  INVALID_PROJECT_DESCRIPTION   설명이 500자를 넘음
+400  INVALID_REQUEST               모르는 필드, 타입이 어긋난 값, 읽을 수 없는 본문
+409  PROJECT_NAME_TAKEN            같은 사용자의 활성 프로젝트에 같은 이름이 있음
 ```
 
 - `description`은 선택이다. 필드를 생략하면 `""`로 본다.
@@ -159,7 +174,7 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ```text
 200  Project
-404  not_found     없거나, 남의 것이거나, 휴지통에 있음
+404  PROJECT_NOT_FOUND   없거나, 남의 것이거나, 휴지통에 있음
 ```
 
 - **휴지통 프로젝트는 404다.** 요구사항 §2.2가 "휴지통 프로젝트는 열 수 없다"이고, 프론트 mock도 같다. 휴지통 항목의 정보는 §5.2 목록으로 충분하다.
@@ -174,9 +189,9 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ```text
 200  Project
-400  validation
-404  not_found
-409  duplicate
+400  INVALID_PROJECT_NAME / INVALID_PROJECT_DESCRIPTION / INVALID_REQUEST
+404  PROJECT_NOT_FOUND
+409  PROJECT_NAME_TAKEN
 ```
 
 - **부분 갱신이다.** 보낸 필드만 바꾸고, 없는 필드는 그대로 둔다.
@@ -188,7 +203,7 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ```text
 204
-404  not_found
+404  PROJECT_NOT_FOUND
 ```
 
 - 이미 휴지통에 있으면 **204를 그대로 돌려주고 `trashed_at`을 덮어쓰지 않는다.** 재시도가 안전해야 하고, 덮어쓰면 휴지통 정렬 순서가 흔들린다.
@@ -198,8 +213,8 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ```text
 200  Project
-404  not_found
-409  duplicate     복원하려는 이름이 활성 프로젝트와 겹침
+404  PROJECT_NOT_FOUND
+409  PROJECT_NAME_TAKEN   복원하려는 이름이 활성 프로젝트와 겹침
 ```
 
 - 이미 활성이면 현재 상태를 200으로 돌려준다(멱등).
@@ -209,8 +224,8 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ```text
 204
-404  not_found
-409  invalid_state   휴지통에 있지 않음
+404  PROJECT_NOT_FOUND
+409  PROJECT_NOT_TRASHED   휴지통에 있지 않음
 ```
 
 - **휴지통 항목만 지울 수 있다.** 와이어프레임 111–122의 영구 삭제 진입점은 휴지통뿐이다. 서버도 같은 규칙을 강제한다.
@@ -219,29 +234,33 @@ gateway 릴레이와 JWT 검증은 authentication 서비스의 Google OAuth와 �
 
 ## 6. 오류 응답
 
-```json
-{ "error": "duplicate", "message": "project name already exists for this owner" }
-```
-
-`message`는 **진단용 영어 문자열이고 화면에 그대로 띄우지 않는다.** 사용자 문구는 프론트가 `error` 코드로 고른다. 서버 메시지를 그대로 노출하면 원인을 임의로 추측하지 않는다는 오류 UX 원칙(요구사항 §9)을 지킬 수 없다.
-
-`validation`은 `field`를 덧붙인다.
+authentication 서비스와 **같은 세 필드**다. 두 서비스가 같은 gateway를 지나 같은 프론트엔드로 답하므로, 오류 표현이 갈리면 클라이언트가 서비스별 분기를 갖게 된다.
 
 ```json
-{ "error": "validation", "message": "name must be 1..255 characters", "field": "name" }
+{ "code": "PROJECT_NAME_TAKEN", "message": "Project name is already in use.", "next_action": "NONE" }
 ```
 
-| HTTP | `error` | 프론트 `ServiceError` |
-|---|---|---|
-| 400 | `validation` | `validation` |
-| 401 | `unauthenticated` | (세션 만료 처리로 보냄) |
-| 404 | `not_found` | `not-found` |
-| 409 | `duplicate` | `duplicate` |
-| 409 | `invalid_state` | `validation` |
-| 500 | `internal` | `unknown` |
-| 연결 실패 | — | `network` |
+`code`가 계약이다. `message`는 **진단용 영어 문자열이고 화면에 그대로 띄우지 않는다.** 사용자 문구는 프론트가 `code`로 고른다. 서버 메시지를 그대로 노출하면 원인을 임의로 추측하지 않는다는 오류 UX 원칙(요구사항 §9)을 지킬 수 없다.
 
-gateway의 업스트림 장애 응답(`{"error":"upstream_unavailable","upstream":"content"}`)은 이미 같은 모양이다. 어댑터는 이것을 `network`로 본다.
+`field` 힌트를 두지 않는다. authentication 서비스의 관례가 **잘못된 항목마다 고유 코드**를 주는 것이고(`INVALID_DISPLAY_NAME`), 프론트가 분기할 값이 하나면 충분하다.
+
+| HTTP | `code` | 언제 | 프론트 `ServiceError` |
+|---|---|---|---|
+| 400 | `INVALID_REQUEST` | 읽을 수 없는 본문, 모르는 필드, 수정 필드 없음, 신원 헤더 이상 | `validation` |
+| 400 | `INVALID_PROJECT_NAME` | 빈 이름, 255자 초과 | `validation` |
+| 400 | `INVALID_PROJECT_DESCRIPTION` | 500자 초과 | `validation` |
+| 401 | `USER_CONTEXT_REQUIRED` | 신원 헤더 없음 | (세션 만료 처리로 보냄) |
+| 404 | `PROJECT_NOT_FOUND` | 없음·남의 것·휴지통·UUID 아닌 경로 | `not-found` |
+| 409 | `PROJECT_NAME_TAKEN` | 활성 프로젝트에 같은 이름 | `duplicate` |
+| 409 | `PROJECT_NOT_TRASHED` | 휴지통 밖에서 영구 삭제 시도 | `validation` |
+| 500 | `INTERNAL_ERROR` | 그 외 | `unknown` |
+| 연결 실패 | — | | `network` |
+
+`next_action`은 `NONE` 또는 `RELOGIN`만 쓴다. authentication의 `RESTART_LOGIN`·`RETRY_LATER`는 로그인·토큰 흐름의 것이라 content에 해당이 없다.
+
+**요청 JSON은 엄격하다.** 모르는 필드와 타입이 어긋난 값은 버리지 않고 `INVALID_REQUEST`로 거절한다. 조용히 버리면 클라이언트의 오타가 "저장은 됐는데 값이 안 바뀐다"로 나타난다. 이것도 authentication 서비스와 같다.
+
+gateway의 업스트림 장애 응답(`{"error":"upstream_unavailable","upstream":"content"}`)은 **모양이 다르다.** gateway 자신의 오류이고 도메인 실패가 아니므로 어댑터는 이것을 `network`로 본다.
 
 ## 7. 스키마 보정 — `V3__project_constraints.sql`
 
@@ -304,18 +323,20 @@ com.loresentry.content.project
     ProjectResponse          JSON 표현(§3.2)
 
 com.loresentry.content.web
-    ApiExceptionHandler      @RestControllerAdvice. 예외 → §6 오류 바디
-    CurrentUserArgumentResolver   X-Lore-User-Id → UUID, 없으면 401
+    ContentFailure           Reason enum. HTTP 상태를 모른다
+    ErrorResponses           Reason → (status, message, next_action)
+    ContentExceptionHandler  @RestControllerAdvice. 예외 → §6 오류 바디
+    CurrentUserArgumentResolver   X-User-Id → UUID. 없으면 401, 값이 이상하면 400
 ```
 
 - 검증은 `ProjectService`에 둔다. 컨트롤러는 형식(JSON 파싱, UUID 모양)만 본다.
-- 중복 이름은 **선검사하지 않고** 유니크 인덱스 위반(`23505`)을 잡아 `duplicate`로 바꾼다. 선검사는 동시 요청을 막지 못하고, 인덱스가 있으면 선검사는 중복 코드다.
+- 중복 이름은 **선검사하지 않고** 유니크 인덱스 위반(`23505`)을 잡아 `PROJECT_NAME_TAKEN`으로 바꾼다. 선검사는 동시 요청을 막지 못하고, 인덱스가 있으면 선검사는 중복 코드다.
 - `trim()`은 저장 직전에 한 번만 한다. 앞뒤 공백을 제거한 값이 곧 저장값이고 중복 검사 대상이다(요구사항 §3.2).
 
 ### 8.2 순서
 
 1. `V3` 마이그레이션 + `MigrationTest`에 제약 검증 추가 (§7)
-2. `CurrentUserArgumentResolver`, `ApiExceptionHandler` — 이후 모든 도메인 엔드포인트가 공유한다
+2. `CurrentUserArgumentResolver`, `ContentExceptionHandler` — 이후 모든 도메인 엔드포인트가 공유한다
 3. `ProjectRepository` + Testcontainers 통합 테스트
 4. `ProjectService` — 검증과 상태 전이
 5. `ProjectController` + `@WebMvcTest`
@@ -332,9 +353,9 @@ com.loresentry.content.web
 - 같은 이름 대소문자만 다른 생성 → 409
 - 휴지통에 넣은 이름과 같은 이름으로 생성 → **성공해야 한다**(부분 인덱스가 활성만 본다)
 - 그 상태에서 복원 → 409
-- 다른 `X-Lore-User-Id`로 조회·수정·삭제 → 404
+- 다른 `X-User-Id`로 조회·수정·삭제 → 404
 - 휴지통 이동 두 번 → 204, `trashed_at` 불변
-- 활성 프로젝트 `DELETE` → 409 `invalid_state`
+- 활성 프로젝트 `DELETE` → 409 `PROJECT_NOT_TRASHED`
 - 문서·에피소드가 딸린 프로젝트 영구 삭제 → 연쇄 삭제 확인
 
 ## 9. 결정 사항
@@ -363,3 +384,54 @@ com.loresentry.content.web
 - `features/project-settings/project-settings-view.tsx`의 `TITLE_MAX = 40`, `DESCRIPTION_MAX = 200` → **255 / 500**. 지금은 같은 값에 대해 생성 다이얼로그(255/500)와 설정 화면(40/200)이 서로 다른 한도를 강제한다. 설정 화면에서 기존 제목이 잘려 보이는 버그이기도 하다.
 - `services/mock/projects.ts`에 설명 길이 검증이 없다. 서버가 400을 주게 되므로 mock도 같은 규칙을 넣는다.
 - `services/api/projects.ts`(신규 어댑터)에서 `name → title` 매핑, `icon`을 `id` 해시로 파생, `lastFile`은 서버 값(`null`)을 그대로 쓴다.
+
+---
+
+## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
+
+`loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
+
+| 항목 | authentication (구현됨) | content (이전) | 조치 |
+|---|---|---|---|
+| 신원 헤더 | `X-User-Id` | `X-Lore-User-Id` | content 변경 |
+| 헤더 없음 | `401 USER_CONTEXT_REQUIRED` | `401 unauthenticated` | content 변경 |
+| 헤더 값 이상 | `400 INVALID_REQUEST` | `401` | content 변경 |
+| 헤더 중복 | `400 INVALID_REQUEST` | 첫 값을 씀 | content 변경 |
+| 비정규 UUID | 왕복 비교로 거절 | `trim()` 후 허용 | content 변경 |
+| 오류 본문 | `{code, message, next_action}` | `{error, message, field}` | content 변경 |
+| 오류 코드 표기 | `SCREAMING_SNAKE` | `lowercase` | content 변경 |
+| 항목별 오류 | 고유 코드(`INVALID_DISPLAY_NAME`) | `field` 힌트 | content 변경 |
+| JSON 필드 | snake case | camelCase | content 변경 |
+| 모르는 필드 | 거절 | 무시 | content 변경 |
+
+### 10.1 아직 정하지 않은 것
+
+- **경로 접두사.** authentication은 자기 경로를 `/auth/**`로 스스로 접두사를 붙인다(`/auth/users/me`). content는 `/projects`로 접두사가 없다. gateway가 경로를 하나씩 명시 선언하므로 지금 당장 깨지지는 않지만, 규약이 서비스마다 다르면 gateway 라우팅 표에 특례가 생긴다. gateway 구현 시 한쪽으로 정한다.
+- **`next_action` 어휘.** authentication은 `NONE`·`RESTART_LOGIN`·`RELOGIN`·`RETRY_LATER`를 쓰고 content는 `NONE`·`RELOGIN`만 쓴다. 프로젝트 목록이 낡았을 때 쓸 `REFRESH_LIST` 같은 값이 필요할지는 프론트가 이 필드를 실제로 분기에 쓸 때 정한다.
+- **`Cache-Control: no-store`.** authentication은 계정·토큰 응답에 붙인다. 프로젝트 데이터도 사용자 데이터이므로 붙일지, 브라우저 캐시는 BFF가 맡을지 정해야 한다.
+
+### 10.2 docs에 남은 불일치 — content 범위 밖
+
+읽는 과정에서 확인했고, 이 문서가 고칠 것은 아니다.
+
+- **`auth/INTERNAL_API.md`가 없다.** authentication README가 "The API contract is maintained in the Loresentry docs repository at `auth/INTERNAL_API.md`"라고 가리키는데 이 저장소에 그 파일이 없다. 위 표의 근거가 지금은 코드뿐이다.
+- **`auth_sessions` 테이블을 쓰지 않는다.** [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §3.2는 refresh token 해시를 PostgreSQL에 두는데, 구현은 refresh token과 OAuth state를 **Redis(`auth-valkey`)**에 둔다. 마이그레이션 이름도 `V1__create_auth_accounts.sql`로 달라졌다. `TABLE_AND_LOGIC.md` §3을 구현에 맞춰 고쳐야 한다.
+- **`auth-valkey`가 "순수 캐시"가 아니다.** [`INFRA_AND_CICD.md`](INFRA_AND_CICD.md) §18과 [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §14.1은 `auth-valkey`를 영속성 없는 캐시(`emptyDir`)로 기록한다. 그런데 refresh token과 OAuth state가 거기 있으면 **pod가 재시작되면 전원이 로그아웃된다.** 영속성을 줄지, 그 동작을 받아들일지 결정이 필요하다.
+
+---
+
+## 11. 남은 작업
+
+이 문서가 계속 추적하는 목록이다.
+
+| # | 작업 | 저장소 | 상태 |
+|---|---|---|---|
+| 1 | 프로젝트 CRUD 엔드포인트 8개 + `V3` | content | ✅ `#3` |
+| 2 | authentication 계약 정렬 | content | ✅ `#4` |
+| 3 | 프론트 설정 화면 글자 수 한도 40/200 → 255/500 (§9.1) | frontend | ☐ |
+| 4 | `services/api/projects.ts` 어댑터 — `name→title`, `icon` 파생, snake case 매핑 | frontend | ☐ |
+| 5 | gateway 릴레이 + JWT 검증 + `X-User-Id` 주입(클라이언트 헤더 제거 포함) | gateway | ☐ |
+| 6 | 경로 접두사 규약 확정 (§10.1) | gateway | ☐ |
+| 7 | `auth/INTERNAL_API.md` 작성, `TABLE_AND_LOGIC.md` §3 구현 반영 (§10.2) | docs | ☐ |
+| 8 | `auth-valkey` 영속성 결정 (§10.2) | gitops | ☐ |
+| 9 | 파일·문서 CRUD (`document`, `episode_folders`) | content | ☐ |

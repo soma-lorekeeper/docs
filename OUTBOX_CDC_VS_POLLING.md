@@ -38,7 +38,7 @@
 | 최악의 장애 | 이벤트 지연. DB는 멀쩡하다 | 슬롯 방치 → WAL 누적 → **DB 스토리지 full로 쓰기 정지** |
 | 운영 복잡도 | 코드 100줄 수준. 디버깅이 SQL 한 줄 | Connect 워커 운영, 커넥터 설정, 스냅샷 모드, 슬롯 감시, 플러그인 이미지 빌드 |
 | 이벤트 스키마 | 애플리케이션이 payload를 만든다. 완전히 통제 가능 | Outbox Event Router SMT로 payload를 꺼내야 한다. 기본은 DB 행 구조가 새어 나온다 |
-| 멀티 인스턴스 | `FOR UPDATE SKIP LOCKED`가 필요 | Connect가 알아서 단일 태스크로 처리 |
+| 멀티 인스턴스 | `FOR UPDATE SKIP LOCKED`가 필요 | Connet가 알아서 단일 태스크로 처리 |
 | 비용 | 사실상 0 | Connect 워커 CPU/메모리 + 이미지 관리 + 슬롯 감시 |
 
 한 줄로 줄이면 이렇다.
