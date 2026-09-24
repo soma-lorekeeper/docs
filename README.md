@@ -11,7 +11,7 @@
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [OUTBOX_CDC_VS_POLLING.md](OUTBOX_CDC_VS_POLLING.md) | Outbox 행을 Kafka로 내보내는 방식 비교. 폴링 퍼블리셔와 CDC(Debezium)의 장단점과 선택 근거 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
-| [CONTENT_PROJECT_API.md](CONTENT_PROJECT_API.md) | **계획.** Content의 프로젝트 CRUD 엔드포인트 스펙. Kafka·파일·인증을 제외한 첫 도메인 작업 |
+| [CONTENT_PROJECT_API.md](CONTENT_PROJECT_API.md) | **Content API 구현 현황.** 동작하는 엔드포인트 26개, 구현되지 않은 기능과 막는 것, gateway 중계, 남은 작업 |
 | [TABLE_AND_LOGIC.md](TABLE_AND_LOGIC.md) | Authentication·Content·AI Chat 테이블(Flyway로 운영 DB 반영됨)과 3-way 문서 최신화·diff·저장 흐름 |
 
 ## 새로 합류했다면
