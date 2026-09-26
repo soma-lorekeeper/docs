@@ -1,6 +1,6 @@
 # 로컬 개발 환경 온보딩 — AWS · EKS 접근 설정
 
-> 최신화: 2026-09-19
+> 최신화: 2026-09-26
 > 대상: Lore Sentry 팀원
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-k8s` / namespace `prod`
 
@@ -36,6 +36,7 @@ AWS 쪽도 같은 원칙이다. `ReadOnlyAccess`가 부여되어 조회는 되�
 | AWS CLI | **v2** | `aws --version` |
 | kubectl | 1.35 ~ 1.37 | `kubectl version --client` |
 | Telepresence (§6에서만 필요) | **2.31.x** | `telepresence version` |
+| Lens (§10, 선택) | 최신 | 앱 실행 |
 
 클러스터가 Kubernetes v1.36이다. kubectl은 클러스터와 ±1 마이너 버전까지만 보증되므로 범위를 벗어나면 예상 못 한 오류가 난다.
 
@@ -395,6 +396,62 @@ GitOps 저장소(`soma-lorekeeper/loresentry-gitops`)에는 **write 권한이 �
 - 프로젝트를 떠날 때 관리자에게 키 삭제를 요청한다
 
 키 자체에는 `ReadOnlyAccess`만 있으므로 유출되어도 리소스가 파괴되지는 않는다. 다만 인프라 구성 정보 전체가 노출된다.
+
+---
+
+## 10. Lens — GUI로 클러스터 보기
+
+Lens는 노트북에서 돌아가는 **데스크톱 앱**이다. 클러스터에 아무것도 설치하지 않는다. §3에서 만든 `~/.kube/config`의 `lore-sentry` 컨텍스트를 그대로 읽어 API 서버를 호출하므로, **`kubectl`과 인증도 권한도 같다.** `kubectl`로 안 되는 일은 Lens로도 안 된다.
+
+```text
+Lens (노트북)
+  └─ ~/.kube/config 의 lore-sentry 컨텍스트
+       └─ aws eks get-token (lorekeeper 프로파일) → 15분짜리 토큰
+            └─ EKS API 서버
+```
+
+### 설치
+
+```bash
+brew install --cask lens
+```
+
+처음 실행하면 Lens ID 로그인을 요구한다. 무료 Personal 플랜으로 가입하면 된다. 로그인 없이 쓰고 싶으면 오픈소스 포크인 Freelens를 쓴다. 사용법은 같다.
+
+```bash
+brew install --cask freelens
+```
+
+### 연결
+
+1. 왼쪽 클러스터 목록에서 `lore-sentry`를 연다. kubeconfig에 다른 컨텍스트가 있으면 함께 보이고, 같은 클러스터를 가리키는 `arn:aws:eks:...:cluster/lore-sentry-k8s` 항목도 보일 수 있다. `lore-sentry`만 핀 고정해 두면 헷갈리지 않는다
+2. 클러스터 설정(우클릭 → Settings) → **Namespaces**의 Accessible Namespaces에 `prod`를 넣는다. 이걸 안 하면 Lens가 모든 네임스페이스를 조회하려다 `Forbidden`을 계속 띄운다
+3. 상단 네임스페이스 필터를 `prod`로 둔다
+
+### Lens에서 되는 것과 안 되는 것
+
+§0과 같다. Lens에는 수정 버튼이 모두 보이지만 누르면 `Forbidden`이 난다. **정상이다.**
+
+| 되는 것 | 안 되는 것 |
+|---|---|
+| Workloads (Pod·Deployment 등) 목록·상세 | Secrets 메뉴 |
+| Pod 로그 보기 | Pod Shell (`exec`) |
+| Events·ConfigMap·Service·Ingress 조회 | Edit·Delete·Scale·Restart |
+| Pod 목록의 CPU·메모리 현재값 (metrics-server) | Nodes 화면, `prod` 외 네임스페이스 |
+| | Port Forward |
+
+**시계열 CPU·메모리 그래프는 나오지 않는다.** Lens 그래프는 Prometheus가 필요한데 클러스터에 없다. Lens가 metrics 설치를 제안해도 누르지 않는다 — 클러스터에 리소스를 만드는 동작이라 권한이 없고, 필요하면 GitOps 저장소로 추가해야 한다 (§8).
+
+### 문제 해결
+
+| 증상 | 원인과 조치 |
+|---|---|
+| 앱 아이콘을 눌러도 창이 안 뜬다 | 처음 실행 때 macOS 확인 창이 뒤에 숨어 있을 수 있다. Finder의 응용 프로그램에서 Lens를 우클릭 → 열기로 실행한다 |
+| 클러스터 연결 시 `aws: executable file not found` | Dock에서 실행한 앱이 셸 PATH를 못 읽었다. 터미널에서 `open -a Lens`로 실행하거나, `which aws` 경로가 `/usr/local/bin`·`/opt/homebrew/bin`에 있는지 확인한다 |
+| `Unauthorized` 또는 토큰 오류 | Lens 문제가 아니다. 터미널에서 `kubectl --context lore-sentry auth whoami`가 되는지 먼저 본다 (§4) |
+| 화면마다 `Forbidden` | Accessible Namespaces에 `prod`를 넣지 않았거나 권한 밖 메뉴를 열었다. 위 표를 확인한다 |
+
+> **관리자 권한으로 Lens를 쓸 때:** 관리자 자격 증명으로 붙으면 Lens 버튼이 실제로 동작한다. Delete·Edit·Scale은 운영 클러스터를 바로 바꾸고, Argo CD가 GitOps 기준으로 되돌리면서 상태가 흔들린다. 조회 용도로만 쓴다.
 
 ---
 
