@@ -1,7 +1,7 @@
 # Content API — 구현 현황과 계약
 
 > 작성일: 2026-09-22 · 최신화: 2026-09-26
-> 상태: **전 구간 동작·검증 완료.** content 64 · BFF 경유 29 · 어댑터 계약 11 항목을 실제 서비스로 통과시켰다(§0.8). 남은 것은 브라우저 E2E 다.
+> 상태: **서버 세 층은 검증됐고, 프론트는 방금 처음으로 서버와 말하기 시작했다.** `config.json` 이 `api` 여도 앱이 mock 으로 굳어 있던 버그를 브라우저로 잡아 고쳤다(§0.11). Google 로그인 화면까지 실제로 도달하는 것을 확인했고, 계정 승인 한 걸음이 남았다.
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
 
@@ -21,7 +21,7 @@
 |---|---|---|
 | `loresentry-content` | Flyway `V7` | 140 |
 | `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
-| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 232 |
+| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 234 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -390,6 +390,50 @@ kubectl --context lore-sentry → exec 에 AWS_PROFILE=lorekeeper 고정  ✅
 
 ---
 
+## 0.11 앱은 한 번도 서버와 말한 적이 없었다 — 브라우저로 잡았다
+
+`config.json` 을 `api` 로 바꿨는데도 화면은 계속 mock 씨앗 사용자 `서윤주` 로 로그인돼 보였다. **실제 브라우저를 띄워** 보니 `loresentry.com/projects/` 를 열어도 `api.loresentry.com` 으로 요청이 **한 건도** 나가지 않았다.
+
+원인은 `app/providers.tsx` 한 줄이다.
+
+```ts
+const [config, setConfig] = useState(DEFAULT_RUNTIME_CONFIG);
+const [services] = useState(() => createServices(DEFAULT_RUNTIME_CONFIG));
+//                                              ^^^^^^^^^^^^^^^^^^^^^^ 영원히 이 값
+```
+
+서비스는 **기본 설정으로 한 번** 만들어지고, `loadRuntimeConfig()` 의 결과는 링크 URL 용 컨텍스트에만 들어갔다. 서비스는 다시 만들어지지 않는다. 그래서
+
+- `config.json` 의 `dataSource: "api"` 가 **아무 효과도 없었다.**
+- `?data=api` 도 **아무 효과도 없었다.** §0.10 에서 고친 왕복 유실은 별개의 버그였고, 고쳐도 소용이 없었다.
+- mock 이 씨앗 사용자를 로그인된 것으로 보고하므로 **남의 계정으로 로그인된 화면**이 됐다.
+
+설정이 도착한 뒤 그 값으로 서비스를 만들고, 그때까지는 아무것도 그리지 않는다 — 그 값이 첫 질의가 어디로 나갈지 정한다. `loresentry-frontend#10`.
+
+### 왜 §0.8 검증이 이것을 놓쳤나
+
+§0.8 은 세 층을 **각각** 실제 서비스에 대고 확인했다. content 는 port-forward 로, BFF 는 로컬 기동으로, 어댑터 계약은 **직접 만든 스크립트**로 어댑터 함수를 불러서. 전부 통과했고 그 결과 자체는 여전히 맞다.
+
+**빠진 것은 앱 자신의 배선이었다.** 어댑터가 옳은지는 봤지만 **앱이 그 어댑터를 쓰는지**는 아무도 보지 않았다. 기존 `wiring` 테스트도 `createServices` 를 직접 불러 검사했을 뿐, 앱이 적재한 설정을 그 함수에 넘기는지는 확인하지 않았다.
+
+교훈: **층별 검증은 층 사이를 증명하지 않는다.** 그래서 프로바이더 층에 회귀 테스트를 두고 예전 코드에서 실제로 실패하는지 확인했다(2개 모두 실패 → 수정 후 통과). 그리고 배포 파이프라인이 `prettier --check` 에서 멈춰 **#10 이 배포되지 않은 채로 "고쳤다"고 믿을 뻔했다**(`#11` 로 복구). 배포 성공까지 확인해야 고친 것이다.
+
+### 브라우저로 확인한 현재 상태
+
+```text
+GET  loresentry.com/projects/          → config.json 읽음
+GET  api.loresentry.com/auth/users/me  → 401           ← 실제로 서버에 묻는다
+     /login?returnTo=%2Fprojects%2F 로 이동
+클릭 Google로 계속하기
+GET  api.loresentry.com/auth/oauth/google/prepare → 302
+GET  accounts.google.com/o/oauth2/v2/auth...      → 302
+     accounts.google.com 실제 로그인 화면 (Sign in - Google Accounts)
+```
+
+여기까지가 자격 증명 없이 갈 수 있는 끝이다. **실제 Google 계정으로 승인하는 마지막 한 걸음은 사람이 해야 한다.**
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -513,7 +557,8 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 31 | `config.json` 기본값을 `api` 로 전환 (§0.10) | frontend | ✅ `#9` |
 | 32 | `?data=api` 가 로그인 왕복에서 사라지던 문제 (§0.10) | frontend | ✅ `#8` |
 | 33 | 에피소드 순서 바꾸기 — `PATCH /episodes/{id}/position` 없음 (§0.10) | content · gateway · frontend | ☐ |
+| 34 | 앱이 적재한 설정으로 서비스를 만들지 않던 버그 (§0.11) | frontend | ✅ `#10` `#11` |
 
-**이제 18번, 브라우저 E2E 가 다음이다.** 서버 세 층은 실제 서비스로 관통 검증했고 고칠 것은 나오지 않았다(§0.8). 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
+**18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 
 graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(25)와 내보내기(30)뿐이다. 프론트 편집 경로도 내보내기 두 형식만 남았다(§0.9).
