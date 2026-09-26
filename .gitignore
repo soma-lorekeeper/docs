@@ -1,1 +1,6 @@
 .DS_Store
+
+# 실제 비밀 값이 들어 있다. 저장소에 올리지 않는다.
+# 필요한 env·Secret의 목록과 출처는 CONTENT_PROJECT_API.md 와
+# loresentry-gateway/docs/OPERATIONS.md 에 값 없이 적는다.
+AUTH_BFF_SECRETS.md
