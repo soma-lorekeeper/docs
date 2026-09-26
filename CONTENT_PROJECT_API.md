@@ -1,7 +1,7 @@
 # Content API — 구현 현황과 계약
 
 > 작성일: 2026-09-22 · 최신화: 2026-09-24
-> 상태: **전 구간 동작. 인증 경계가 살아 있다.** auth·BFF·valkey 가 운영에서 기동했고 `X-User-Id` 위조는 이제 401 이다. 남은 것은 브라우저 E2E 다(§0.7).
+> 상태: **전 구간 동작·검증 완료.** content 64 · BFF 경유 29 · 어댑터 계약 11 항목을 실제 서비스로 통과시켰다(§0.8). 남은 것은 브라우저 E2E 다.
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
 
@@ -399,7 +399,9 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 14 | Secret 3개 + ConfigMap 1개 생성 (§0.7) | 클러스터 | ✅ 적용됨 |
 | 15 | valkey `requirepass`·ACL 버그 수정 (§0.7) | gitops | ✅ `#4` |
 | 16 | Google Cloud 운영·테스트 프로젝트 분리 | 사람 | ☐ 클라이언트 ID 는 다른데 프로젝트 ID 가 같다 |
-| **17** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
+| 17 | 브라우저 이전 3층 검증 (§0.8) | 전체 | ✅ 64 + 29 + 11 통과 |
+| **18** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
+| 19 | `integration/session/content_checks.py` 를 38개로 확장 (Linux 에서) | gateway | ☐ |
 | 17 | 프론트 명시적 재발급·탭 조율 (`FRONTEND_AUTH_CONTRACT.md`) | frontend | ☐ |
 | 18 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) | frontend | ☐ |
 | 19 | 프론트 이미지 업로드 UI | frontend | ☐ |
@@ -413,6 +415,6 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 27 | 내보내기 DOCX·HWP | content | ☐ |
 | 28 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
 
-**이제 17번, 브라우저 E2E 가 다음이다.** 서버 쪽은 전 구간 확인됐다 — 인증 경계·CORS·CSRF·리다이렉트가 모두 공개 API 에서 동작한다. 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
+**이제 18번, 브라우저 E2E 가 다음이다.** 서버 세 층은 실제 서비스로 관통 검증했고 고칠 것은 나오지 않았다(§0.8). 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
 
 graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(22)와 내보내기(27)뿐이다.
