@@ -20,7 +20,7 @@
 |---|---|---|
 | `loresentry-content` | Flyway `V7` | 140 |
 | `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
-| `loresentry-frontend` | 배포됨, 기본값은 mock (`?data=api` 로 전환) | 227 |
+| `loresentry-frontend` | 배포됨, 기본값은 mock (`?data=api` 로 전환) | 230 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -321,6 +321,30 @@ kubectl --context lore-sentry → exec 에 AWS_PROFILE=lorekeeper 고정  ✅
 
 ---
 
+## 0.9 문서 편집 경로 점검 — 내보내기에서 결함 하나
+
+편집 경로는 포트 단위로 전부 실제 API 에 붙어 있다.
+
+| 조각 | 상태 |
+|---|---|
+| 본문·제목·속성·관계 저장 | ✅ `PUT /files/{id}/content`, `If-Match` + `X-Save-Id` |
+| 자동 저장 | ✅ 유휴 + 최대 대기 두 타이머, 진행 중이면 이어서 한 번 더 |
+| 충돌 | ✅ `409 DOCUMENT_CONFLICT` → 단락 3-way 병합, 실패 시 사용자 선택 |
+| 잠금 | ✅ `PUT /files/{id}/lock`, 저장 중 잠김은 `locked` 상태로 분리 |
+| 버전 목록·이름 저장·복원·삭제 | ✅ 4개 모두 |
+| 내보내기 PDF | ✅ 화면 인쇄 |
+| 내보내기 `md`·`txt` | ✅ 브라우저에서 생성 — **이번에 고쳤다** |
+| 내보내기 DOCX·HWP | ☐ 서버 필요 (§12-30) |
+| 그래프·AI 최신화·챗 | ☐ graph-rag·Kafka 대기 |
+
+**찾은 결함.** API 어댑터의 `export` 가 **모든 형식을 거절했다.** `?data=api` 로 전환하면 mock 에서 되던 `md`·`txt` 내보내기가 오류 토스트로 바뀌고, DOCX·HWP 는 화면의 `catch` 가 "잠시 후 다시 시도해 주세요" 를 띄웠다 — 서버가 만들 수 없는 형식이므로 **영원히 성공하지 않는 재시도다.**
+
+`md`·`txt` 는 서버가 필요 없다(문서 자체가 Markdown 이다). 브라우저에서 만들고, DOCX·HWP 는 거절 대신 **빈 `url`** 을 준다 — 포트 계약에서 "아직 준비되지 않았다"는 뜻이고 화면이 이미 그걸 안내로 바꾼다. `loresentry-frontend#7`.
+
+`md` 의 관계 줄은 대상 문서 **제목**이 필요한데 문서 응답에는 대상 id 만 온다. 관계가 하나라도 있을 때만 파일 목록을 한 번 더 불러 대응을 만든다.
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -440,9 +464,9 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 27 | Outbox publisher · graph-rag Inbox → `GraphService` | content · graph-rag | ☐ |
 | 28 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
 | 29 | AI 챗 + 스트리밍 패스스루 | ai-chat · gateway | ☐ |
-| 30 | 내보내기 DOCX·HWP | content | ☐ |
+| 30 | 내보내기 DOCX·HWP — `md`·`txt`·PDF 는 브라우저가 처리한다 (§0.9) | content | ☐ |
 | 31 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
 
 **이제 18번, 브라우저 E2E 가 다음이다.** 서버 세 층은 실제 서비스로 관통 검증했고 고칠 것은 나오지 않았다(§0.8). 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
 
-graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(25)와 내보내기(30)뿐이다.
+graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(25)와 내보내기(30)뿐이다. 프론트 편집 경로도 내보내기 두 형식만 남았다(§0.9).
