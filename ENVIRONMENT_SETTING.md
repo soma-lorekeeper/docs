@@ -450,6 +450,28 @@ brew install --cask freelens
 | 클러스터 연결 시 `aws: executable file not found` | Dock에서 실행한 앱이 셸 PATH를 못 읽었다. 터미널에서 `open -a Lens`로 실행하거나, `which aws` 경로가 `/usr/local/bin`·`/opt/homebrew/bin`에 있는지 확인한다 |
 | `Unauthorized` 또는 토큰 오류 | Lens 문제가 아니다. 터미널에서 `kubectl --context lore-sentry auth whoami`가 되는지 먼저 본다 (§4) |
 | 화면마다 `Forbidden` | Accessible Namespaces에 `prod`를 넣지 않았거나 권한 밖 메뉴를 열었다. 위 표를 확인한다 |
+| 연결은 되는데 Workloads 등 사이드바 메뉴가 없다 | RBAC 그룹 없이 EKS access policy만으로 권한을 받은 신원이다 (주로 관리자). 아래 참고 |
+
+### 관리자 계정에서 메뉴가 안 보일 때
+
+Lens는 사이드바를 그리기 전에 `SelfSubjectRulesReview`로 권한 전체를 조회하고, 결과에 없는 메뉴는 숨긴다. 그런데 `AmazonEKSClusterAdminPolicy` 같은 **EKS access policy는 RBAC가 아니라 webhook authorizer가 판정**하므로 이 조회에 나타나지 않는다. 실제로는 관리자라 모든 요청이 통과하는데도 Lens에는 권한이 없는 것처럼 보인다.
+
+```bash
+kubectl auth can-i list pods -n prod    # yes — 개별 질의는 통과
+kubectl auth can-i --list -n prod       # 리소스 권한 없음
+# Warning: the list may be incomplete: webhook authorizer does not support user rule resolution
+```
+
+팀원은 `lore-viewers` RoleBinding(RBAC)으로 권한을 받으므로 이 문제가 없다. 관리자는 자기 access entry에 `lore-viewers` 그룹을 붙이면 기존 RoleBinding을 통해 `prod` 메뉴가 나타난다. access policy는 그대로이므로 관리자 권한은 유지된다.
+
+```bash
+aws eks update-access-entry --cluster-name lore-sentry-k8s \
+  --principal-arn <관리자 신원 ARN> \
+  --kubernetes-groups lore-viewers
+kubectl auth whoami    # Groups 에 lore-viewers 가 보이면 적용된 것. Lens 에서 클러스터를 다시 연결한다
+```
+
+Nodes·`kube-system` 같은 클러스터 범위까지 Lens로 보려면 별도 그룹을 `cluster-admin`에 묶는 ClusterRoleBinding을 GitOps 저장소에 추가해야 한다.
 
 > **관리자 권한으로 Lens를 쓸 때:** 관리자 자격 증명으로 붙으면 Lens 버튼이 실제로 동작한다. Delete·Edit·Scale은 운영 클러스터를 바로 바꾸고, Argo CD가 GitOps 기준으로 되돌리면서 상태가 흔들린다. 조회 용도로만 쓴다.
 
