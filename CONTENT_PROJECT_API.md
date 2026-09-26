@@ -21,7 +21,7 @@
 |---|---|---|
 | `loresentry-content` | Flyway `V7` | 140 |
 | `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
-| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 242 |
+| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 243 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -485,6 +485,42 @@ AT 수명은 **15분**(`RsaJwtTokens`: `Duration.ofMinutes(15)`), RT 는 14일�
 
 ---
 
+## 0.13 로그인이 자기 이동을 취소하고 있었다 · mock 을 걷어냈다
+
+### "Google 로그인으로 이동 중…" 에서 멈추는 이유 — `loresentry-frontend#13`
+
+`login-page.tsx` 의 `start()`:
+
+```ts
+await services.auth.startGoogleLogin(returnTo ?? "/projects");
+await queryClient.invalidateQueries({ queryKey: queryKeys.session });
+router.replace(returnTo ?? "/projects");   // ← 예약된 외부 이동을 취소한다
+```
+
+`window.location.assign` 은 **이동을 예약할 뿐** 즉시 떠나지 않는다. api 어댑터의 `startGoogleLogin` 은 곧바로 값을 돌려주므로 다음 두 줄이 실행되고, **클라이언트 라우팅이 그 이동을 취소한다.** 뒤 두 줄은 즉시 돌아오는 mock 을 위한 것이었다.
+
+헤드리스 브라우저 추적에 경합이 그대로 남았다.
+
+```text
+고치기 전:  클릭 → /projects/                    (router.replace)
+                 → /login/?returnTo=%2Fprojects%2F  (세션 게이트가 되돌림)
+                 → accounts.google.com              (예약된 이동이 겨우 이김)
+
+고친 뒤:    클릭 → accounts.google.com              (곧바로)
+```
+
+기계가 빠르면 이기고 느리면 진다 — 그래서 "가끔 된다" 로 보였다. 떠나는 중이므로 **끝나지 않는 프로미스**를 돌려주게 했다. 호출자의 다음 줄이 실행되지 않으니 이동이 취소되지 않고, 화면은 실제로 떠날 때까지 "이동 중" 에 머문다. 그것이 사실이다.
+
+### 서버 없는 기능은 이제 mock 을 보여 주지 않는다 — `loresentry-frontend#12`
+
+`graph`·`refresh`·`chat`·`help` 네 포트가 `?data=api` 에서도 mock 으로 답하고 있었다. **그럴듯한 가짜 그래프·대화·가이드를 자기 자료처럼** 보여 주므로 E2E 에서 가장 헷갈리는 지점이었다.
+
+- 네 포트를 `unavailable` 로 거절한다. 요청도 보내지 않는다 — 서버에 그 경로가 없다.
+- 각 화면은 "불러오지 못했어요 · 다시 시도" 대신 **준비 중**이라고 말한다. 연결 문제가 아니고 다시 시도해도 같기 때문이다.
+- 사이드바의 "그래프 최신화" 는 비활성이 된다. 성공할 수 없는 호출을 누를 수 있게 두지 않는다.
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -612,6 +648,8 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 35 | 모르는 관계 키가 저장으로 지워지던 문제 (§0.12) | frontend | ✅ |
 | 36 | 새로 고침 직후 휴지통 복원 실패 (§0.12) | frontend | ✅ |
 | 37 | 버전 목록이 문서 전체를 다시 받던 낭비 (§0.12) | frontend | ✅ |
+| 38 | 서버 없는 4개 포트를 mock 대신 "준비 중" 으로 (§0.13) | frontend | ✅ `#12` |
+| 39 | 로그인이 자기 리다이렉트를 취소하던 경합 (§0.13) | frontend | ✅ `#13` |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 
