@@ -14,13 +14,14 @@
                                  │  쿠키·CSRF·AT 검증      38개 엔드포인트
                                  ├──▶ authentication ─▶ RDS(auth) · auth-valkey(세션)
                                  └── X-User-Id 는 gateway 가 **설정**한다. 클라이언트 값은 버려진다
+     프론트 포트 13개 중 9개가 실제 API · 4개는 서버 없어 mock (§0.10)
 ```
 
 | 저장소 | 배포 | 테스트 |
 |---|---|---|
 | `loresentry-content` | Flyway `V7` | 140 |
 | `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
-| `loresentry-frontend` | 배포됨, 기본값은 mock (`?data=api` 로 전환) | 230 |
+| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 232 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -345,6 +346,50 @@ kubectl --context lore-sentry → exec 에 AWS_PROFILE=lorekeeper 고정  ✅
 
 ---
 
+## 0.10 배포 기본값이 api 가 됐다 — 남은 미연결 목록
+
+`config.json` 에 `dataSource` 가 없어 **배포된 사이트가 모두 mock 으로 돌고 있었다.** mock 은 씨앗 사용자 `서윤주 / seoyunju@lore.kr` 를 로그인된 것으로 보고하므로, 접속하면 **남의 계정으로 로그인된 것처럼** 보였다. Google 로그인이 안 된 게 아니라 화면이 서버를 본 적이 없었다.
+
+같이 나온 버그: **`?data=api` 가 Google 로그인 왕복에서 사라졌다.** 재정의가 쿼리에만 있었고 BFF 는 고정된 `/login?result=success` 로 돌려보낸다. 하필 가장 중요한 이동이 재정의를 지웠으니, `?data=api` 로는 로그인 E2E 를 끝낼 수 없었다. 이제 탭 수명 동안 기억한다. `loresentry-frontend#8`, `#9`.
+
+### 실제 API 로 도는 포트 9개
+
+| 포트 | 메서드 | 상태 |
+|---|---|---|
+| `auth` | 세션·Google 로그인·로그아웃 | ✅ |
+| `account` | 조회·표시 이름 변경 | ✅ |
+| `projects` | 10개 전부 | ✅ |
+| `files` | 트리·생성·이름·이동·휴지통 4개·즐겨찾기 2개·에피소드 삭제 | ✅ |
+| `documents` | 조회·저장·잠금 | ✅ |
+| `versions` | 목록·이름 저장·복원·삭제 | ✅ |
+| `memos` | 목록·생성·수정·삭제 | ✅ |
+| `search` | 프로젝트 내 검색 | ✅ |
+| `workspaceState` | 적재·저장 | ✅ |
+
+### 아직 연결되지 않은 것 — 전부
+
+**서버가 없다 (포트 4개가 mock 으로 남는다).** 화면은 **그럴듯한 가짜 데이터를 보여 준다** — E2E 에서 이 네 화면이 도는 것처럼 보이는 것은 실제 동작이 아니다.
+
+| 포트 | 화면 | 막고 있는 것 |
+|---|---|---|
+| `graph` | 관계 그래프 | graph-rag · Neptune 투영본 (§12-27) |
+| `refresh` | AI 최신화 | Kafka · `RefreshService` (§12-28) |
+| `chat` | AI 챗 | ai-chat · 스트리밍 (§12-29) |
+| `help` | 사용 가이드 | 가이드 출처 미정 |
+
+**연결된 포트 안의 빈 칸 4개.**
+
+| 기능 | 무엇이 없나 | 사용자가 보는 것 |
+|---|---|---|
+| 사용자 섹션 추가·삭제 | 서버에 폴더 모델이 없다(§9-1 에서 **UI 제거**로 결정, 아직 안 함) | "섹션 추가" 를 누르면 실패 토스트 — 메뉴 3곳 (§12-21) |
+| 에피소드 순서 바꾸기 | content 에 `PATCH /episodes/{id}/position` 이 없다. 이름 변경·삭제만 있다 | 에피소드를 끌어 옮기면 실패 토스트 |
+| DOCX·HWP 내보내기 | 서버가 파일을 만들어야 한다 | "준비하고 있어요" 안내 (§0.9, §12-30) |
+| 이미지 업로드 | **프론트에 포트도 UI 도 없다.** 서버 3개 엔드포인트와 BFF 라우트는 있다 | 본문에 이미지를 넣을 방법이 없다 (§12-22) |
+
+즉 **문서 작업의 본류는 전부 실제 서버로 돈다.** 브라우저 E2E 에서 위 8가지만 "여기는 아직" 으로 알고 보면 된다.
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -455,8 +500,8 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | **18** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
 | 19 | `integration/session/content_checks.py` 를 38개로 확장 (Linux 에서) | gateway | ☐ |
 | 20 | 프론트 명시적 재발급·탭 조율 (`FRONTEND_AUTH_CONTRACT.md`) | frontend | ☐ |
-| 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) | frontend | ☐ |
-| 22 | 프론트 이미지 업로드 UI | frontend | ☐ |
+| 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) — **api 에서는 실패 토스트가 난다** | frontend | ☐ |
+| 22 | 프론트 이미지 업로드 UI — 포트도 없다. 서버·BFF 는 준비됨 | frontend | ☐ |
 | 23 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
 | 24 | NetworkPolicy — vpc-cni `ENABLE_NETWORK_POLICY` 가 꺼져 지금은 무시된다 | gitops | ☐ |
 | 25 | 남은 `PENDING` 이미지·만료 자동 버전 정리 배치 | content | ☐ |
@@ -465,7 +510,9 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 28 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
 | 29 | AI 챗 + 스트리밍 패스스루 | ai-chat · gateway | ☐ |
 | 30 | 내보내기 DOCX·HWP — `md`·`txt`·PDF 는 브라우저가 처리한다 (§0.9) | content | ☐ |
-| 31 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
+| 31 | `config.json` 기본값을 `api` 로 전환 (§0.10) | frontend | ✅ `#9` |
+| 32 | `?data=api` 가 로그인 왕복에서 사라지던 문제 (§0.10) | frontend | ✅ `#8` |
+| 33 | 에피소드 순서 바꾸기 — `PATCH /episodes/{id}/position` 없음 (§0.10) | content · gateway · frontend | ☐ |
 
 **이제 18번, 브라우저 E2E 가 다음이다.** 서버 세 층은 실제 서비스로 관통 검증했고 고칠 것은 나오지 않았다(§0.8). 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
 
