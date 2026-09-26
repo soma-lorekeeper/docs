@@ -1,6 +1,6 @@
 # Content API — 구현 현황과 계약
 
-> 작성일: 2026-09-22 · 최신화: 2026-09-24
+> 작성일: 2026-09-22 · 최신화: 2026-09-26
 > 상태: **전 구간 동작·검증 완료.** content 64 · BFF 경유 29 · 어댑터 계약 11 항목을 실제 서비스로 통과시켰다(§0.8). 남은 것은 브라우저 E2E 다.
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
@@ -10,15 +10,16 @@
 # 0. 현재 상태 — 한눈에
 
 ```text
-브라우저 → Cloudflare → ALB → gateway ──네임스페이스 3개 중계──▶ content ─▶ RDS(content)
-                                 │                                    38개 엔드포인트
-                                 └── 무인증. X-User-Id 를 클라이언트가 고른다
+브라우저 → Cloudflare → ALB → gateway(BFF) ──▶ content ─▶ RDS(content)
+                                 │  쿠키·CSRF·AT 검증      38개 엔드포인트
+                                 ├──▶ authentication ─▶ RDS(auth) · auth-valkey(세션)
+                                 └── X-User-Id 는 gateway 가 **설정**한다. 클라이언트 값은 버려진다
 ```
 
 | 저장소 | 배포 | 테스트 |
 |---|---|---|
 | `loresentry-content` | Flyway `V7` | 140 |
-| `loresentry-gateway` | BFF 머지됨, **기동 설정 대기** | 214 |
+| `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
 | `loresentry-frontend` | 배포됨, 기본값은 mock (`?data=api` 로 전환) | 227 |
 
 ## 0.1 구현된 엔드포인트 38개
@@ -212,9 +213,11 @@ POST /auth/oauth/google/callback     POST /auth/tokens/revoke     PATCH /auth/us
 
 **남은 조치 하나:** `iam-content-media-policy.json` 에 `s3:ListBucket` 을 넣었지만 **AWS 의 실제 정책에는 아직 반영되지 않았다.** 적용하면 S3 가 제대로 404 를 주고 "없음"과 "권한 없음"의 구분이 다시 살아난다. 지금은 403 분기가 그것을 가리고 있다.
 
-## 0.6 지금 가장 급한 것 — 무인증
+## 0.6 무인증이었던 구간 — **[해소됨, §0.7]**
 
-`api.loresentry.com` 의 프로젝트·파일·문서 엔드포인트는 **누구나 읽고 쓸 수 있다.** 헤더에 아무 UUID나 넣으면 그 사용자의 자료가 된다.
+> 아래는 **2026-09-26 이전**의 상태다. 지금은 AT 검증이 붙어 위조 헤더가 `401 ACCESS_TOKEN_MISSING` 으로 막힌다(§0.7). 어떤 위험을 어떻게 닫았는지 남겨 둔다.
+
+당시 `api.loresentry.com` 의 프로젝트·파일·문서 엔드포인트는 **누구나 읽고 쓸 수 있었다.** 헤더에 아무 UUID나 넣으면 그 사용자의 자료가 됐다.
 
 프론트엔드를 실제 API에 붙이기 위해 의도적으로 택한 단계이고, 되돌리는 방법은 정해져 있다 — gateway의 `IdentityResolver` 구현 하나를 JWT 검증으로 바꾸면 된다. 중계는 그 결과만 읽고, 업스트림 헤더를 **복사가 아니라 설정**하므로 클라이언트가 보낸 값은 자동으로 무력화된다.
 
@@ -290,6 +293,31 @@ kubectl --context lore-sentry → exec 에 AWS_PROFILE=lorekeeper 고정  ✅
 ```
 
 클러스터 접근은 컨텍스트가 프로필을 스스로 고정하므로 안전하지만, **`aws` 를 직접 부를 때는 반드시 `--profile lorekeeper` 를 붙인다.**
+
+---
+
+## 0.8 브라우저 이전 3층 검증 — 2026-09-26
+
+브라우저로 들어가기 전에, 이미 구현했다고 적어 둔 것들을 **실제로 도는 서비스에 대고** 다시 확인했다. 단위 테스트는 내 가정을 확인할 뿐이므로, 세 층을 각각 실물로 통과시켰다.
+
+| 층 | 방법 | 결과 |
+|---|---|---|
+| content 38개 엔드포인트 | 운영 pod 로 port-forward, 실제 S3 업로드 + CloudFront 읽기 포함 | **64/64** |
+| BFF 경유 | gateway 를 로컬 기동, 실제 RS256 AT + 로컬 세션 레코드, 상대는 port-forward 한 운영 content | **29/29** |
+| 프론트 어댑터 계약 | 어댑터가 보내는 요청·기대하는 응답 필드를 BFF 응답과 맞춤 | **11/11** |
+
+**고칠 것은 나오지 않았다.** 앞선 절들에서 잡아 고친 것들(§0.4 프로젝트 활동, §0.5 `HeadObject`, §0.6 무인증, valkey ACL)이 마지막 결함이었다.
+
+검증하면서 지킨 것.
+
+- 운영 세션 저장소에는 **아무것도 쓰지 않았다.** 세션 레코드는 로컬 valkey 에 만들었다.
+- 비밀 값은 `--from-env-file`·`--from-file` 로만 넘겨 명령줄과 출력에 남지 않게 했다.
+- 임시 개인키·AT·kid 파일은 검증 후 지웠다. 로컬 gateway 프로세스와 valkey 컨테이너, port-forward 도 정리했다.
+- 클러스터 쓰기는 모두 `197179613039` 계정에서만 일어났음을 확인했다.
+
+### gateway 통합 하네스는 여기서 돌지 않는다
+
+`loresentry-gateway/integration/session/run.py` 는 **Linux 전용**이다. macOS 에서는 auth 컨테이너가 host 네트워크로 `127.0.0.1` 의 PostgreSQL 에 닿지 못해 기동에서 멈춘다. 코드 결함이 아니다. 그리고 그 하네스의 `content_checks.py` 는 **원래 26개 라우트만** 본다 — 내가 더한 13개는 아직 들어 있지 않다(§12-19).
 
 ---
 
@@ -402,19 +430,19 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 17 | 브라우저 이전 3층 검증 (§0.8) | 전체 | ✅ 64 + 29 + 11 통과 |
 | **18** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
 | 19 | `integration/session/content_checks.py` 를 38개로 확장 (Linux 에서) | gateway | ☐ |
-| 17 | 프론트 명시적 재발급·탭 조율 (`FRONTEND_AUTH_CONTRACT.md`) | frontend | ☐ |
-| 18 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) | frontend | ☐ |
-| 19 | 프론트 이미지 업로드 UI | frontend | ☐ |
-| 20 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
-| 21 | NetworkPolicy — vpc-cni `ENABLE_NETWORK_POLICY` 가 꺼져 지금은 무시된다 | gitops | ☐ |
-| 22 | 남은 `PENDING` 이미지·만료 자동 버전 정리 배치 | content | ☐ |
-| 23 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
-| 24 | Outbox publisher · graph-rag Inbox → `GraphService` | content · graph-rag | ☐ |
-| 25 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
-| 26 | AI 챗 + 스트리밍 패스스루 | ai-chat · gateway | ☐ |
-| 27 | 내보내기 DOCX·HWP | content | ☐ |
-| 28 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
+| 20 | 프론트 명시적 재발급·탭 조율 (`FRONTEND_AUTH_CONTRACT.md`) | frontend | ☐ |
+| 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) | frontend | ☐ |
+| 22 | 프론트 이미지 업로드 UI | frontend | ☐ |
+| 23 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
+| 24 | NetworkPolicy — vpc-cni `ENABLE_NETWORK_POLICY` 가 꺼져 지금은 무시된다 | gitops | ☐ |
+| 25 | 남은 `PENDING` 이미지·만료 자동 버전 정리 배치 | content | ☐ |
+| 26 | `outbox_events` 쓰기 + 토픽 설계 | docs · content | ☐ |
+| 27 | Outbox publisher · graph-rag Inbox → `GraphService` | content · graph-rag | ☐ |
+| 28 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
+| 29 | AI 챗 + 스트리밍 패스스루 | ai-chat · gateway | ☐ |
+| 30 | 내보내기 DOCX·HWP | content | ☐ |
+| 31 | `config.json` 의 `dataSource` 를 `api` 로 할지 결정 | frontend | ☐ |
 
 **이제 18번, 브라우저 E2E 가 다음이다.** 서버 세 층은 실제 서비스로 관통 검증했고 고칠 것은 나오지 않았다(§0.8). 남은 것은 실제 Google 계정으로 로그인해 화면이 도는지 보는 것이고, 그건 브라우저가 필요하다.
 
-graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(22)와 내보내기(27)뿐이다.
+graphRAG·Kafka·AI 를 뺀 content 엔드포인트는 **전부 구현됐다**(38개). 남은 content 작업은 정리 배치(25)와 내보내기(30)뿐이다.
