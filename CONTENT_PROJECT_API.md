@@ -1,6 +1,6 @@
 # Content API — 구현 현황과 계약
 
-> 작성일: 2026-09-22 · 최신화: 2026-09-26
+> 작성일: 2026-09-22 · 최신화: 2026-09-28
 > 상태: **서버 세 층은 검증됐고, 프론트는 방금 처음으로 서버와 말하기 시작했다.** `config.json` 이 `api` 여도 앱이 mock 으로 굳어 있던 버그를 브라우저로 잡아 고쳤다(§0.11). Google 로그인 화면까지 실제로 도달하는 것을 확인했고, 계정 승인 한 걸음이 남았다.
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
@@ -550,6 +550,40 @@ A 에서 B 를 연결해도 **B 문서의 "관련 ○○" 은 비어 있었다.*
 
 ---
 
+## 0.15 인증이 불투명 세션으로 바뀌었다 — 내 재발급 구현은 폐기했다
+
+2026-09-28 점검에서 gateway 를 27커밋 받아 보니 **인증 모델이 교체돼 있었다.** 팀원의 `LOREKEEPER-584~599` 작업이다.
+
+| | 전 (§0.12 당시) | 지금 |
+|---|---|---|
+| 신원 | RS256 AT(15분) + RT(14일) | **단일 세션 ID 쿠키** |
+| 수명 연장 | 프론트가 `POST /auth/tokens/refresh` 를 명시적으로 호출 | **보호 요청이 성공할 때마다 서버가 연장**(마지막 활동 +14일) |
+| 로그아웃 | `POST /auth/tokens/revoke` | **`POST /auth/sessions/revoke`** |
+| 401 코드 | `ACCESS_TOKEN_MISSING`·`ACCESS_TOKEN_EXPIRED` | **`SESSION_REQUIRED`**·`SESSION_INVALID`·`SESSION_UNAVAILABLE`(503) |
+
+운영에 이미 그 버전이 떠 있다. 라이브로 확인했다.
+
+```text
+GET  /auth/users/me      (쿠키 없이) → 401 SESSION_REQUIRED
+POST /auth/tokens/revoke              → 401 SESSION_REQUIRED   ← 경로가 없다
+POST /auth/tokens/refresh             → 401 SESSION_REQUIRED   ← 경로가 없다
+POST /auth/sessions/revoke            → 200 {"session_revocation":"not_requested"}
+```
+
+### 그래서 프론트에 실제 결함이 있었다
+
+**로그아웃이 항상 실패했다.** 없는 경로(`/auth/tokens/revoke`)로 불러 세션 검사에서 401 로 막혔고, 화면은 "로그아웃하지 못했어요" 를 띄웠다. 새 경로로 옮기고, `session_revocation` 이 `unconfirmed` 면 완전한 성공으로 표시하지 않는다.
+
+**§0.12 에서 만든 재발급 기계는 전부 지웠다.** 단일 흐름·Web Lock·1회 재시도까지 계약에 맞춰 만든 것이었지만, 지금 계약은 **재발급을 두지 말라고 명시한다** — 서버가 스스로 연장하고, "401 의 원래 요청을 일괄 자동 재전송하지 않는다" 가 계약 문구다. AT 15분이라는 전제 자체가 사라졌으니 그 코드가 풀던 문제도 없다. 코드는 남겨 두는 것보다 지우는 편이 정직하다 — 남아 있으면 다음 사람이 그것이 도는 줄 안다.
+
+오류 표도 세션 코드로 맞췄다: `SESSION_REQUIRED`·`INVALID_SESSION_ID` → 재로그인, `SESSION_UNAVAILABLE`·`REVOCATION_UNCONFIRMED` → 일시 장애(로그아웃시키지 않는다).
+
+### 배운 것
+
+§0.11 은 "층별 검증은 층 사이를 증명하지 않는다" 였다. 여기서 하나 더 붙는다 — **다른 서비스의 계약 문서는 내가 읽은 그 시점의 것이다.** 팀원이 인증 방식을 바꾸는 동안 나는 이전 계약에 맞춰 기계를 만들고 있었다. 정기적으로 `git pull` 하고 **계약 문서의 diff 를 보는 것**이 구현보다 먼저다.
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -659,7 +693,7 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 17 | 브라우저 이전 3층 검증 (§0.8) | 전체 | ✅ 64 + 29 + 11 통과 |
 | **18** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
 | 19 | `integration/session/content_checks.py` 를 38개로 확장 (Linux 에서) | gateway | ☐ |
-| 20 | 프론트 명시적 재발급·탭 조율 (§0.12) | frontend | ✅ 재발급·Web Lock 완료 · 재발급 실패 후 재로그인 유도는 ☐ |
+| 20 | ~~프론트 명시적 재발급·탭 조율~~ | frontend | ⬛ **폐기.** 인증이 불투명 세션으로 바뀌어 재발급이 없다 (§0.15) |
 | 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) — **api 에서는 실패 토스트가 난다** | frontend | ☐ |
 | 22 | 프론트 이미지 업로드 UI — 포트도 없다. 서버·BFF 는 준비됨 | frontend | ☐ |
 | 23 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
@@ -682,6 +716,8 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 40 | 로그인 성공 뒤 아무도 앞으로 보내지 않던 문제 | frontend | ✅ `#14` |
 | 41 | 관계 양방향 저장 (§0.14) | content · frontend | ✅ `#10` `#16` |
 | 42 | 로그인 계정용 시드 스크립트 | frontend | ✅ `#15` |
+| 43 | 세션 인증으로 전환 — 로그아웃 경로·오류 코드·재발급 제거 (§0.15) | frontend | ✅ |
+| 44 | 탭 간 인증 전환 조율 (`FRONTEND_AUTH_CONTRACT.md` "인증 전환과 늦은 응답") | frontend | ☐ |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 
