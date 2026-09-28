@@ -584,6 +584,55 @@ POST /auth/sessions/revoke            → 200 {"session_revocation":"not_request
 
 ---
 
+## 0.16 로그인이 재로그인부터 깨졌다 — valkey ACL 에 `PTTL` 이 없었다
+
+증상은 `/login?result=unavailable` 이었다. 그 값은 BFF 가 auth 에 닿지 못했거나 auth 가 `LOGIN_UNAVAILABLE` 을 돌려줬을 때 나온다.
+
+연결은 문제가 없었다 — gateway 파드에서 `http://authentication-api/health` 가 `{"status":"ok"}` 를 주고, auth 파드에서 Google 에도 닿았다. 남은 것은 세션 저장이었다.
+
+### 원인
+
+새 세션 설계는 Lua 스크립트로 두 키를 원자적으로 쓴다. **스크립트 안에서 부르는 명령도 ACL 검사를 받는다.** 내가 §0.7 에서 만든 ACL 은 `+eval` 만 주고 `+pttl` 을 빠뜨렸다.
+
+**로컬 valkey 9.0.6 에 운영과 같은 규칙과 실제 스크립트를 넣어 재현했다.**
+
+```text
+1차 로그인          → 1791788834597   (성공)
+2차 로그인(재로그인) → ERR ACL failure in script:
+                      User authentication has no permissions to run the 'pttl' command
+```
+
+로그인 스크립트는 **그 계정에 기존 세션 기록이 있을 때만** `PTTL` 을 부른다.
+
+```lua
+if old and (not current(old) or redis.call('PTTL', KEYS[2]) <= 0) then return -2 end
+```
+
+그래서 **첫 로그인은 되고 그 뒤 모든 로그인이 실패한다.** §0.11 에서 로그인 성공을 확인했을 때 기록이 생겼고, 그때부터 깨져 있었다. 배포 당일에는 정상으로 보이는 모양이다.
+
+**같이 찾은 두 번째 결함.** BFF 계정에는 `+get` 밖에 없어 세션 검증 스크립트가 `NOPERM ... 'eval'` 로 막힌다 — 로그인이 됐더라도 **모든 보호 요청이 실패했을 것이다.**
+
+### 조치
+
+```text
+user authentication ... +get +set +del +getdel +eval +pttl +time
+user bff            ... +get +eval +pttl +pexpireat +time
+```
+
+수정안을 로컬에서 먼저 통과시킨 뒤(1차·2차 로그인·BFF 검증 모두 정상) Secret 을 갱신하고 valkey 를 재시작했다. **ACL 파일만 바꾸면 valkey 가 다시 읽지 않고, `ACL LOAD` 는 관리 권한이 필요한데 그런 계정을 두지 않았다.** 세션은 PVC + AOF 로 재시작을 견딘다.
+
+`+@all`·`+@read`·`+@write` 로 넓히지 않았다. BFF 는 여전히 `SET`·`DEL`·`GETDEL`·OAuth 키에 닿지 못한다.
+
+### 팀원 인계 문서와 대조 — 요구사항과 정확히 일치했다
+
+`AUTH_BFF_SECRETS_NEW.md`(2026-09-28, Auth `eeb8465`, BFF `ca3e3f2`)가 요구한 명령 집합이 위와 같다. 그 문서는 **원인을 "아직 확정하지 못했다"** 고 적었고, 위 재현이 그것을 확정했다.
+
+문서의 "유지" 목록은 운영에 전부 들어가 있다(Auth 11개, BFF 6개). 논리 DB 도 양쪽 0 으로 같다.
+
+**아직 정리하지 않은 것:** 이제 읽지 않는 JWT 설정이다 — `AUTH_JWT_PRIVATE_KEY_BASE64`·`AUTH_JWT_KEY_ID`·`AUTH_JWT_PUBLIC_KEY_PATH`, `BFF_JWT_PUBLIC_KEY`·`BFF_JWT_KEY_ID`, ConfigMap `authentication-jwt-public` 과 양쪽 볼륨 마운트. 로그인 실패의 원인은 아니고, 롤백 대상 버전이 그 키를 쓰는지 확인한 뒤 지워야 한다.
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -718,6 +767,8 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 42 | 로그인 계정용 시드 스크립트 | frontend | ✅ `#15` |
 | 43 | 세션 인증으로 전환 — 로그아웃 경로·오류 코드·재발급 제거 (§0.15) | frontend | ✅ |
 | 44 | 탭 간 인증 전환 조율 (`FRONTEND_AUTH_CONTRACT.md` "인증 전환과 늦은 응답") | frontend | ☐ |
+| 45 | valkey ACL 에 `PTTL`·BFF 스크립트 권한 추가 (§0.16) | 클러스터 | ✅ 적용됨 |
+| 46 | 쓰지 않는 JWT env·ConfigMap·볼륨 정리 (§0.16) | gitops · 클러스터 | ☐ |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 
