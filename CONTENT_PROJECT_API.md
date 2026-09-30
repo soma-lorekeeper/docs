@@ -1,6 +1,6 @@
 # Content API — 구현 현황과 계약
 
-> 작성일: 2026-09-22 · 최신화: 2026-09-28
+> 작성일: 2026-09-22 · 최신화: 2026-09-30
 > 상태: **서버 세 층은 검증됐고, 프론트는 방금 처음으로 서버와 말하기 시작했다.** `config.json` 이 `api` 여도 앱이 mock 으로 굳어 있던 버그를 브라우저로 잡아 고쳤다(§0.11). Google 로그인 화면까지 실제로 도달하는 것을 확인했고, 계정 승인 한 걸음이 남았다.
 > 범위: content 서비스의 HTTP API 전부와, 그것을 외부로 내보내는 gateway 중계. 처음에는 `projects` CRUD 계획서로 시작해 실제 구현 기록으로 자랐다.
 > 전제: [`TABLE_AND_LOGIC.md`](TABLE_AND_LOGIC.md) §4, [`CORE_FEATURE_REQUIREMENTS.md`](CORE_FEATURE_REQUIREMENTS.md), [`LORE_SENTRY_PROJECT_CONTEXT.md`](LORE_SENTRY_PROJECT_CONTEXT.md) §3
@@ -19,9 +19,9 @@
 
 | 저장소 | 배포 | 테스트 |
 |---|---|---|
-| `loresentry-content` | Flyway `V7` | 143 |
-| `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 214 |
-| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 246 |
+| `loresentry-content` | Flyway `V8` | 150 |
+| `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 186 |
+| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 240 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -633,6 +633,52 @@ user bff            ... +get +eval +pttl +pexpireat +time
 
 ---
 
+## 0.17 QA 1차 — 8건 반영 (2026-09-30)
+
+브라우저로 쓰면서 나온 8건이다. 원인이 서버인 것과 화면인 것이 섞여 있었다.
+
+### 서버 — `loresentry-content#11`, `loresentry-gateway#5`
+
+**타임라인이 "불러오지 못했어요" 였다.** 타임라인은 `ProjectGraph` 로 그리는데 그 포트가 graph-rag 를 기다리고 있었다. 그런데 타임라인이 필요한 것 — 회차, 그 회차에 나온 엔티티, 에피소드 순서 — 은 **이미 RDB 세 표에 있고 한 홉이다.** `GET /projects/{id}/graph` 를 더해 `document` + `document_properties` + `document_relations` + `episode_folders` 를 질의 세 번으로 모아 준다. graph-rag 가 만드는 것(AI 가 본문에서 찾아낸 관계, 여러 홉)은 나중에 여기에 출처를 더하면 된다.
+
+**메모 화면의 파일 메모가 400 이었다.** `scope=file` 이 `document_id` 를 요구해서, 프로젝트의 파일 메모를 한 목록으로 보려는 화면이 `INVALID_MEMO` 를 받았다. `document_id` 가 없으면 그 프로젝트의 파일 메모 전부로 읽는다.
+
+**관계마다 설명.** `document_relations.description`(V8). 설명은 대상 문서의 것이 아니라 **연결의 것**이라 역방향 행에도 반영한다 — 한쪽에서 고친 설명이 반대쪽에 남으면 같은 관계가 두 가지로 읽힌다.
+
+**"마지막으로 작업한 파일" 이 실제와 달랐다.** `document.updated_at` 이 가장 늦은 문서를 골랐는데 그 칸은 **이름 변경·이동·잠금·복원·생성에도 움직인다.** 그래서 한 시간 쓴 원고 대신 방금 이름만 바꾼 문서가 올라왔다. `projects.last_file_id` 를 두고 **본문 저장 때만** 적는다. 비어 있거나 그 문서가 휴지통에 갔으면 예전 방식으로 물러선다.
+
+### 화면 — `loresentry-frontend#18`
+
+**메모를 다시 만들었다.** 같은 자료가 두 모양이었다 — 작품 메모는 카드 목록, 문서 메모는 자동 저장되는 큰 입력창 하나(삭제도 없었다).
+
+| 요구 | 조치 |
+|---|---|
+| 문서 메모가 먼저 | 패널 탭을 문서 → 작품 순으로. 패널은 문서를 열어 둔 채 쓰는 것이다 |
+| 수동 저장 | ✓ 로 남기고 ✕ 로 버린다(`⌘Enter`·`Esc`). **자동 저장 기계는 지웠다** — 메모는 적다 지우는 곳이고, 자동 저장은 "쓰는 중"과 "남기기로 한 것"을 구분하지 못한다 |
+| 삭제 | 모든 카드에서 바로 |
+| 디자인 통일 | 두 범위가 **같은 카드 하나**를 쓴다 |
+| 메모 전용 화면도 | 같은 카드. 문서 메모 탭은 프로젝트의 모든 문서 메모를 한 목록으로 본다 |
+
+**관계.** 속성 추가 메뉴가 `캐릭터` 라고만 적어 "캐릭터 문서를 만든다"로 읽혔다 → **`관련 캐릭터`**. 칩마다 관계 설명을 그 자리에서 고친다.
+
+**PDF 양식.** 편집 화면을 그대로 인쇄해 **제목 입력창·속성표·툴바·스크롤 영역이 종이에 찍혔다.** 인쇄 전용 지면에 제목과 본문만 담아 그것만 인쇄한다 — A4 여백, 세리프, 단락 첫 줄 들여쓰기, 외톨이 줄 방지. **DOCX·HWP** 는 "받을 수 있다" 고 안내한 뒤 아무 일도 없었다 → 메뉴에서 비활성 + "준비 중".
+
+**지운 것.** 검색은 Elasticsearch 로 갈 것이므로 포트·어댑터·화면·탭·사이드바 항목을 걷어냈다(에디터의 찾기·바꾸기와 그래프 노드 검색은 화면 안 텍스트를 찾는 별개 기능이라 남겼다). 디렉터리의 **새 폴더·가져오기·섹션 추가** 도 지웠다 — 에피소드가 아닌 폴더는 서버 모델이 없고, 섹션은 누르면 실패 토스트였고, 에피소드는 원고 행 메뉴에서 이미 만든다. 가져오기는 동작하는 새 탭 화면에만 남겼다.
+
+### 배포 파이프라인이 한 번 조용히 멈춰 있었다
+
+content PR 을 머지했는데 **CI 가 트리거되지 않았다**(`push` 트리거인데 실행 기록이 없다). 머지만 보고 배포됐다고 믿을 뻔했다. `workflow_dispatch` 로 직접 돌려 `build-14-1` 을 올렸다. §0.14 의 Argo 지연에 이어, **배포는 "머지했다"가 아니라 "파드가 그 이미지로 Ready 다"로 확인해야 한다**는 사례가 하나 더 늘었다.
+
+### 검증
+
+```text
+content    150 passed (143 → 150)   새 테스트가 "이름만 바꿨을 때 마지막 작업 파일이 안 바뀐다"를 고정
+gateway    186 passed
+frontend   240 passed               메모 테스트를 자동 저장 → 수동 저장·취소로 다시 씀
+```
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -743,7 +789,7 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | **18** | **브라우저 E2E — Google 로그인부터 문서·메모·즐겨찾기까지** | 전체 | ☐ **다음** |
 | 19 | `integration/session/content_checks.py` 를 38개로 확장 (Linux 에서) | gateway | ☐ |
 | 20 | ~~프론트 명시적 재발급·탭 조율~~ | frontend | ⬛ **폐기.** 인증이 불투명 세션으로 바뀌어 재발급이 없다 (§0.15) |
-| 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) — **api 에서는 실패 토스트가 난다** | frontend | ☐ |
+| 21 | 프론트 사용자 섹션 메뉴 제거 (§9-1 결정) | frontend | ✅ `#18` — 새 폴더·가져오기도 함께 (§0.17) |
 | 22 | 프론트 이미지 업로드 UI — 포트도 없다. 서버·BFF 는 준비됨 | frontend | ☐ |
 | 23 | `s3:ListBucket` 을 AWS 실제 정책에 반영 (§0.5) | AWS | ☐ |
 | 24 | NetworkPolicy — vpc-cni `ENABLE_NETWORK_POLICY` 가 꺼져 지금은 무시된다 | gitops | ☐ |
@@ -752,7 +798,7 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 27 | Outbox publisher · graph-rag Inbox → `GraphService` | content · graph-rag | ☐ |
 | 28 | AI 최신화 (`RefreshService`) | content · ai-chat | ☐ |
 | 29 | AI 챗 + 스트리밍 패스스루 | ai-chat · gateway | ☐ |
-| 30 | 내보내기 DOCX·HWP — `md`·`txt`·PDF 는 브라우저가 처리한다 (§0.9) | content | ☐ |
+| 30 | 내보내기 DOCX·HWP — `md`·`txt`·PDF 는 브라우저가 처리한다 (§0.9·§0.17) | content | ☐ 메뉴에서는 비활성 |
 | 31 | `config.json` 기본값을 `api` 로 전환 (§0.10) | frontend | ✅ `#9` |
 | 32 | `?data=api` 가 로그인 왕복에서 사라지던 문제 (§0.10) | frontend | ✅ `#8` |
 | 33 | 에피소드 순서 바꾸기 — `PATCH /episodes/{id}/position` 없음 (§0.10) | content · gateway · frontend | ☐ |
@@ -769,6 +815,12 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 44 | 탭 간 인증 전환 조율 (`FRONTEND_AUTH_CONTRACT.md` "인증 전환과 늦은 응답") | frontend | ☐ |
 | 45 | valkey ACL 에 `PTTL`·BFF 스크립트 권한 추가 (§0.16) | 클러스터 | ✅ 적용됨 |
 | 46 | 쓰지 않는 JWT env·ConfigMap·볼륨 정리 (§0.16) | gitops · 클러스터 | ☐ |
+| 47 | 타임라인·관계도를 RDB 투영본으로 (§0.17) | content · gateway · frontend | ✅ `#11` `#5` |
+| 48 | 메모 수동 저장·삭제·순서·디자인 통일 (§0.17) | frontend | ✅ `#18` |
+| 49 | 관계 설명 + "관련 …" 라벨 (§0.17) | content · frontend | ✅ |
+| 50 | 인쇄 양식 + DOCX·HWP 비활성 (§0.17) | frontend | ✅ `#18` |
+| 51 | 검색 기능 제거 (Elasticsearch 로 대체 예정) | frontend | ✅ `#18` |
+| 52 | content CI 가 push 에 트리거되지 않은 원인 확인 (§0.17) | content | ☐ |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 
