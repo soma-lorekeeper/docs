@@ -7,8 +7,8 @@
 | 포트 | 주요 동작 |
 | --- | --- |
 | `AuthService` | 세션 조회, Google 로그인 시작, 로그아웃 |
-| `AccountService` | 계정 조회, 표시 이름 변경 |
-| `ProjectService` | 목록·생성·이름 변경·휴지통·복원·영구 삭제·설정 |
+| `AccountService` | 계정 조회, 표시 이름 변경, 온보딩 완료, 계정 삭제 |
+| `ProjectService` | 목록·생성·예시 프로젝트 생성·이름 변경·휴지통·복원·영구 삭제·설정 |
 | `FileService` | 파일 트리, 생성·이름 변경·이동, 휴지통·복원·영구 삭제, 즐겨찾기, 섹션·에피소드 삭제 |
 | `DocumentService` | 문서 읽기, 저장(If-Match·X-Save-Id), 잠금, 내보내기 |
 | `VersionService` | 버전 목록·저장·복원 (삭제는 두지 않는다) |
@@ -20,11 +20,11 @@
 | `WorkspaceStateService` | 작업공간 레이아웃 저장·복원 |
 | `HelpService` | 사용 가이드 목록 |
 
-오류는 `ServiceError(code)` 로 통일한다: `network`, `not-found`, `validation`, `duplicate`, `locked`, `busy`, `unknown`. 문서 저장 충돌만 `ConflictError(current, base)` 로 따로 던진다.
+오류는 `ServiceError(code)` 로 통일한다: `network`, `unauthenticated`, `not-found`, `validation`, `duplicate`, `locked`, `busy`, `unavailable`, `consent-invalid`, `terms-version-mismatch`, `csrf-rejected`, `confirmation-mismatch`, `unknown`. 문서 저장 충돌만 `ConflictError(current, base)` 로 따로 던진다.
 
 ## mock 구현 (`src/services/mock/`)
 
-- 데이터는 `MockDb` 한 덩어리이고 `localStorage` 에 저장된다. 스키마가 바뀌면 `MOCK_DB_VERSION` 을 올려 시드로 초기화한다(현재 8).
+- 데이터는 `MockDb` 한 덩어리이고 `localStorage` 에 저장된다. 스키마가 바뀌면 `MOCK_DB_VERSION` 을 올려 시드로 초기화한다(현재 9).
 - 시드는 새로 쓴 이야기 "유리 정원의 기록"이다. graph-visualization 의 ORV 픽스처는 저작권 문제로 가져오지 않았다.
 - 모든 호출은 `simulate(operation, fn)` 을 지나며 지연(기본 280ms, ±30%)과 실패 규칙을 적용하고, 결과를 `structuredClone` 해서 돌려준다(화면이 mock 데이터를 직접 고치지 못하게).
 

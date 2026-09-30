@@ -43,6 +43,8 @@ scripts/               Pencil 동기화, 토큰 생성, 아이콘 등록, 정적
 | `/projects/trash/` | 프로젝트 휴지통 |
 | `/projects/guide/?topic=<id>` | 사용 가이드 |
 | `/logout/` | 로그아웃 완료 |
+| `/welcome/` | 첫 사용 온보딩. `?replay=1` 은 사용 가이드에서 다시 보기 |
+| `/goodbye/` | 계정 삭제 완료 |
 | `/workspace/?projectId=<id>&open=<tab>` | 작업공간. `open` 은 `file:<fileId>`, `search`, `graph`, `timeline`, `memo`, `trash`, `settings`, `help` |
 
 `useSearchParams` 를 쓰는 페이지는 Suspense 로 감싼다(정적 export 요구 사항).
