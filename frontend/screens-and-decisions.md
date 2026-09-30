@@ -28,6 +28,9 @@
 | 145–148, 173 | 그래프(기본·노드 선택·필터·검색) | `features/graph` | ✓ |
 | 149–152, 174 | 타임라인(기본·회차 선택·줄 필터·에피소드 메뉴) | `features/timeline` | ✓ |
 | 153–158 | 그래프 최신화(대기·추출 중·준비됨·Diff 모달 세 상태) | `workspace/sidebar/graph-refresh-item.tsx`, `features/graph-refresh` | ✓ |
+| 124–130 위험 영역, 175–179 | 계정 삭제(설정의 삭제 줄·확인·입력 완료·삭제 중·실패·완료) | `features/account/account-delete-dialog.tsx`, `account-deleted.tsx` | ✓ |
+| 184–188 | 첫 사용 온보딩(프로젝트·원고와 설정·그래프와 타임라인·AI 최신화·시작 고르기) | `features/onboarding` | ✓ |
+| 180–183 | 약관 동의(와이어프레임 안) | 구현하지 않음. 기존 로그인 화면 모달을 쓴다([이유](onboarding-and-account-deletion.md#와이어프레임과-다르게-한-점)) | — |
 
 ## 와이어프레임과 다르게 한 점
 

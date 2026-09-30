@@ -78,6 +78,17 @@ src/services/api/
 | **401 을 자동 재전송하지 않는다** | 계약이 금한다. 저장·수정은 결과 유실 위험이 있어 각 도메인의 중복 방지(`X-Save-Id`)를 따른다 |
 | 로그아웃은 `POST /auth/sessions/revoke` | 토큰 시절의 `/auth/tokens/revoke` 는 사라졌다. `session_revocation` 이 `unconfirmed` 면 완전한 성공으로 표시하지 않는다 |
 
+온보딩 상태와 계정 삭제도 같은 계정 API 에 있다.
+
+| 요청 | 어댑터 |
+|---|---|
+| `GET /auth/users/me` 의 `onboarding_completed` | `User.onboardingCompleted`. 필드가 없으면 완료로 본다 |
+| `PUT /auth/users/me/onboarding` | `account.completeOnboarding()`, 204 |
+| `POST /auth/users/me/deletion` `{confirmation_email}` | `account.deleteAccount()`, 204. 인증 전환 안에서 부르고 성공하면 BFF 가 세션 쿠키를 지운다 |
+| `POST /projects/sample` | `projects.createSample()`, 201 과 프로젝트 |
+
+흐름과 오류 처리: [onboarding-and-account-deletion.md](onboarding-and-account-deletion.md).
+
 계약: `loresentry-gateway/docs/auth/SESSION_FLOW.md`, `docs/FRONTEND_AUTH_CONTRACT.md`.
 
 ## 6. 전환 방법
