@@ -53,7 +53,7 @@ URL 의 `?mock=` 로 실패·지연을 넣는다. 쉼표로 여러 규칙을 잇
 | 파일·폴더는 한 트리이고 `rank` 는 문자열 fractional index 다 | DOCUMENT_EDITING_PROPOSAL §4.1 | `domain/models.ts` |
 | 사용자 섹션은 최상위 폴더이고, 섹션을 지우면 같은 이름의 일반 폴더로 파일 영역에 남는다 | 와이어프레임 27·86 (요구사항 §4.1보다 넓다) | `domain/models.ts`, `ports.ts` |
 | 에피소드 폴더를 지우면 회차는 원고 폴더로 돌아간다 | 와이어프레임 166 | `ports.ts` deleteEpisode |
-| 본문은 Markdown 문자열 하나, `revisionNo` 가 If-Match 토큰이다 | DOCUMENT_EDITING_PROPOSAL §2·§5 | `domain/models.ts`, `ports.ts` |
+| 본문은 에디터 JSON(`{schema_version, doc}`)이고, `revisionNo` 가 If-Match 토큰이다. 서버는 여기서 순수 텍스트를 따로 뽑아 검색·글자 수에 쓴다 | DOCUMENT_EDITING_PROPOSAL §2·§5, `CONTENT_PROJECT_API.md` §0.18 | `domain/document-body.ts`, `ports.ts` |
 | 저장 충돌(409)은 현재 본문과 공통 조상을 함께 돌려준다 | DOCUMENT_EDITING_PROPOSAL §5 | `ports.ts` ConflictError |
 | 버전은 제목·본문·속성 전체 스냅샷이고, 복원 전에 PRE_RESTORE 를 남긴다 | DOCUMENT_EDITING_PROPOSAL §4.2, 요구사항 §6.2 | `domain/models.ts`, `ports.ts` |
 | 내보내기(PDF·DOCX·HWP)는 서버가 파일을 만들어 URL 을 준다. mock 은 MD·TXT 만 실제로 만든다 | 미확정 | `ports.ts`, `mock/documents.ts` |

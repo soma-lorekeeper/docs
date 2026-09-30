@@ -7,7 +7,7 @@
 | 프레임워크 | Next.js 16 App Router, `output: "export"`, `trailingSlash: true` | 기존 배포(S3 + CloudFront 정적 호스팅)를 그대로 쓴다. 서버 런타임이 없다. |
 | 스타일 | CSS Modules + CSS 변수(`--lk-*`) | 토큰이 Pencil 변수에서 생성되고, 테마 전환이 변수 교체만으로 끝난다. |
 | 서버 상태 | TanStack Query 5 | 쿼리 키를 한곳(`services/query-keys.ts`)에서 관리하고 무효화 규칙을 모은다. |
-| 에디터 | Tiptap 3 + `@tiptap/markdown` | 본문을 Markdown 문자열 하나로 저장한다는 서버 가정에 맞춘다. |
+| 에디터 | Tiptap 3 + `@tiptap/markdown` | 본문을 **에디터 문서 구조(JSON)** 로 저장한다. Markdown 은 가져오기·내보내기에서만 쓴다 — 저장 형식으로 쓰던 동안 사용자가 쓴 일반 문단이 제목·목록·밑줄로 바뀌었다. |
 | 그래프 | `react-force-graph-2d` + `d3-force-3d` | graph-visualization 실험 레포와 같은 렌더러. 브라우저 전용이라 `next/dynamic({ ssr: false })` 로 불러온다. |
 | 테스트 | Vitest + Testing Library + jsdom | |
 
@@ -85,7 +85,8 @@ WorkspaceLayout
 - 409 가 오면 서버가 준 현재 본문·공통 조상으로 **문단 단위 3-way 병합**(`merge-text.ts`)을 시도하고, 같은 문단이 겹치면 "내 변경 유지 / 최신 버전 불러오기"를 묻는다.
 - 편집 중(또는 저장 요청이 떠 있는 동안)에 다른 곳의 저장이 캐시로 들어오면 **revision 을 올리지 않는다**. 올리면 다음 저장이 충돌 없이 남의 변경을 덮어쓰므로, 일부러 낡은 revision 으로 보내 409 를 받고 위 병합으로 넘어간다.
 - 잠긴 문서는 편집을 막는다. 잠그기 전에 남은 변경을 먼저 저장한다.
-- 에디터는 Tiptap 이고 본문은 Markdown 으로 오간다. 밑줄은 `++text++` 로 직렬화한다(Markdown 표준에 밑줄이 없어서).
+- 에디터는 Tiptap 이고 본문은 `{ schemaVersion, doc }` JSON 으로 오간다. 밑줄도 다른 서식처럼 마크로 저장된다 — Markdown 표준에 밑줄이 없어 `++text++` 로 쓰던 것이, 그렇게 쓴 **평범한 글자**까지 밑줄로 바꿨다.
+- 3-way 병합은 **최상위 블록 배열** 기준이다. 블록 동일성은 직렬화 비교라 같은 글자라도 서식이 다르면 다른 블록이다.
 
 ## 접근성 원칙
 

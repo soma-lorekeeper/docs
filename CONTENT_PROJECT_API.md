@@ -19,9 +19,9 @@
 
 | 저장소 | 배포 | 테스트 |
 |---|---|---|
-| `loresentry-content` | Flyway `V8` | 150 |
+| `loresentry-content` | Flyway `V9` | 160 |
 | `loresentry-gateway` | BFF 배포됨, prod 프로필 기동 중 | 186 |
-| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 240 |
+| `loresentry-frontend` | 배포됨, **기본값 `api`** (`?data=mock` 으로 되돌림) | 239 |
 
 ## 0.1 구현된 엔드포인트 38개
 
@@ -340,7 +340,7 @@ kubectl --context lore-sentry → exec 에 AWS_PROFILE=lorekeeper 고정  ✅
 
 **찾은 결함.** API 어댑터의 `export` 가 **모든 형식을 거절했다.** `?data=api` 로 전환하면 mock 에서 되던 `md`·`txt` 내보내기가 오류 토스트로 바뀌고, DOCX·HWP 는 화면의 `catch` 가 "잠시 후 다시 시도해 주세요" 를 띄웠다 — 서버가 만들 수 없는 형식이므로 **영원히 성공하지 않는 재시도다.**
 
-`md`·`txt` 는 서버가 필요 없다(문서 자체가 Markdown 이다). 브라우저에서 만들고, DOCX·HWP 는 거절 대신 **빈 `url`** 을 준다 — 포트 계약에서 "아직 준비되지 않았다"는 뜻이고 화면이 이미 그걸 안내로 바꾼다. `loresentry-frontend#7`.
+`md`·`txt` 는 서버가 필요 없다 — 본문이 에디터 JSON 이므로 브라우저가 그것을 Markdown·텍스트로 바꾼다(§0.18). 브라우저에서 만들고, DOCX·HWP 는 거절 대신 **빈 `url`** 을 준다 — 포트 계약에서 "아직 준비되지 않았다"는 뜻이고 화면이 이미 그걸 안내로 바꾼다. `loresentry-frontend#7`.
 
 `md` 의 관계 줄은 대상 문서 **제목**이 필요한데 문서 응답에는 대상 id 만 온다. 관계가 하나라도 있을 때만 파일 목록을 한 번 더 불러 대응을 만든다.
 
@@ -679,6 +679,70 @@ frontend   240 passed               메모 테스트를 자동 저장 → 수동
 
 ---
 
+## 0.18 본문 저장 형식을 Markdown → 에디터 JSON 으로 바꿨다
+
+`TEMP_BODY_JSON_MIGRATION.md` 의 작업이다. 에디터·UI 는 그대로 두고 **저장 형식만** 바꿨다.
+
+### 왜 — 실제로 확인된 데이터 손상
+
+Markdown 문자열은 글자와 서식 기호를 한 곳에 섞는다. 그래서 사용자가 쓴 **일반 문단**이 다시 열 때 다른 것이 됐다.
+
+| 쓴 것 | 다시 열면 |
+|---|---|
+| `# 해시로 시작하는 문장` | 제목(H1) |
+| `1. 번호처럼 보이는 문장` | 번호 목록 |
+| `++더하기로 감싼 문장++` | 밑줄 |
+
+문단별 정렬·들여쓰기(요구사항 §5.1)를 담을 자리도 없었다.
+
+### 값의 모양
+
+API·DB·버전 스냅샷이 같은 모양을 쓴다. 프론트 타입은 `DocumentBody`, API 필드는 `body`.
+
+```json
+{ "schema_version": 1, "doc": { "type": "doc", "content": [ ... ] } }
+```
+
+### 서버 — `loresentry-content#12`
+
+| 칸 | 무엇 |
+|---|---|
+| `document.body_json` JSONB | 본문의 **유일한 원본**. `NULL` 이면 변환 전 레거시 행 |
+| `document.body_text` TEXT | 서버가 `body_json` 에서 뽑은 순수 텍스트. 검색·글자 수·앞으로의 AI 추출이 쓴다. **클라이언트가 보내지 않는다** |
+| `document.body_md` | 레거시 읽기용으로만 남는다. 새로 쓰지 않고, 모든 행이 변환된 뒤 후속 마이그레이션에서 지운다 |
+
+- 저장 검증: `doc` 여부·`schema_version`·**노드/마크 허용 목록**·JSON 4MB·추출 텍스트 1,000,000자. 모르는 노드는 **거절한다** — 저장하면 다른 클라이언트가 못 여는 문서가 되고, 조용히 지우면 사용자는 글이 사라진 것으로 본다.
+- `char_count` 는 추출 텍스트의 코드 포인트 수(줄바꿈 제외)다. 예전에는 Markdown 기호까지 세는 `String.length()` 였다.
+- 새 문서는 삽입 시점에 빈 JSON 본문을 갖는다. 비워 두면 레거시 행과 구분되지 않는다.
+
+### 프론트 — `loresentry-frontend#19`
+
+- `domain/document-body.ts`(에디터 의존 없음)와 `features/documents/editor/body-markdown.ts`(헤드리스 에디터).
+- **Markdown 은 입출력 형식일 뿐이다.** 가져올 때 한 번 들어오고 내보낼 때 한 번 나가며, 왕복시키지 않는다 — 그 왕복이 손상의 원인이었다.
+- 3-way 병합이 **최상위 블록 배열** 기준이 됐다. 블록 동일성은 직렬화 비교라 같은 글자라도 마크가 다르면 다른 블록이다. 블록 추가·삭제는 충돌로 본다.
+- `bodyToPlainText` 는 서버 `BodyText.extract` 와 **같은 규칙**이어야 한다. 다르면 같은 문서의 글자 수가 화면과 서버에서 다르게 보인다.
+
+### 레거시 호환
+
+옛 모양이 두 곳에 남아 있다 — `body_json` 이 `NULL` 인 문서 행, 그리고 버전·최신화 스냅샷 JSONB 안의 `body_md`. 응답은 `body`(nullable)와 `legacy_body_md`(nullable)를 함께 갖고, 저장 요청의 `legacy_body_md` 는 무시한다.
+
+**Markdown → JSON 변환은 프론트가 한다.** 서버는 Markdown 을 해석하지 않는다. 어댑터가 `legacy_body_md` 를 받으면 바꿔서 넘기므로 화면 모델에는 언제나 `DocumentBody` 만 올라가고, 그 문서를 다음에 저장하면 변환이 끝난다.
+
+### 검증
+
+```text
+content    160 passed (150 → 160)
+frontend   239 passed · pnpm check:cdn 통과
+```
+
+회귀 테스트로 `# …`, `1. …`, `++…++`, `*…*` 인 일반 문단이 저장·재조회 후 그대로인지 **mock 경로와 API 어댑터 경로 둘 다** 확인한다. `md` 내보내기는 여전히 단방향이고(내보낸 `# …` 을 다시 읽으면 제목이 된다) 그 사실도 테스트로 못 박았다 — 그것이 저장 형식을 바꾼 이유다.
+
+### 아직 아닌 것
+
+에디터 UI 변경, 문단별 정렬·들여쓰기(`schema_version` 2 에서), `body_md` 컬럼 삭제(모든 행 변환 확인 후).
+
+---
+
 ## 10. authentication 서비스와의 정렬 — `loresentry-content#4`
 
 `loresentry-authentication`의 `deliverable/LOREKEEPER-506` 브랜치에 Google OAuth·토큰·계정 API가 전부 구현되어 있다. 그 서비스가 이미 같은 gateway를 지나 같은 프론트엔드로 답하므로, **두 서비스가 어긋난 지점은 content가 옮겼다.** 나중에 합치는 비용이 지금 옮기는 비용보다 크다.
@@ -821,6 +885,9 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 50 | 인쇄 양식 + DOCX·HWP 비활성 (§0.17) | frontend | ✅ `#18` |
 | 51 | 검색 기능 제거 (Elasticsearch 로 대체 예정) | frontend | ✅ `#18` |
 | 52 | content CI 가 push 에 트리거되지 않은 원인 확인 (§0.17) | content | ☐ |
+| 53 | 본문 저장 형식 Markdown → 에디터 JSON (§0.18) | content · frontend · docs | ✅ `#12` `#19` |
+| 54 | `body_md` 컬럼 삭제 — 모든 행의 `body_json` 확인 후 | content | ☐ |
+| 55 | 문단별 정렬·들여쓰기 (`schema_version` 2) | content · frontend | ☐ |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 

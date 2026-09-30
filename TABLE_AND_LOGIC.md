@@ -258,9 +258,14 @@ project_id           UUID              소속 프로젝트다.
 folder_id            SMALLINT          base_folders.id. 문서가 속한 기본 폴더다.
 episode_id           UUID              episode_folders.id. 원고가 에피소드에 속하면 채운다.
 title                VARCHAR           문서 제목이다.
-body_md              TEXT              본문 전체 Markdown 문자열이다.
+body_json            JSONB             본문. 에디터 문서 구조를 담는다. 본문의 유일한 원본이다.
+                                       {"schema_version":1,"doc":{...}} 모양이다.
+body_text            TEXT              서버가 body_json 에서 뽑은 순수 텍스트다.
+                                       검색·글자 수·AI 추출이 쓴다. 클라이언트가 보내지 않는다.
+body_md              TEXT              변환 전 Markdown. body_json 이 NULL 인 옛 행만 쓴다.
+                                       새로 쓰지 않으며 후속 마이그레이션에서 지운다.
 body_sha             VARCHAR           본문 해시. 같은 저장을 생략하는 데 쓴다.
-char_count           INTEGER           글자 수다.
+char_count           INTEGER           글자 수다. body_text 의 코드 포인트 수(줄바꿈 제외)다.
 rank                 VARCHAR           같은 기본 폴더 또는 에피소드 안의 정렬 순서다.
 revision_no          BIGINT            실제 문서 저장 번호다. 오래된 탭의 덮어쓰기를 막는다.
 locked               BOOLEAN           문서 편집 잠금 여부다.
@@ -287,10 +292,14 @@ project_id     = p-orv
 folder_id      = 2                 -- base_folders.CHARACTER
 episode_id     = null
 title          = 유중혁
-body_md        =
-  "유중혁은 회귀를 반복하는 인물이다.
-
-   그는 매 회차의 결말을 알고 있다."
+body_json      =
+  {"schema_version": 1,
+   "doc": {"type": "doc", "content": [
+     {"type": "paragraph", "content": [
+       {"type": "text", "text": "유중혁은 회귀를 반복하는 인물이다."}]},
+     {"type": "paragraph", "content": [
+       {"type": "text", "text": "그는 매 회차의 결말을 알고 있다."}]}]}}
+body_text      = "유중혁은 회귀를 반복하는 인물이다.\n그는 매 회차의 결말을 알고 있다."
 body_sha       = sha256:7a82...
 char_count     = 38
 rank           = a0V
@@ -307,7 +316,7 @@ project_id     = p-orv
 folder_id      = 4                 -- base_folders.MANUSCRIPT
 episode_id     = ef-01
 title          = 1화 멸망의 시작
-body_md        = "...원고 전체 Markdown..."
+body_json      = {"schema_version":1,"doc":{...원고 전체...}}
 revision_no    = 7
 ```
 
@@ -663,7 +672,8 @@ refresh_document_drafts
 
 ```text
 UPDATE document
-SET body_md = :entireBody,
+SET body_json = :entireBody,
+    body_text = :extractedText,
     body_sha = :hash,
     char_count = :count,
     revision_no = revision_no + 1,
@@ -743,9 +753,10 @@ base → left, base → right : 3-way diff/merge
 본문의 권장 계산 단위:
 
 ```text
-1. 빈 줄 기준으로 문단 배열 생성
-2. 문단 단위 diff3로 안정 구간 / 변경 구간 / 충돌 구간 판정
-3. 변경 문단 내부만 라인 diff
+1. 최상위 블록 배열을 그대로 문단 단위로 쓴다(본문이 이미 블록 배열이다)
+2. 블록 단위 diff3로 안정 구간 / 변경 구간 / 충돌 구간 판정.
+   블록 동일성은 직렬화 비교다 — 같은 글자라도 서식이 다르면 다른 블록이다
+3. 변경 블록 내부만 라인 diff
 4. 필요하면 바뀐 라인 내부만 문자 diff로 강조
 ```
 
