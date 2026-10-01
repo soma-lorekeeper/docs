@@ -348,25 +348,42 @@ position     = 10
 
 목적: 관계 칩을 저장한다. 그래프와 타임라인의 원천 데이터다.
 
+**관계에는 방향이 없다. 그래서 한 쌍에 한 행이다.** 예전에는 A→B 와 B→A 를 각각 한 행으로 두고
+저장할 때마다 반대쪽을 맞춰 주었는데, 같은 사실을 두 곳에 적는 구조라 어긋나면 한쪽 문서에서만
+보이는 관계가 생겼다(실제로 그랬다). 두 id 를 크기 순으로 넣어 쌍을 한 가지 모양으로 고정한다 —
+순서 제약이 없으면 `(A,B)` 와 `(B,A)` 가 서로 다른 행으로 들어간다.
+
 ```text
 컬럼                 타입              역할과 필요한 이유
 ──────────────────────────────────────────────────────────────────────────
 id                   UUID              관계 행 ID다.
-document_id          UUID              관계를 가진 출발 문서다.
-relation_key         VARCHAR           related_character, related_event 등 관계 종류다.
-target_document_id   UUID              연결된 대상 문서다.
-position             INTEGER           관계 칩 표시 순서다.
+low_document_id      UUID              두 끝 중 id 가 작은 쪽이다. "출발"이 아니다.
+high_document_id     UUID              두 끝 중 id 가 큰 쪽이다.
+description          TEXT              이 연결의 설명이다. 대상 문서가 아니라 연결의 것이라 쌍마다 하나다.
 ```
+
+`relation_key` 와 `position` 은 행의 성질이 아니라서 두지 않는다.
+
+- **키는 반대쪽 문서의 분류가 정한다.** 원고에서 캐릭터를 보면 `related_character`, 같은 행을
+  캐릭터에서 보면 `related_manuscript` 다. 한 행에서 양쪽 키가 모두 나와야 하므로 분류 표
+  (`base_folders.relation_key`)에서 꺼낸다. 행에 적어 두면 문서를 다른 분류로 옮겼을 때 어긋난다.
+- **순서는 읽을 때 정한다**(키, 그다음 행 id = 만든 순서). 한 행이 두 문서의 것이라 문서마다 다른
+  순서를 담을 자리가 없다.
 
 ```text
-document_relations 레코드 예시
+document_relations 레코드 예시 — 원고 d-ch1 과 캐릭터 d-yjh 의 관계 하나
 
-id                 = dr-yjh-kdj
-document_id        = d-yjh
-relation_key       = related_character
-target_document_id = d-kdj
-position           = 10
+id               = dr-ch1-yjh
+low_document_id  = d-ch1          (두 id 중 작은 쪽일 뿐이다)
+high_document_id = d-yjh
+description      = 첫 등장
+
+d-ch1 에서 읽으면 → relation_key = related_character,  target = d-yjh
+d-yjh 에서 읽으면 → relation_key = related_manuscript, target = d-ch1
 ```
+
+휴지통에 있는 문서와의 관계는 **읽을 때 빠지지만 지워지지 않는다.** 그 사이에 상대 문서를
+저장했다고 행을 지우면, 되살렸을 때 관계가 돌아올 자리가 없다.
 
 ## 4.8 `document_versions`
 

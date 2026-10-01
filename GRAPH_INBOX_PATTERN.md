@@ -36,7 +36,7 @@ Content (PostgreSQL)                     graph-rag (Neptune)
 |---|---|---|
 | 파일 | `files` 행 | label `File`, id `file:<uuid>` |
 | 프로젝트 | `projects` 행 | label `Project`, id `project:<uuid>` |
-| 관계 | `document_relations` 행 | edge `REFERENCES`, `File → File` |
+| 관계 | `document_relations` 행 (한 쌍에 하나) | edge `REFERENCES`, `File — File` (방향 없음) |
 | 발행 대기 이벤트 | `outbox_events` 행 | 없음 (Neptune은 발행하지 않는다) |
 | 처리 완료 이벤트 | 없음 | label `InboxEvent`, id `inbox:<eventId>` |
 
