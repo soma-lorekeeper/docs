@@ -29,6 +29,7 @@ GA 의 자동 page_view 를 끄고(`send_page_view: false`) 라우트가 바뀔 
 | 그 밖 전부 | 버린다 — `projectId`, `returnTo`, `result`, `auth`, `data`, `mock`, `replay`, 해시 |
 
 - 걸러 낸 주소는 `gtag("set", { page_location })` 으로 둔다. 같은 페이지에서 나는 스크롤·외부 링크 클릭 같은 향상된 측정 이벤트도 걸러 낸 주소를 쓴다.
+- **`config` 에는 `page_location` 을 넣지 않는다.** `config` 의 값이 뒤의 `set` 보다 우선해서, 첫 페이지 뒤의 모든 page_view 가 첫 주소로 찍혔다(`loresentry-frontend#33`). 그래서 주소는 `set` 과 page_view 이벤트 자체에 싣는다.
 - 걸러 낸 주소가 직전과 같으면 보내지 않는다. 프로젝트만 바꿔 작업공간을 다시 열면 같은 페이지로 본다. React Strict Mode 의 이중 실행도 여기서 걸린다.
 - 두 번째 페이지부터 직전 주소를 `page_referrer` 로 싣는다.
 - 작업공간 안의 탭 전환은 URL 이 바뀌지 않으므로 page_view 가 아니다. 필요하면 이벤트로 따로 보낸다(5절).
@@ -60,4 +61,5 @@ GA 의 자동 page_view 를 끄고(`send_page_view: false`) 라우트가 바뀔 
 ## 6. 검증
 
 - 단위 테스트(`google-analytics.test.tsx`): 켜지는 조건, 쿼리 걸러 내기, gtag.js 한 번만 불러오기, 페이지별 page_view 한 번과 referrer, 측정 ID 형식.
+- 2026-10-06 운영 확인: 헤드리스 브라우저로 `/workspace/?projectId=…&open=file:…&mock=x` 에 접속해 `/g/collect` 요청을 잡았다. page_view 두 건(`/workspace/?open=file` → `/login/`, referrer 이어짐)과 scroll 한 건이 `G-FV1Y05NZQW` 로 나갔고, 식별자·테스트 쿼리는 없었다. 중복 page_view 도 없었다.
 - 배포 후: Tag Assistant 로 `loresentry.com` 연결 → GA DebugView 와 실시간 보고서에서 page_view 의 `page_location` 에 `projectId` 가 없는지, Google 로그인 뒤 세션 소스가 `accounts.google.com` 으로 바뀌지 않는지 확인한다.
