@@ -16,6 +16,7 @@
 | [mock-and-server-contract.md](mock-and-server-contract.md) | 서비스 포트와 mock 구현, `?mock=` 실패·지연 주입, 서버에 대한 잠정 가정 목록 |
 | [graph-visualization-port.md](graph-visualization-port.md) | graph-visualization 실험 레포에서 옮겨 온 알고리즘과 바꾼 점 |
 | [onboarding-and-account-deletion.md](onboarding-and-account-deletion.md) | 첫 사용 온보딩(상태·모션·다시 보기), 계정 삭제 흐름, 예시 프로젝트 |
+| [analytics.md](analytics.md) | Google Analytics 4. 켜지는 조건, URL 식별자 걸러 내기, GA 콘솔 설정, 처리방침 변경 |
 | [screens-and-decisions.md](screens-and-decisions.md) | 와이어프레임 화면별 구현 위치, 와이어프레임과 다르게 한 점, 남은 결정 사항 |
 
 ## 실행
