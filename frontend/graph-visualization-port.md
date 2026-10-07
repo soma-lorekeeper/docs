@@ -19,8 +19,9 @@
 | `graph/types.ts` `DEFAULT_KINDS` | `engine/types.ts` | 노드가 150개를 넘을 때만 원고·캐릭터·이벤트로 시작하고 안내를 띄운다 |
 | `timeline/timeline-rows.ts` (+test), `timeline-data.ts` | `features/timeline/` | 회차 순서를 에피소드 순서 + 미배정 원고로 만든다. 열 이름은 원고 제목의 " · " 앞부분("12화"). 테스트는 시드 기준으로 다시 썼다 |
 | `diff/line-diff.ts` (+test) | `features/diff/line-diff.ts` | 그대로. 버전 비교와 최신화 모달이 함께 쓴다 |
+| `diff/body-diff.tsx` | `features/graph-refresh/body-compare.tsx` | 본문 한쪽 전체가 편집 구역 하나(contentEditable)인 구조를 그대로 옮겼다. 줄 번호 칸은 빼고, 짝지은 줄 안에서 바뀐 낱말을 한 번 더 짚는다(`word-diff.ts`) |
 | `docs-view/inline-text.tsx` | `features/documents/inline-text.tsx` | 관계 설명을 그 자리에서 고치는 데 쓴다. 여러 줄 입력은 쓰지 않아 뺐다 |
-| `diff/merge.ts` | `features/graph-refresh/merge.ts` | 문서 모양을 `DocumentDraft`(제목·JSON 본문·속성 목록)로 바꿨다. 본문은 **최상위 블록 하나를 한 줄로** 보고 덩어리를 옮긴다. 직접 편집(`editSingle`·`editList`)은 옮기지 않았다 |
+| `diff/merge.ts` | `features/graph-refresh/merge.ts` | 문서 모양을 `DocumentDraft`(제목·JSON 본문·속성 목록)로 바꿨다. 본문은 **최상위 블록 하나를 한 줄로** 보고 덩어리를 옮긴다. 양쪽 직접 편집도 옮겼다(`editTitle`·`editProperty`·`editBody`) — 줄 단위로 고쳐도 손대지 않은 블록의 서식은 그대로 남는다 |
 
 옮기지 않은 것: `store.ts`·`favorites.ts`(서비스 쿼리와 즐겨찾기 API 가 대신한다), `cluster.ts`(배치에서 쓰지 않음), 어항 타임라인·문서 뷰·툴바 등 실험용 UI, `diff/doc-snapshot.ts`·`incoming.ts`(실험 레포의 문서 모양 전용).
 
