@@ -77,6 +77,7 @@ id                   UUID              서비스 내부 사용자 ID. 다른 서
 google_subject       VARCHAR           Google OIDC sub. 이메일 변경과 무관한 Google 계정 고유값이다.
 email                VARCHAR           표시용 Google 이메일이다. 사용자는 직접 바꾸지 않는다.
 display_name         VARCHAR           사용자가 수정 가능한 서비스 표시 이름이다.
+locale               VARCHAR(5)        화면 언어(ko / en). NULL 이면 아직 적힌 적이 없다. 처음 로그인할 때 프론트가 그때 보던 언어를 적는다.
 status               VARCHAR           ACTIVE / DELETED. 탈퇴·비활성 계정 로그인을 막는다.
 created_at           TIMESTAMPTZ       계정 생성 시각이다.
 updated_at           TIMESTAMPTZ       마지막 계정 수정 시각이다.
@@ -99,7 +100,12 @@ updated_at     = 2026-09-18 11:24:12+09
 ```text
 UNIQUE (google_subject)
 CHECK (status IN ('ACTIVE', 'DELETED'))
+CHECK (locale IN ('ko', 'en'))
 ```
+
+약관 번역: `terms_version_translations (terms_version_id, locale, title, content)`. 동의는 언제나 원본
+`terms_versions` 행에 기록하고, 번역은 그 행을 다른 언어로 보여 줄 뿐이다. `GET /auth/terms?locale=en` 이
+번역이 있으면 번역을, 없으면 원본을 돌려준다([frontend/i18n.md](frontend/i18n.md)).
 
 ## 3.2 `auth_sessions`
 
