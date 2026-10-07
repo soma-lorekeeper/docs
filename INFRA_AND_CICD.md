@@ -1043,6 +1043,14 @@ ALB용 인증서는 `ap-northeast-2`에 있지만 **CloudFront는 `us-east-1`의
 2. 나머지를 `max-age=60`으로, `--delete`로 오래된 산출물 정리. `--delete`를 1단계에 걸면 현재 서비스 중인 HTML이 쓰는 청크가 사라진다.
 3. `config.json`을 `no-store`로 따로. 이 파일만 교체하면 재빌드 없이 백엔드 주소를 바꿀 수 있고, CloudFront에서도 `CachingDisabled`로 분리해 뒀다.
 
+### 한국어판과 영어판 — 2026-10-07
+
+버킷에 언어판이 둘 있다. CI 가 `pnpm build:locales` 로 두 번 export 해 `/ko/`, `/en/` 아래에 같은 3단계로 올리고,
+버킷 맨 위에는 한국어판을 남긴다(함수를 바꾸기 전 서빙 + `/404.html`). `loresentry-web-rewrite` 함수가 언어 없는
+경로를 `ls_locale` 쿠키 → `CloudFront-Viewer-Country`(KR 이면 한국어) → `Accept-Language` → 영어 순으로 골라
+`/<언어>/...` 로 rewrite 한다. 자세한 내용과 콘솔 작업(origin request policy 에 나라 헤더 넣기, 함수 publish 순서)은
+[frontend/i18n.md](frontend/i18n.md), `loresentry-frontend/docs/deploy/README.md`.
+
 ## 17-A. 사용자 이미지 — 별도 S3 + CloudFront — **[구축 완료/확인]**
 
 프론트엔드 버킷과는 **다른** 버킷이다. frontend CI의 `--delete` sync와 `/*` invalidation이 사용자 데이터에 닿으면 안 되기 때문이다.
