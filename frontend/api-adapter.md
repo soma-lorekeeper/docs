@@ -1,7 +1,7 @@
 # 서버 연결 — API 어댑터
 
-> 작성일: 2026-09-24 · 최신화: 2026-09-28
-> 상태: **배포 기본값이 `api` 다.** 포트 13개 중 9개가 실제 API 로 돌고, 서버가 없는 4개는 mock 이 아니라 **거절한다.**
+> 작성일: 2026-09-24 · 최신화: 2026-10-08
+> 상태: **배포 기본값이 `api` 다.** `chat` 만 서버가 없어 **거절한다.** `refresh` 는 AI 자리만 규칙으로 채운 미리보기다([`graph-refresh-preview.md`](graph-refresh-preview.md)).
 > 전제: [`../CONTENT_PROJECT_API.md`](../CONTENT_PROJECT_API.md), [`mock-and-server-contract.md`](mock-and-server-contract.md)
 
 ## 1. 포트 단위로 옮긴다
@@ -21,7 +21,7 @@ return { ...mock, ...createApiServices(config.apiBaseUrl) };
 | `memos` `workspaceState` `favorites` `feedback` | **API** | — |
 | `graph` | **API** (content RDB 의 `GET /projects/{id}/graph`) | — |
 | `help` | **정적 글** (`services/api/help.ts`, 앱과 함께 배포) | — |
-| `refresh` | **거절** (`unavailable`) | content 최신화 API · graph-rag HTTP · 이벤트 파이프라인 |
+| `refresh` | **미리보기** (`services/api/refresh.ts`). 실제 문서를 읽고 실제 API 로 반영한다. 갱신안만 규칙으로 만든다 | graph-rag 갱신안 생성 · content 최신화 API |
 | `chat` | **거절** | ai-chat 서비스 |
 
 **서버가 없는 포트는 mock 으로 덮지 않는다.** 실제 API 로 도는 사이트에서 mock 그래프·대화는 보는 사람이 자기 자료로 믿는다. 그래서 `unavailable` 로 거절하고 화면이 "준비 중" 이라고 말한다(`services/api/unavailable.ts`, `features/common/preparing-state.tsx`).
@@ -35,7 +35,8 @@ src/services/api/
   http.ts        ApiClient — base URL, 쿠키, CSRF·조건부 헤더, 오류 변환
   errors.ts      서버 code → ServiceErrorCode 표와 사용자 문구
   mapping.ts     분류 코드 ↔ 문서 종류, 관계 키, 속성 합치기/나누기, 아이콘
-  unavailable.ts 서버가 없는 포트(refresh, chat)를 거절하는 구현
+  unavailable.ts 서버가 없는 포트(chat)를 거절하는 구현
+  refresh.ts     그래프 최신화 실행·반영. refresh-proposals.ts 가 AI 자리(규칙 생성기)
   auth.ts        projects.ts   files.ts   documents.ts   graph.ts
   memos.ts       workspace-state.ts   favorites.ts   feedback.ts   help.ts
   index.ts       createApiServices(): Partial<Services>
@@ -111,7 +112,8 @@ src/services/api/
 | 에피소드 순서 바꾸기 | 서버에 에피소드 이동 엔드포인트가 없다 |
 | 내보내기 | 서버 렌더링이 없다. PDF 는 화면 인쇄로 따로 처리한다 |
 | 이미지 업로드 | **프론트에 포트도 UI 도 없다.** 서버 3개 엔드포인트와 BFF 라우트는 준비돼 있다 |
-| AI 최신화·AI 챗 | 서버가 없다. mock 으로 덮지 않고 "준비 중" 으로 알린다. 첫 프로젝트 투어는 최신화가 없으면 그 단계를 뺀다 |
+| AI 챗 | 서버가 없다. mock 으로 덮지 않고 "준비 중" 으로 알린다 |
+| 그래프 최신화의 AI 생성 | 갱신안을 규칙으로 만든다. 화면에 "미리보기 제안" 이라고 적는다. 실행 상태는 그 브라우저에만 남는다 |
 
 내보내기 `md`·`txt` 는 서버가 필요 없어 **브라우저에서 만든다.** PDF 는 화면 인쇄다. DOCX·HWP 만 서버를 기다린다.
 
