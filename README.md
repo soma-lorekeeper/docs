@@ -13,6 +13,7 @@
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
 | [CONTENT_PROJECT_API.md](CONTENT_PROJECT_API.md) | **Content API 구현 현황.** 동작하는 엔드포인트 26개, 구현되지 않은 기능과 막는 것, gateway 중계, 남은 작업 |
 | [TABLE_AND_LOGIC.md](TABLE_AND_LOGIC.md) | Authentication·Content·AI Chat 테이블(Flyway로 운영 DB 반영됨)과 3-way 문서 최신화·diff·저장 흐름 |
+| [GOOGLE_ADS.md](GOOGLE_ADS.md) | **Google Ads 검색 광고 진행 상황.** 선불 계정, 캠페인 설정·키워드·광고 문구, 가입 전환 측정, 남은 일 |
 
 ## 새로 합류했다면
 
