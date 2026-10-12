@@ -1,6 +1,6 @@
 # 서버 연결 — API 어댑터
 
-> 작성일: 2026-09-24 · 최신화: 2026-10-08
+> 작성일: 2026-09-24 · 최신화: 2026-10-12
 > 상태: **배포 기본값이 `api` 다.** `chat` 만 서버가 없어 **거절한다.** `refresh` 는 AI 자리만 규칙으로 채운 미리보기다([`graph-refresh-preview.md`](graph-refresh-preview.md)).
 > 전제: [`../CONTENT_PROJECT_API.md`](../CONTENT_PROJECT_API.md), [`mock-and-server-contract.md`](mock-and-server-contract.md)
 
@@ -20,6 +20,7 @@ return { ...mock, ...createApiServices(config.apiBaseUrl) };
 | `projects` `files` `documents` `versions` | **API** | — |
 | `memos` `workspaceState` `favorites` `feedback` | **API** | — |
 | `graph` | **API** (content RDB 의 `GET /projects/{id}/graph`) | — |
+| `search` | **API** (content RDB 의 `GET /projects/{id}/search`, 제목·본문 부분 일치) | Elasticsearch. 응답 모양이 같으면 화면은 그대로다([`project-search.md`](project-search.md)) |
 | `help` | **정적 글** (`services/api/help.ts`, 앱과 함께 배포) | — |
 | `refresh` | **미리보기** (`services/api/refresh.ts`). 실제 문서를 읽고 실제 API 로 반영한다. 갱신안만 규칙으로 만든다 | graph-rag 갱신안 생성 · content 최신화 API |
 | `chat` | **거절** | ai-chat 서비스 |
@@ -39,6 +40,7 @@ src/services/api/
   refresh.ts     그래프 최신화 실행·반영. refresh-proposals.ts 가 AI 자리(규칙 생성기)
   auth.ts        projects.ts   files.ts   documents.ts   graph.ts
   memos.ts       workspace-state.ts   favorites.ts   feedback.ts   help.ts
+  search.ts
   index.ts       createApiServices(): Partial<Services>
 ```
 
@@ -119,6 +121,6 @@ src/services/api/
 
 ## 8. 검증
 
-- 프론트 테스트 **246개**. `api-services.test.ts` 는 `fetch` 를 가로채 경로·헤더·본문·오류 변환을 확인한다.
+- 프론트 테스트 **435개**. `api-services.test.ts` 는 `fetch` 를 가로채 경로·헤더·본문·오류 변환을 확인한다.
 - **배포된 API 에 대한 계약 확인.** 단위 테스트는 `fetch` 를 가로채므로 필드 이름이 서버와 어긋나도 통과한다. 그래서 실제 `api.loresentry.com` 응답으로 따로 확인했다.
 - **앱 자신의 배선도 테스트한다.** 어댑터가 옳아도 앱이 그것을 쓰지 않으면 소용이 없다 — 실제로 `config.json` 이 `api` 인데 앱이 mock 으로 굳어 있던 적이 있다(`CONTENT_PROJECT_API.md` §0.11). `providers.test.tsx` 가 그 배선을 고정한다.

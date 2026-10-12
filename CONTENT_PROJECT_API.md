@@ -965,6 +965,7 @@ Authorization · Cookie · 그 외             전달하지 않는다
 | 57 | BFF 가 본문 JSON 을 중계하지 못해 문서가 안 열리던 문제 | gateway | ✅ `#6` |
 | 58 | 타임라인이 분류 폴더를 다 보여주지 않던 문제 (§0.19) | frontend | ✅ `#20` |
 | 59 | 관계를 한 쌍에 한 행으로 (§0.20) | content · frontend(mock) | ✅ |
+| 60 | 검색 다시 붙임 — content RDB 부분 일치로, Elasticsearch 전까지 (`frontend/project-search.md`) | frontend | ✅ `#49` |
 
 **18번 브라우저 E2E 는 시작됐다.** 헤드리스 브라우저로 Google 로그인 화면까지 도달하는 것을 확인했고(§0.11), 그 과정에서 앱이 서버와 말하지 못하던 버그를 잡았다. 남은 것은 **실제 Google 계정으로 승인하는 한 걸음**이고, 그건 사람이 해야 한다.
 

@@ -19,6 +19,7 @@
 | [i18n.md](i18n.md) | **한국어·영어.** 접속 위치로 언어 고르기(CloudFront), 언어별 빌드, 문구 사전, 계정 언어, 서버 계약 |
 | [analytics.md](analytics.md) | Google Analytics 4. 켜지는 조건, URL 식별자 걸러 내기, GA 콘솔 설정, 처리방침 변경 |
 | [screens-and-decisions.md](screens-and-decisions.md) | 와이어프레임 화면별 구현 위치, 와이어프레임과 다르게 한 점, 남은 결정 사항 |
+| [project-search.md](project-search.md) | **프로젝트 검색.** 걷어냈던 검색을 content RDB 검색으로 다시 붙인 계획과 결과, 서버 쪽 한계 |
 
 ## 실행
 
