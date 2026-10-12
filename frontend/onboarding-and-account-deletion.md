@@ -16,7 +16,7 @@ Google 로그인 → (신규·재동의) 약관 동의 모달 → /projects
         ├─ 새 프로젝트 만들기      PUT onboarding → /projects/?create=1 (만들기 대화상자가 열린다)
         └─ 둘 다 나중에            PUT onboarding → /projects/
 
-계정 메뉴 → 계정 설정 → 계정 삭제 → 이메일 입력 → POST /auth/users/me/deletion → /goodbye/
+계정 메뉴 → 계정 설정 → 계정 삭제 → 떠나는 이유(선택) → 이메일 입력 → POST /auth/users/me/deletion → /goodbye/
 ```
 
 ## 온보딩 상태
@@ -60,13 +60,35 @@ Google 로그인 → (신규·재동의) 약관 동의 모달 → /projects
 
 | 단계 | 처리 |
 | --- | --- |
+| 사유(선택) | 이유 여덟 개를 고르고 의견을 적는다. 답하지 않고 "다음" 을 눌러도 된다. 확인 단계의 "이전" 으로 돌아오면 답이 남아 있다 |
 | 확인 | 계정 이메일을 똑같이 입력해야 버튼이 켜진다(앞뒤 공백·대소문자 무시). 서버도 같은 규칙으로 다시 대조한다 |
-| 요청 | `POST /auth/users/me/deletion` `{confirmation_email}`. 인증 전환(`withAuthTransition`) 안에서 부른다 |
-| 서버 순서 | gateway: 이메일 대조 → content `DELETE /users/me/data` → auth `DELETE /auth/users/me`(세션 폐기 후 계정·Google 연결·동의 기록 삭제) → 세션 쿠키 삭제 |
+| 요청 | `POST /auth/users/me/deletion` `{confirmation_email, survey?}`. `survey` 는 답한 것이 있을 때만 싣는다. 인증 전환(`withAuthTransition`) 안에서 부른다 |
+| 서버 순서 | gateway: 이메일 대조 → content `DELETE /users/me/data` → auth `DELETE /auth/users/me`(세션 폐기 후 계정·Google 연결·동의 기록 삭제) → (설문이 있으면) content `POST /withdrawal-surveys` → 세션 쿠키 삭제 |
 | 실패 | `ACCOUNT_CONFIRMATION_MISMATCH` 는 입력란 오류, 그 밖은 "계정과 작업은 그대로" 안내와 다시 시도. 어느 단계에서 실패해도 다시 시도해도 안전하다 |
 | 성공 | 쿼리 캐시를 비우고 `/goodbye/`. 같은 Google 계정으로 다시 로그인하면 새 계정·새 동의·새 온보딩으로 시작한다 |
 
 정책 근거: `loresentry-authentication/docs/privacy/TERMS_OF_SERVICE.md` 제7조(유예 없이 즉시 삭제), `PRIVACY_POLICY.md` 보유·파기 표.
+
+### 탈퇴 설문
+
+> 2026-10-12 · content #20, gateway #12, frontend #53 (content #19 위에 쌓임). 머지 순서: content #19 → #20 → gateway #12 → frontend #53
+
+| 코드 | 화면 |
+| --- | --- |
+| `RARELY_USED` | 자주 쓰지 않아요 |
+| `MISSING_FEATURE` | 필요한 기능이 없어요 |
+| `HARD_TO_USE` | 쓰기 어렵거나 불편해요 |
+| `UNRELIABLE` | 오류가 잦거나 느려요 |
+| `SWITCHED_SERVICE` | 다른 도구를 쓰기로 했어요 |
+| `PRIVACY` | 원고와 개인정보가 걱정돼요 |
+| `PAUSED_WRITING` | 연재를 마쳤거나 쉬고 있어요 |
+| `OTHER` | 기타 |
+
+- **어디에 남나.** content 의 `withdrawal_survey`(`reasons TEXT[]`, `comment`, `created_at`). **사용자 열이 없다.** 기존 `feedback` 표는 `user_id` 로 행을 묶고 탈퇴 정리(`DELETE /users/me/data`)가 함께 지우므로, 탈퇴할 때 받은 답을 거기 두면 같은 요청이 지운다.
+- **언제 남나.** 계정 삭제가 성공한 **뒤에** gateway 가 보낸다. 중간에 실패한 탈퇴는 답을 남기지 않고, 계정이 이미 없는 재시도(`USER_NOT_FOUND`)는 두 번째 답을 남기지 않는다.
+- **최선 노력.** 저장이 실패하거나 응답이 없어도 탈퇴는 성공이다. gateway 는 예외 종류만 로그에 남기고 답 내용은 남기지 않는다.
+- **검증.** 정해진 코드만 받고(공백·대소문자 정리, 중복 제거), 의견은 1,000자까지, 둘 다 비면 400. 표의 CHECK 제약도 같은 규칙이다. `POST /withdrawal-surveys` 는 gateway 만 부르고 브라우저 경로는 없다.
+- **읽기.** 운영자가 SQL 로 읽는다. 예: `select reason, count(*) from withdrawal_survey, unnest(reasons) reason group by reason order by 2 desc;`
 
 ## 예시 프로젝트
 
@@ -78,9 +100,13 @@ Google 로그인 → (신규·재동의) 약관 동의 모달 → /projects
 - 온보딩 첫 장면에 "○○ 님, 환영해요." 를 더했다. 약관 화면이 인사를 맡지 않게 되어서다.
 - 계정 삭제 대화상자는 설정 모달 위에 겹치지 않고 설정을 닫은 뒤 연다. 취소하면 설정으로 돌아간다.
 - 176(입력 완료)·177(삭제 중)·178(실패)은 한 대화상자의 상태다.
+- **탈퇴 사유 단계는 와이어프레임에 없다.** 175 앞에 같은 대화상자의 첫 단계로 넣었다. 이유는 2열 체크 목록(600px 이하 한 열), 의견은 선택 입력이다.
 
 ## 남은 결정
 
 1. 새 토큰 `font-size-display`(28)·`line-height-display`(1.3) 를 `lorekeeper.lib.pen` 에 추가했다. 동기화 스니펫으로 `pencil-variables.json` 을 갱신하고 `pnpm tokens` 를 돌려야 CSS 의 대체값(28px, 1.3)이 토큰으로 바뀐다.
 2. 예시 프로젝트의 S3 이미지는 없다. 이미지 시연이 필요하면 시드에 추가해야 한다.
 3. ai-chat·graph-rag 는 아직 사용자 자료를 저장하지 않는다. 그 기능이 생기면 탈퇴 순서에 해당 서비스의 삭제를 더해야 한다.
+4. **개인정보 처리방침에 탈퇴 설문을 더할지.** 설문은 계정과 연결하지 않지만 의견란에 이용자가 스스로 개인정보를 적을 수 있다. 법적 원문이라 고치지 않았다. 안:
+   - 1. 처리 목적·항목 표: `| 탈퇴 사유 파악과 서비스 개선 | 탈퇴할 때 고른 사유와 직접 적은 의견(선택). 계정·이메일 등 이용자를 식별하는 정보와 연결하지 않음 | 탈퇴 화면의 선택 설문 |`
+   - 보유·파기 표: `| 탈퇴 설문 응답 | 계정과 연결하지 않고 ○년 보관 후 파기 |` — **보관 기간을 정해야 한다.** 정하면 그 기간이 지난 행을 지우는 정리 작업도 필요하다.
