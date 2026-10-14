@@ -23,7 +23,7 @@
 | 답 동작 | 스트리밍, 멈추기, 답 복사(프론트), 마지막 질문 고쳐서 다시 생성 |
 | 분량 초과 | 규칙 기반 글자 수 판정. 넘으면 챗을 열지 않고 이유를 안내 |
 | 드래그 질의 | 챗 창에 열린 대화가 있으면 그 대화에, 없으면 새 대화로 |
-| 사용량 제한 | 두지 않는다(초기). 대신 **허용 목록**: gateway 설정에 적은 사용자만 쓸 수 있고, 나머지는 "준비 중"을 본다. 지표를 본 뒤 전체 공개 |
+| 사용량 제한 | 두지 않는다(초기). 모든 사용자에게 연다(gateway 허용 목록 `*`). 지표를 보고 필요하면 허용 목록이나 사용량 제한으로 좁힌다 |
 
 ## 1. 용어
 
@@ -361,7 +361,6 @@ chat_turns (신규)
 | API 전체 | `ChatService`(`src/services/ports.ts`) → `src/services/api/chat.ts` |
 | SSE | `ApiClient.stream()`(`src/services/api/http.ts`) |
 | 허용 목록 밖 | 403 `CHAT_NOT_ENABLED` → `unavailable` → "AI 챗은 아직 준비 중이에요" |
-| 출시 표시 | `src/features/chat/launch.tsx`의 `CHAT_LAUNCHED`를 true로 바꾸면 랜딩·온보딩·가이드·둘러보기의 "곧 열려요"가 사라진다 |
 
 - 질문을 보내기 전에 열린 문서의 저장 대기 변경을 먼저 저장한다(`features/documents/open-sessions.ts`).
 - 멈추기는 fetch를 끊고 `POST …/cancel`을 부른다.
@@ -379,5 +378,5 @@ chat_turns (신규)
 | 6 | 모델 | `gpt-6-luna` |
 | 7 | OpenAI 키 | 챗 전용 키. k8s Secret `ai-chat-openai`(`OPENAI_API_KEY`), Git 밖에서 만든다 |
 | 8 | 관계 출처 | content `document_relations`(내부 API 경유) |
-| 9 | 공개 범위 | 허용 목록(§4.2) → 지표 확인 뒤 전체 공개 |
+| 9 | 공개 범위 | 모두에게 공개(허용 목록 `*`, §4.2). 좁힐 때는 사용자 ID를 나열한다 |
 | 10 | 내부 API 보호 | 기존 수준(gateway에 노출하지 않음, ClusterIP). NetworkPolicy는 별도 과제 |

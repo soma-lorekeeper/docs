@@ -1,7 +1,7 @@
 # AI 챗
 
 > 작성일: 2026-10-14
-> 상태: `loresentry-frontend` 브랜치 `feat/ai-chat`. mock과 실제 API 모두 동작한다. 실제 API에서는 gateway 허용 목록에 있는 사용자만 쓰고, 나머지는 "AI 챗은 아직 준비 중이에요"를 본다.
+> 상태: `loresentry-frontend` 브랜치 `feat/ai-chat`. mock과 실제 API 모두 동작한다. 모든 사용자에게 열려 있다(gateway 허용 목록 `*`). 허용 목록을 좁히면 목록 밖 사용자는 "AI 챗은 아직 준비 중이에요"를 본다.
 > 서버 요구사항: [../AI_CHAT_REQUIREMENTS.md](../AI_CHAT_REQUIREMENTS.md)
 
 작업공간 오른쪽 아래 버튼으로 여는 대화 창이다. 질문하면 AI가 프로젝트의 원고·설정 문서·관계·메모를 모두 읽고, 근거 문서를 칩으로 붙인 답을 스트리밍으로 보여 준다. 원고나 설정 문서의 문장을 드래그해서 바로 물을 수도 있다. AI는 문서를 고치지 않는다.
@@ -42,7 +42,6 @@
 | `use-chat-streams.ts` | 대화별 생성 상태(단계·본문·근거), 멈춤·실패 기억, 다시 묻기 |
 | `queries.ts` | 가능 여부·대화 목록·메시지·검색 쿼리와 만들기·이름 바꾸기·삭제 |
 | `resize-frame.tsx` | 테두리 크기 조절과 저장 |
-| `launch.tsx` | `CHAT_LAUNCHED`(지금 false)와 "곧 열려요" 표시 |
 | `src/services/mock/chat.ts`, `chat-markup.ts` | mock 서비스. 시드 대본의 `[[doc:제목\|인용]]`·`[[memo:제목\|인용]]` 을 실제 id 근거로 바꾸고 단계별로 흘린다 |
 | `src/services/api/chat.ts` | 실제 API 어댑터. 질문마다 `client_message_id`를 만들고, 멈추면 `POST …/cancel`을 부른 뒤 `AbortError`로 끝낸다 |
 | `src/services/api/http.ts` `stream()` | `fetch` 본문을 읽어 SSE 프레임(`event:`·`data:`, `: ping` 무시)으로 나눈다. 세션 잠금은 응답 헤더를 받을 때까지만 잡는다 |
@@ -67,7 +66,7 @@
 
 ## 5. 다른 화면에 반영한 것
 
-출시 전이므로 모두 제목 뒤에 "곧 열려요" 표시가 붙는다(`CHAT_LAUNCHED`를 true로 바꾸면 사라진다). 디자인 규칙은 `loresentry-frontend/DESIGN.md`의 AI Chat 절.
+디자인 규칙은 `loresentry-frontend/DESIGN.md`의 AI Chat 절.
 
 - 랜딩: AI 최신화 다음에 AI 챗 장(근거와 함께 답하는 장면, 드래그 질의), 헤더 메뉴.
 - 첫 사용 온보딩: 그래프 최신화 다음에 "작품을 아는 AI 챗" 단계. 무대 창 오른쪽 아래에 런처를 다시 그렸다.
@@ -78,4 +77,3 @@
 
 - 새로 고친 뒤에도 서버에서 생성 중인 대화(`messages` 응답의 `generating: true`)를 "답을 쓰는 중"으로 보이고 완료를 기다린다. 지금은 질문만 보이고, 답은 다시 열 때 나타난다.
 - 삭제된 문서를 가리키는 과거 근거 칩을 비활성으로 보인다.
-- 전체 공개 때 `CHAT_LAUNCHED = true`(랜딩·온보딩·가이드·둘러보기의 "곧 열려요"가 사라진다).
