@@ -1,7 +1,7 @@
 # AI 챗
 
 > 작성일: 2026-10-14
-> 상태: `loresentry-frontend` 브랜치 `feat/ai-chat`. mock으로 완성, 서버 없음. 실제 API 모드(배포)에서는 "AI 챗은 아직 준비 중이에요"를 보인다.
+> 상태: `loresentry-frontend` 브랜치 `feat/ai-chat`. mock과 실제 API 모두 동작한다. 실제 API에서는 gateway 허용 목록에 있는 사용자만 쓰고, 나머지는 "AI 챗은 아직 준비 중이에요"를 본다.
 > 서버 요구사항: [../AI_CHAT_REQUIREMENTS.md](../AI_CHAT_REQUIREMENTS.md)
 
 작업공간 오른쪽 아래 버튼으로 여는 대화 창이다. 질문하면 AI가 프로젝트의 원고·설정 문서·관계·메모를 모두 읽고, 근거 문서를 칩으로 붙인 답을 스트리밍으로 보여 준다. 원고나 설정 문서의 문장을 드래그해서 바로 물을 수도 있다. AI는 문서를 고치지 않는다.
@@ -44,6 +44,9 @@
 | `resize-frame.tsx` | 테두리 크기 조절과 저장 |
 | `launch.tsx` | `CHAT_LAUNCHED`(지금 false)와 "곧 열려요" 표시 |
 | `src/services/mock/chat.ts`, `chat-markup.ts` | mock 서비스. 시드 대본의 `[[doc:제목\|인용]]`·`[[memo:제목\|인용]]` 을 실제 id 근거로 바꾸고 단계별로 흘린다 |
+| `src/services/api/chat.ts` | 실제 API 어댑터. 질문마다 `client_message_id`를 만들고, 멈추면 `POST …/cancel`을 부른 뒤 `AbortError`로 끝낸다 |
+| `src/services/api/http.ts` `stream()` | `fetch` 본문을 읽어 SSE 프레임(`event:`·`data:`, `: ping` 무시)으로 나눈다. 세션 잠금은 응답 헤더를 받을 때까지만 잡는다 |
+| `src/features/documents/open-sessions.ts` | 열린 문서 편집 세션 목록. 질문을 보내기 전에 저장 대기 변경을 먼저 저장한다 |
 | `src/i18n/en/chat.ts` | 영어 문구 |
 
 문서 본문 열(`document-view.tsx`)에 `data-file-id`·`data-file-title` 을 달아 선택 막대가 어느 문서인지 안다.
@@ -52,7 +55,7 @@
 
 `ChatService`(`src/services/ports.ts`): `availability`, `sessions`, `search`, `createSession`, `renameSession`, `deleteSession`, `messages`, `send(sessionId, input, handlers, signal)`. `send` 의 핸들러는 `onPhase`(gathering·reading·writing), `onCitation(index, citation)`, `onDelta(text)` 이고, 근거는 그 표시보다 먼저 온다. 멈춤은 `AbortSignal`. 서버 API와 SSE 이벤트는 [AI_CHAT_REQUIREMENTS.md §4](../AI_CHAT_REQUIREMENTS.md#4-api-계약).
 
-실제 API 모드에서는 `services/api/unavailable.ts` 가 모든 호출을 `unavailable` 로 거절하고, 창은 `PreparingState`("AI 챗은 아직 준비 중이에요")를 보인다. 드래그 막대는 뜨지 않는다.
+실제 API 모드에서는 `services/api/chat.ts`가 gateway의 `/projects/{id}/chat/…`·`/chat/sessions/{id}/…`를 부른다. 허용 목록 밖 사용자는 403 `CHAT_NOT_ENABLED`를 받고, 이를 `unavailable`로 옮겨 창이 `PreparingState`("AI 챗은 아직 준비 중이에요")를 보인다. 드래그 막대는 뜨지 않는다. `services/api/unavailable.ts`는 마지막 포트였던 챗이 옮겨 가 지웠다.
 
 ## 4. mock으로 보기
 
@@ -73,8 +76,6 @@
 
 ## 6. 남은 일
 
-- 서버 연결: `services/api/chat.ts`(SSE 읽기를 `ApiClient`에 추가), `unavailable.ts`에서 chat 제거, `CHAT_LAUNCHED = true`.
-- 질문을 보내기 전에 편집기의 저장 대기 변경을 먼저 저장한다.
-- 새로 고친 뒤에도 서버에서 생성 중인 대화를 "답을 쓰는 중"으로 보이고 완료를 기다린다.
-- 멈추기가 서버 취소 API를 부른다.
+- 새로 고친 뒤에도 서버에서 생성 중인 대화(`messages` 응답의 `generating: true`)를 "답을 쓰는 중"으로 보이고 완료를 기다린다. 지금은 질문만 보이고, 답은 다시 열 때 나타난다.
 - 삭제된 문서를 가리키는 과거 근거 칩을 비활성으로 보인다.
+- 전체 공개 때 `CHAT_LAUNCHED = true`(랜딩·온보딩·가이드·둘러보기의 "곧 열려요"가 사라진다).

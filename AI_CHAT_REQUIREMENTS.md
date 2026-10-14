@@ -1,7 +1,7 @@
 # AI 챗 기능 요구사항 — 백엔드
 
 > 갱신일: 2026-10-14
-> 상태: **프론트엔드는 mock으로 완성, 서버는 미구현.** 화면과 서비스 계약은 `loresentry-frontend/src/features/chat`, `src/services/ports.ts`(`ChatService`), `src/services/mock/chat.ts`가 기준이다.
+> 상태: **프론트엔드는 mock으로 완성, 서버 구현 중(2026-10-14 착수).** 화면과 서비스 계약은 `loresentry-frontend/src/features/chat`, `src/services/ports.ts`(`ChatService`), `src/services/mock/chat.ts`가 기준이다.
 > 독자: ai-chat·gateway·content 서버를 구현하는 사람.
 > 관련: [CORE_FEATURE_REQUIREMENTS.md §8.1](CORE_FEATURE_REQUIREMENTS.md), [TABLE_AND_LOGIC.md §6](TABLE_AND_LOGIC.md), [frontend/ai-chat.md](frontend/ai-chat.md)
 
@@ -14,15 +14,16 @@
 | 항목 | 결정 |
 |---|---|
 | 검색 방식 | 벡터 DB를 쓰지 않는다. 매 턴 프로젝트 전체를 컨텍스트로 넘긴다(성능 상한 측정 단계). 비용 최적화는 다음 단계 |
-| 모델 | OpenAI `gpt-6-luna`(컨텍스트 1.05M 토큰). 모델 이름은 설정값 |
+| 모델 | OpenAI `gpt-6-luna`(컨텍스트 1.05M 토큰). 모델 이름은 설정값. 키는 챗 전용 OpenAI 프로젝트 키 |
 | 오케스트레이션 | 단일 호출. LangGraph 같은 에이전트 프레임워크는 쓰지 않는다 |
 | 읽는 자료 | 원고, 설정 문서(속성·본문), 관계와 관계 설명, 프로젝트 메모·파일 메모, 사용자 프로필, 지금 보는 문서, 드래그한 인용 |
+| 관계 출처 | graph-rag(Neptune)가 아직 없으므로 **content의 `document_relations`**(작가가 속성 표에서 맺은 관계). ai-chat은 content DB에 직접 붙지 않고 content 내부 API로 받는다 |
 | 메모 | 넣되 **원고·설정 근거와 구분**한다. 답에서도 메모 근거는 따로 표시한다 |
 | 세션 | 프로젝트 단위로 여러 개. 문서에 묶이지 않는다. 제목은 첫 질문 앞부분 |
 | 답 동작 | 스트리밍, 멈추기, 답 복사(프론트), 마지막 질문 고쳐서 다시 생성 |
 | 분량 초과 | 규칙 기반 글자 수 판정. 넘으면 챗을 열지 않고 이유를 안내 |
 | 드래그 질의 | 챗 창에 열린 대화가 있으면 그 대화에, 없으면 새 대화로 |
-| 사용량 제한 | 두지 않는다(초기) |
+| 사용량 제한 | 두지 않는다(초기). 대신 **허용 목록**: gateway 설정에 적은 사용자만 쓸 수 있고, 나머지는 "준비 중"을 본다. 지표를 본 뒤 전체 공개 |
 
 ## 1. 용어
 
@@ -117,7 +118,7 @@
 
 ### 3.4 분량 판정
 
-- 규칙 기반이다. **원고·설정 문서의 제목·본문·텍스트 속성 + 메모의 제목·본문 글자 수 합**이 한도를 넘으면 `too-large`다.
+- 규칙 기반이다. **원고·설정 문서의 제목·본문·텍스트 속성 + 관계 설명 + 메모의 제목·본문 글자 수 합**(유니코드 코드 포인트)이 한도를 넘으면 `too-large`다.
 - 한도는 서버 설정값이다. 초기값 **1,400,000자**(한국어 1자 ≈ 0.62토큰 실측 → 약 87만 토큰, 출력 128K를 뺀 입력 한도 약 92만 토큰 안). 대략 웹소설 240화 분량이다.
 - 판정 결과에는 크기와 한도를 함께 준다. 프론트는 "지금 작품은 약 {size}자로, 한 번에 읽을 수 있는 {limit}자를 넘었어요."로 보인다.
 - 프론트는 작업공간에 들어올 때와 문서가 바뀐 뒤(파일 트리 갱신 시) 다시 묻는다. 서버는 `send`에서도 다시 판정한다(§3.2).
@@ -170,7 +171,7 @@
 - 범위는 그 프로젝트의 세션이다. 세션 제목, 질문 글, 인용 글, 답 본문, 근거 제목에서 찾는다. 대소문자를 무시한 부분 일치(형태소 분석 없음).
 - 정렬: 제목 일치 → 최근 갱신 순.
 - 결과마다 본문에서 처음 맞은 곳의 앞 16자·일치·뒤 40자 조각(`snippet`)을 준다. 제목만 맞으면 `snippet`은 null이고 프론트는 미리보기를 보인다.
-- 검색어는 1~100자.
+- 검색어는 앞뒤 공백을 지운 1~100자. 비면 빈 결과, 100자를 넘으면 400 `INVALID_REQUEST`.
 
 ### 3.8 드래그 질의
 
@@ -194,8 +195,8 @@
 |---|---|
 | 세션 삭제 | 즉시 영구 삭제, 진행 중 생성 취소 |
 | 프로젝트 휴지통 이동 | 세션을 보이지 않게 한다(프로젝트 접근이 막히므로 자연히 404). 복원하면 다시 보인다 |
-| 프로젝트 영구 삭제 | 그 프로젝트의 세션·메시지 삭제. content의 `ProjectDeleted` 이벤트를 구독하거나 gateway가 순서대로 호출 |
-| 계정 삭제 | 그 사용자의 모든 세션·메시지 삭제. gateway의 탈퇴 순서에 ai-chat `DELETE /users/me/data`를 더한다 |
+| 프로젝트 영구 삭제 | 그 프로젝트의 세션·메시지 삭제. content의 Kafka 발행이 아직 없으므로 **gateway가 content 삭제(204) 뒤 ai-chat `DELETE /projects/{id}/chat/data`를 부른다**. ai-chat 실패는 기록만 하고 204를 돌려준다(content에서는 이미 지워졌다). Kafka가 생기면 `ProjectDeleted` 구독으로 바꾼다 |
+| 계정 삭제 | 그 사용자의 모든 세션·메시지 삭제. gateway의 탈퇴 순서에서 content `DELETE /users/me/data` 다음, auth 삭제 전에 ai-chat `DELETE /users/me/data`를 부른다. 실패하면 거기서 멈추고 브라우저 재시도로 이어 간다(기존 규칙) |
 | 문서 삭제 | 과거 답의 근거는 남는다. 프론트는 열 수 없는 근거를 비활성 칩으로 보인다 |
 
 ### 3.11 비기능
@@ -253,32 +254,83 @@ JSON 이름은 snake_case. 쓰기 요청은 기존 규약대로 `X-LS-CSRF: 1`.
 | `CHAT_ANSWER_IN_PROGRESS` | 409 | 그 세션에서 이미 생성 중 |
 | `CHAT_CONTEXT_TOO_LARGE` | 422 | 분량 초과 |
 | `CHAT_MODEL_UNAVAILABLE` | 503 | 모델 호출 실패(재시도 가능) |
+| `CHAT_NOT_ENABLED` | 403 | 허용 목록 밖 사용자(gateway가 판정) |
+| `INVALID_REQUEST` | 400 | 형식이 틀린 요청 |
 
 ### 4.2 gateway → ai-chat
 
-- 위 경로를 같은 이름으로 중계하되, `X-User-Id`와 함께 프로필을 붙인다: `X-User-Display-Name`(퍼센트 인코딩), `X-User-Locale`. 또는 내부 요청 본문의 `profile` 필드. 둘 중 하나로 정한다.
-- SSE는 버퍼링 없이 그대로 흘린다(`StreamingResponseBody`). 일반 RestClient의 10초 read-timeout을 쓰지 않는다.
+경로는 §4.1과 같고, 여기에 정리용 경로 두 개를 더한다. 모든 요청에 `X-User-Id`(UUID)를 붙인다.
+
+| 메서드·경로 | 성공 | 부르는 곳 |
+|---|---|---|
+| DELETE /users/me/data | 204 | gateway 탈퇴 순서 |
+| DELETE /projects/{id}/chat/data | 204 | gateway 프로젝트 영구 삭제 뒤 |
+
+- **프로필:** 세션 만들기와 질문 보내기에만 붙인다. `X-User-Locale`(`ko`·`en`, 없으면 생략), `X-User-Display-Name`(UTF-8 퍼센트 인코딩). gateway가 auth `/auth/users/me`에서 읽으며, auth가 실패하면 프로필 없이 보낸다(챗은 동작해야 한다).
+- **허용 목록:** gateway 설정 `loresentry.chat.allowed-users`(환경 변수 `LORESENTRY_CHAT_ALLOWED_USERS`, 쉼표로 구분한 사용자 UUID, `*`이면 모두). 목록 밖 사용자의 모든 챗 요청은 gateway가 403 `CHAT_NOT_ENABLED`(next_action `NONE`)로 거절하고 ai-chat을 부르지 않는다. 프론트는 이 코드를 "준비 중"으로 보인다.
+- **오류 본문:** 다른 서버와 같은 `{code, message, next_action}`. gateway는 §4.1의 코드와 `INVALID_REQUEST`(400)만 통과시키고, 나머지·본문 없음은 502 `UPSTREAM_INVALID_RESPONSE`, 연결 실패는 503 `AI_CHAT_UNAVAILABLE`(next_action `RETRY_LATER`)로 바꾼다.
+- **SSE:** `POST …/messages`에서 ai-chat은 검사가 끝나기 전의 실패는 JSON 오류(4xx·5xx)로, 그 뒤는 `200 text/event-stream`으로 답한다. gateway는 상태 코드를 먼저 보고, 200이면 본문을 버퍼링 없이 조각마다 flush해 흘린다(`StreamingResponseBody`). 응답 헤더는 `Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-store`, `X-Accel-Buffering: no`.
+- **스트림용 HTTP 클라이언트:** 일반 클라이언트(읽기 10초, 서버당 연결 5개)를 쓰지 않는다. 연결 2초, 읽기 45초(ping 15초의 세 배), 연결 풀 200. `spring.mvc.async.request-timeout`은 180초.
+- 브라우저가 끊으면 gateway는 ai-chat 연결을 닫는다. ai-chat은 생성을 끝까지 하고 저장한다.
+
+SSE 프레임(UTF-8, 이벤트마다 빈 줄로 끝남):
+
+```text
+event: phase
+data: {"phase":"gathering"}
+
+event: citation
+data: {"index":1,"citation":{"kind":"document","file_id":"…","title":"…","doc_type":"manuscript","quote":"…"}}
+
+event: delta
+data: {"text":"이 장면은 [[1]]"}
+
+: ping
+
+event: done
+data: {"question":Message,"answer":Message}
+
+event: error
+data: {"code":"CHAT_MODEL_UNAVAILABLE","message":"…"}
+```
+
+`doc_type`은 프론트의 문서 종류 이름이다: `MANUSCRIPT→manuscript`, `CHARACTER→character`, `LOCATION→place`, `ORGANIZATION→organization`, `ITEM→item`, `EVENT→event`, `WORLDVIEW→worldview`.
 
 ### 4.3 ai-chat → content (내부)
 
-`GET /internal/projects/{id}/chat-snapshot` (gateway에 노출하지 않음, `X-User-Id` 필요)
+gateway에 노출하지 않는다. `X-User-Id` 필요. 프로젝트가 없거나, 요청자의 것이 아니거나, 휴지통에 있으면 404 `PROJECT_NOT_FOUND`. 응답은 `Cache-Control: no-store`.
+
+`GET /internal/projects/{id}/chat-snapshot`
 
 ```json
 {
-  "project": { "id": "…", "name": "…", "description": "…" },
-  "manuscripts": [ { "id": "…", "title": "12화 · 균열의 밤", "ordinal": 12, "episode": "Episode 4. 새 원고",
-                     "revision_no": 23, "body_text": "…" } ],
-  "settings": [ { "id": "…", "folder_code": "CHARACTER", "title": "레나 아르벨",
-                  "properties": [ { "key": "description", "value": "…" }, { "key": "alias", "value": "…" } ],
-                  "revision_no": 7, "body_text": "…" } ],
-  "relations": [ { "a": "…", "b": "…", "relation_key": "related_place", "description": "처음 각성한 곳" } ],
-  "memos": [ { "id": "…", "scope": "PROJECT" | "FILE", "file_id": "…" | null, "title": "…", "body": "…" } ],
+  "project": { "id": "…", "name": "유리 정원의 기록", "description": "…" },
+  "manuscripts": [
+    { "id": "…", "title": "12화 · 균열의 밤", "ordinal": 12, "episode_name": "Episode 4. 새 원고",
+      "properties": [ { "key": "description", "value": "…" } ],
+      "revision_no": 23, "body_text": "…", "updated_at": "…" }
+  ],
+  "settings": [
+    { "id": "…", "folder_code": "CHARACTER", "title": "레나 아르벨",
+      "properties": [ { "key": "description", "value": "…" }, { "key": "alias", "value": "…" } ],
+      "revision_no": 7, "body_text": "…", "updated_at": "…" }
+  ],
+  "relations": [ { "low_document_id": "…", "high_document_id": "…", "description": "처음 각성한 곳" } ],
+  "memos": [ { "id": "…", "scope": "PROJECT", "document_id": null, "title": "…", "body": "…", "updated_at": "…" } ],
   "size": 128734
 }
 ```
 
-- 한 트랜잭션에서 읽어 시점을 맞춘다. 휴지통 자료는 뺀다. `size`는 §3.4의 규칙으로 content가 계산한다(분량 판정도 이 값을 쓴다).
-- 분량 판정만 필요할 때를 위해 `GET /internal/projects/{id}/chat-size`도 둔다(본문을 읽지 않는 합계 쿼리).
+- 한 트랜잭션(`REPEATABLE_READ`, 읽기 전용)에서 읽는다. 휴지통 문서와 그 문서의 파일 메모·관계는 뺀다.
+- **원고 순서:** 에피소드 순서(`episode_folders.rank`, id) → 문서 순서(`document.rank`, id). 에피소드 밖 원고는 맨 뒤. `ordinal`은 이 순서의 1부터 시작하는 번호다. `episode_name`은 에피소드 밖이면 null.
+- **설정 순서:** 분류 순서(`base_folders.position`) → 문서 순서(rank, id).
+- **속성(원고·설정 모두):** `position, property_key, id` 순서이고 값이 빈 속성은 뺀다. 같은 키가 여러 줄일 수 있다.
+- **관계:** 문서 쌍마다 한 행. 두 문서 모두 이 프로젝트의 활성 문서인 것만. `low_document_id, high_document_id` 순서. 관계 키는 ai-chat이 양쪽 문서의 분류로 계산한다.
+- **메모:** 프로젝트 메모와 활성 문서의 파일 메모. `created_at, id` 순서. `scope`는 `PROJECT`·`FILE`.
+- 같은 자료면 같은 순서와 값이 나와야 한다(OpenAI 프롬프트 캐시).
+- `size`는 §3.4의 규칙(코드 포인트 수)이다.
+
+`GET /internal/projects/{id}/chat-size` → `{"size": 128734}`. 본문을 내려보내지 않는 합계 쿼리이고, 같은 자료면 스냅샷의 `size`와 같은 값이어야 한다.
 
 ## 5. 데이터 모델 (ai_chat DB)
 
@@ -302,26 +354,30 @@ chat_turns (신규)
   context_chars, created_at, finished_at
 ```
 
-## 6. 프론트엔드 대응과 남은 프론트 작업
+## 6. 프론트엔드 대응
 
 | 서버 | 프론트 |
 |---|---|
-| API 전체 | `ChatService`(`src/services/ports.ts`). 지금은 `services/api/unavailable.ts`가 거절하고 화면은 "AI 챗은 아직 준비 중이에요"를 보인다. 서버가 생기면 `services/api/chat.ts`를 더하고 그 한 줄을 지운다 |
-| SSE | `ApiClient`에 fetch 스트림 읽기를 더해야 한다(지금은 JSON만) |
+| API 전체 | `ChatService`(`src/services/ports.ts`) → `src/services/api/chat.ts` |
+| SSE | `ApiClient.stream()`(`src/services/api/http.ts`) |
+| 허용 목록 밖 | 403 `CHAT_NOT_ENABLED` → `unavailable` → "AI 챗은 아직 준비 중이에요" |
 | 출시 표시 | `src/features/chat/launch.tsx`의 `CHAT_LAUNCHED`를 true로 바꾸면 랜딩·온보딩·가이드·둘러보기의 "곧 열려요"가 사라진다 |
 
-서버 연결 때 함께 할 프론트 작업:
+- 질문을 보내기 전에 열린 문서의 저장 대기 변경을 먼저 저장한다(`features/documents/open-sessions.ts`).
+- 멈추기는 fetch를 끊고 `POST …/cancel`을 부른다.
+- 남은 일: 새로 고친 뒤 `generating: true`인 대화를 "답을 쓰는 중"으로 이어 보이기.
 
-- 질문을 보내기 전에 편집기의 저장 대기 변경을 먼저 저장한다(§3.3).
-- `generating`이 true인 세션을 새로 고친 뒤에도 "답을 쓰는 중"으로 보이고 완료를 기다린다(§3.6).
-- 멈추기 버튼이 `POST …/cancel`을 부른다.
+## 7. 정한 것 (2026-10-14)
 
-## 7. 확인이 필요한 것
-
-| # | 질문 | 지금 가정 |
+| # | 질문 | 결정 |
 |---|---|---|
-| 1 | 분량 한도 1,400,000자를 그대로 쓸지, 실측 지연(첫 토큰 시간)을 보고 낮출지 | 1,400,000자로 시작, 지표 보고 조정 |
-| 2 | 대화 기록을 몇 턴까지 넣을지 | 그 세션 전체(한도 안). 넘치면 오래된 턴부터 뺀다 |
-| 3 | 프로필을 헤더로 넘길지 본문으로 넘길지 | gateway 구현 때 정한다 |
-| 4 | 프로젝트 영구 삭제 시 ai-chat 정리를 이벤트로 할지 gateway 호출로 할지 | 계정 탈퇴와 같은 gateway 순서 호출 |
+| 1 | 분량 한도 | 1,400,000자로 시작, 지표 보고 조정 |
+| 2 | 대화 기록 | 그 세션 전체(한도 안). 넘치면 오래된 턴부터 뺀다 |
+| 3 | 프로필 전달 | gateway가 헤더로(§4.2) |
+| 4 | 프로젝트 영구 삭제 시 정리 | gateway 순서 호출(§3.10). Kafka가 생기면 이벤트로 |
 | 5 | 질문 글 최대 길이 | 4,000자 |
+| 6 | 모델 | `gpt-6-luna` |
+| 7 | OpenAI 키 | 챗 전용 키. k8s Secret `ai-chat-openai`(`OPENAI_API_KEY`), Git 밖에서 만든다 |
+| 8 | 관계 출처 | content `document_relations`(내부 API 경유) |
+| 9 | 공개 범위 | 허용 목록(§4.2) → 지표 확인 뒤 전체 공개 |
+| 10 | 내부 API 보호 | 기존 수준(gateway에 노출하지 않음, ClusterIP). NetworkPolicy는 별도 과제 |
