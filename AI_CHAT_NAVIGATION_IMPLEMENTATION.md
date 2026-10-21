@@ -3,155 +3,148 @@
 > 갱신일: 2026-10-21
 > 상태: **구현 설계.** [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md)(무엇을 하는가)를 지금 코드에 어떻게 넣는가를 정한다.
 > 독자: ai-chat·content를 구현하는 사람.
-> 기준 코드: `loresentry-ai-chat` `41ef19b`, `loresentry-content` `4aeec2e`, `loresentry-gateway` `12fe815`, `loresentry-frontend` `a3f4a86`
+> 기준 코드: `loresentry-ai-chat` `41ef19b`, `loresentry-content` `4aeec2e`, `loresentry-gateway` `12fe815`, `loresentry-frontend` `a3f4a86`, `loresentry-gitops` `bdb1cd3`
 
 ## 0. 요약
 
 | 레포 | 바뀌는 것 | 규모 |
 |---|---|---|
-| **ai-chat** | 매 턴 전체 스냅샷 + 단일 호출을 **에이전트 루프**로 바꾼다. 루프는 프레임워크 없이 직접 짠다(§1). 보유 문서와 요약을 위한 테이블을 더한다 | 큼 |
-| **content** | 내부 API 2개 추가: `chat-map`, `chat-documents`. 기존 API는 그대로 | 작음 |
-| **frontend** | 대기 문구 하나("작품 전체를 읽는 중" → "필요한 문서를 읽는 중"). 계약은 바뀌지 않는다 | 아주 작음 |
-| **gateway** | 바꾸지 않는다. 다만 ai-chat 요청 제한(`request-timeout: 180s`)이 루프 전체의 시간 상한이다(§1.6) | 없음 |
+| **ai-chat** | ① 답변 서버: 매 턴 전체 스냅샷 + 단일 호출을 **에이전트 루프**(답 → 판정 → 전달)로 바꾼다. 프레임워크 없이 직접 짠다. ② **요약 스케줄러**: 같은 레포·같은 이미지의 별도 프로세스. Kafka를 받아 요약을 만든다 | 큼 |
+| **content** | 내부 API 2개(`chat-map`, `chat-documents`)와 백필용 이벤트 재발행 1개 추가. 기존 API와 이벤트는 그대로 | 작음 |
+| **gitops** | `ai-chat-summarizer` Deployment, 요약용 OpenAI 키 Secret, 설정값 | 작음 |
+| **frontend** | 대기 문구 하나. 계약은 그대로 | 아주 작음 |
+| **gateway** | 바꾸지 않는다. ai-chat 요청 제한 `request-timeout: 180s`가 루프 전체의 시간 상한이다(§1.6) | 없음 |
 
-## 1. 에이전트 루프 구성
+## 1. 에이전트 루프
 
 ### 1.1 프레임워크를 쓰지 않는다
 
-| 선택지 | 장점 | 단점 |
-|---|---|---|
-| **직접 구현** (Responses API + 반복문) | 루프는 100줄 남짓이다. 도구 실행이 서버 안의 함수라 담기 규칙·판정·강제 종료를 그대로 쓴다. 프롬프트 배치(캐시)를 완전히 통제한다. 지금 코드(`OpenAIModel`, `CitationStream`, `TurnRunner`의 취소·마감·지표)를 거의 그대로 재사용한다. 가짜 모델로 결정적으로 테스트할 수 있다 | 재시도, 추적을 직접 만든다 |
-| OpenAI Agents SDK | 도구 루프와 추적을 제공한다 | 판정 게이트, 단계별 담기, 마지막 단계 강제를 hook으로 끼워야 한다. 입력 배치를 SDK가 만들어서 캐시 통제가 약해진다. 지금의 SSE와 근거 파서를 SDK 스트림에 다시 이어야 한다 |
-| LangGraph | 상태 그래프, 체크포인트 | 노드 두세 개짜리 루프에 비해 무겁다. 요구사항 문서의 "에이전트 프레임워크를 쓰지 않는다" 결정과도 어긋난다 |
-
-**직접 구현한다.** 루프가 단순하고(도구 2개, 종료 조건 2개), 이 설계에서 중요한 부분(문서 순서를 지키는 담기, 답 전에 판정, 캐시를 위한 입력 배치)이 모두 프레임워크 밖의 로직이다. 병렬 도구나 여러 에이전트가 필요해지면 그때 다시 본다.
+| 선택지 | 판단 |
+|---|---|
+| **직접 구현** (Responses API + 반복문) | **채택.** 루프는 100줄 남짓이다. 이 설계의 핵심(문서 순서를 지키는 담기, 답을 내보내기 전 판정, 캐시를 위한 입력 배치)은 프레임워크 밖의 로직이다. 지금 코드(`OpenAIModel`, `CitationStream`, `TurnRunner`의 취소·마감·지표)를 거의 그대로 재사용한다. 가짜 모델로 결정적으로 테스트할 수 있다 |
+| OpenAI Agents SDK | 판정 게이트와 마지막 단계 강제를 hook으로 끼워야 하고, 입력 배치를 SDK가 만들어 캐시 통제가 약해진다 |
+| LangGraph | 노드 두세 개짜리 루프에 비해 무겁다. 요구사항 문서의 "에이전트 프레임워크를 쓰지 않는다" 결정과 어긋난다 |
 
 ### 1.2 구성 요소
 
 ```text
 TurnRunner (turns.py, 기존)          턴의 수명: 취소 감시, 마감, 지표, 저장, SSE
- └ Agent (agent.py, 신규)            에이전트 루프
-     ├ model.step()                   응답 모델의 도구 호출 한 번 (스트리밍 없음)
-     ├ pack() + content.documents()   request_documents 실행
-     ├ model.judge()                  판정 모델 호출
-     └ 결과 → Outcome(level, items, missing, read)
- └ model.stream()                     마지막 답 스트리밍 (기존)
- └ CitationStream (citations.py)      근거 파싱·검증 (기존, 대상만 바뀜)
+ ├ TurnInput (navigation.py, 신규)    지도·보유 문서·대화·질문으로 입력을 만든다
+ ├ Agent (agent.py, 신규)             루프
+ │   ├ model.step()                   응답 모델 호출 한 번 → 도구 호출 또는 답
+ │   ├ pack() + content.documents()   request_documents 실행
+ │   └ model.judge()                  판정 모델 호출
+ └ deliver()                          통과한 답을 CitationStream에 통과시켜 SSE로 보냄
 ```
 
-### 1.3 모델 호출 세 가지
+### 1.3 모델 호출 두 가지 (+ 요약)
 
-| 호출 | 용도 | 출력 | 도구 | 추론 강도 | 출력 상한 | 스트리밍 |
-|---|---|---|---|---|---|---|
-| `step` | 다음 행동 결정 | 도구 호출 1개 | 2개, `tool_choice=required`. 마지막 단계는 `ready_to_answer`로 강제 | `CHAT_STEP_REASONING_EFFORT`(low) | 2,000 | 아니요 |
-| `judge` | 충분한지 판정 | `{sufficient, missing}` JSON | 없음. `text.format=json_schema` | low | 1,000 | 아니요 |
-| `stream` | 마지막 답 | 본문 + `<cite>` | 선언만 하고 `tool_choice=none` | 기존 `OPENAI_REASONING_EFFORT`(medium) | 기존 | 예 |
+| 호출 | 용도 | 출력 | 설정 | 스트리밍 |
+|---|---|---|---|---|
+| `step` | 다음 행동 또는 답 | 도구 호출 1개 **또는** 답 본문 | 도구 `request_documents`, `tool_choice=auto`(마지막 단계·마지막 답은 `none`), 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS` | 아니요 |
+| `judge` | 충분도 + 합리성 | `{sufficient, missing, answer_ok, problems}` | 모델 `CHAT_JUDGE_MODEL`, `text.format=json_schema`, 추론 강도 `CHAT_JUDGE_REASONING_EFFORT`(low), 출력 상한 2,000 | 아니요 |
+| `summarize` | 요약 스케줄러 전용(§3) | 요약 본문 | 모델 `SUMMARY_MODEL`, low, 1,000 | 아니요 |
 
-- 세 호출 모두 `store=False`, `prompt_cache_key=project_id`(기존과 같다).
-- `step`은 `include=["reasoning.encrypted_content"]`로 받고, 응답의 `output` 항목(추론 + `function_call`)을 **그대로** 다음 입력에 덧붙인다. `store=False`에서 단계 사이에 추론을 이어 가는 방법이다.
-- 마지막 답 호출에도 앞 단계의 `function_call` 항목이 입력에 있으므로 도구 정의를 함께 보내고 `tool_choice=none`으로 막는다.
-- `judge`는 응답 모델과 다른 시스템 지시와 다른 입력을 쓰므로 캐시를 공유하지 않는다. 입력이 작아서(질문 + 대화 + 보유 문서) 괜찮다.
+- 모든 호출이 `store=False`다. `step`은 `prompt_cache_key=project_id`(기존과 같다).
+- `step`은 `include=["reasoning.encrypted_content"]`로 받고, 응답의 `output` 항목(추론 + `function_call` 또는 `message`)을 **그대로** 다음 입력에 덧붙인다. `store=False`에서 단계 사이에 추론을 이어 가는 방법이다.
+- 도구가 한 번이라도 쓰인 입력에는 `function_call` 항목이 있으므로, `tool_choice=none`인 호출에도 도구 정의는 함께 보낸다.
+- `judge`는 응답 모델과 다른 지시·입력을 쓰므로 캐시를 공유하지 않는다. 입력은 질문 + 대화 + 보유 문서 + 답이다.
 
 ### 1.4 루프
 
 ```python
 # app/agent.py (요지)
-async def run(self, turn: TurnInput, phase: Callable[[str], None]) -> Outcome:
-    items = turn.base_input()                    # 지도, 보유 문서, 대화, 이번 질문
-    read: list[Material] = []                    # 이번 턴에 새로 읽은 것
-    missing: list[str] = []
+async def run(self, turn: TurnInput) -> Outcome:
+    items = turn.base_input()                      # 지도, 보유 문서, 대화, 이번 질문
+    review: Verdict | None = None
     for step in range(1, self.settings.max_steps + 1):
-        if self.clock.remaining() < self.settings.final_reserve_seconds:
-            break                                # 마지막 답 시간을 남긴다 (§1.6)
-        force = step == self.settings.max_steps
-        result = await self.model.step(NAVIGATE_INSTRUCTIONS, items, TOOLS, force)
-        items += result.items
-        call = result.call
-        if call.name == "request_documents":
-            picked = pack(call.ranking, turn.nodes, turn.held_ids, self.settings.step_max_chars)
+        if self.clock.remaining() < self.settings.answer_reserve_seconds:
+            break                                  # 마지막 답 시간을 남긴다 (§1.6)
+        last = step == self.settings.max_steps
+        out = await self.model.step(NAVIGATE_INSTRUCTIONS, items, TOOLS,
+                                    tool_choice="none" if last else "auto")
+        items += out.items
+        if out.call:                               # request_documents
+            picked = pack(out.call.ranking, turn.nodes, turn.held_ids,
+                          self.settings.step_max_chars)
             docs = await self.content.documents(turn.user_id, turn.project_id, picked.ids)
-            read += docs
             turn.hold(docs)
-            items.append(tool_output(call.id, context_xml(docs, picked)))
-        else:                                    # ready_to_answer
-            verdict = await self.model.judge(JUDGE_INSTRUCTIONS, judge_input(turn))
-            if verdict.sufficient:
-                items.append(tool_output(call.id, "<check sufficient=\"true\"/>"))
-                return Outcome("SUPPORTED", items, [], read)
-            missing = verdict.missing
-            items.append(tool_output(call.id, check_xml(missing)))
-    return Outcome("NOT_ENOUGH", items, missing, read)
+            items.append(tool_output(out.call.id, context_xml(docs, picked)))
+            continue
+        review = await self.model.judge(JUDGE_INSTRUCTIONS, judge_input(turn, out.text))
+        if review.sufficient and review.answer_ok:
+            return Outcome("SUPPORTED", out.text, turn.read)
+        items.append(user_message(review_xml(review)))
+    final = await self.model.step(NAVIGATE_INSTRUCTIONS, items + [user_message(final_xml(review))],
+                                  TOOLS, tool_choice="none")
+    return Outcome("NOT_ENOUGH", final.text, turn.read)
 ```
 
-- **`pack()`는 순수 함수**다. 순위, 노드의 `chars`, 보유 목록, 한도를 받아 읽을 id·건너뛴 id·모르는 id를 돌려준다. 담기 규칙(설계 §5)이 여기 다 있고 단위 테스트한다.
-- 판정 입력은 `turn`에서 만든다. 질문, 직전 대화, **이번 턴까지의 보유 문서 본문**이다. 응답 모델의 `items`는 넣지 않는다.
-- 루프가 끝나면 `TurnRunner`가 `items`에 `<final level=…>` user 메시지를 붙이고 `model.stream()`을 부른다. 그 뒤는 지금 코드와 같다(근거 파싱 → 저장 → `done`).
+- **`pack()`는 순수 함수**다. 순위, 노드의 `chars`, 보유 목록, 한도를 받아 읽을 id·건너뛴 id·모르는 id를 돌려준다. 담기 규칙(설계 §4)이 여기 다 있다.
+- `judge_input()`은 질문, 직전 대화, **이번 턴까지의 보유 문서 본문**, 답으로 만든다. 응답 모델의 `items`(추론·도구 호출)는 넣지 않는다.
+- 판정이 `problems`만 지적했는데 다음 단계가 마지막이면, 마지막 단계의 `tool_choice=none`이 곧 고쳐 쓰기다. 그 답도 판정을 받는다.
+- `Outcome`을 받은 `TurnRunner`는 `deliver()`로 답을 내보내고(§2.5), 지금처럼 저장하고 `done`을 보낸다.
 
 ### 1.5 오류와 이상 동작
 
 | 상황 | 처리 |
 |---|---|
 | 모델이 지도에 없는 id만 요청 | `pack()`이 `<unknown/>`로 알리고 단계를 소비한다 |
-| 순위가 모두 보유 문서 | 읽을 게 없다고 알린다. 같은 일이 연속 두 번이면 다음 단계를 `ready_to_answer`로 강제한다 |
-| 도구 인자가 스키마에 어긋남 | `strict: true`라 거의 없다. 생기면 `MODEL_INVALID_TOOL_CALL`로 턴 실패 |
-| 판정 호출 실패 | 그 턴은 `NOT_ENOUGH`로 마감한다(답은 한다) |
-| `step`·`stream` 호출 실패 | 지금과 같은 `ModelFailure` → `CHAT_MODEL_UNAVAILABLE` |
+| 순위가 모두 보유 문서 | 읽을 게 없다고 알린다. 연속 두 번이면 다음 단계를 `tool_choice=none`으로 강제한다 |
+| 답이 비어 있음 | 지금처럼 `MODEL_EMPTY_RESPONSE`로 턴 실패 |
+| 판정 호출 실패 | 그 답을 `NOT_ENOUGH`로 내보낸다. 다시 쓰지 않는다 |
+| `step` 호출 실패 | 지금과 같은 `ModelFailure` → `CHAT_MODEL_UNAVAILABLE` |
 | content 실패 | 지금과 같은 `CONTENT_UNAVAILABLE` |
-| 취소 | 지금 감시자(`watch`)가 태스크를 취소한다. 루프 어디서든 `CancelledError`로 빠진다. **보유 문서는 턴이 완료될 때만 저장하므로**(§2.6) 취소·실패한 턴은 아무것도 남기지 않는다 |
+| 취소 | 지금 감시자(`watch`)가 태스크를 취소한다. 루프 어디서든 `CancelledError`로 빠진다. **보유 문서는 턴이 완료될 때만 저장하므로**(§4) 취소·실패한 턴은 아무것도 남기지 않는다 |
 
 ### 1.6 시간 예산
 
-gateway가 ai-chat 요청 전체를 180초에서 끊는다(`application.yaml`의 `request-timeout: 180s`). 지금 `CHAT_TURN_DEADLINE_SECONDS`가 170초인 이유다. 루프도 그 안에 끝나야 한다.
+gateway가 ai-chat 요청 전체를 180초에서 끊는다(`application.yaml`의 `request-timeout: 180s`). 그래서 `CHAT_TURN_DEADLINE_SECONDS`가 170초다.
 
 | 구간 | 예상 |
 |---|---|
 | 지도·보유 문서 받기 | 1초 안팎 |
-| `step` × 최대 4 (low) | 단계당 수 초~10여 초 |
-| `judge` × 1~2 (low) | 수 초 |
-| 마지막 답 (medium, 스트리밍) | 지금의 단일 호출과 비슷. 수십 초 |
+| `step` (medium) | 도구 호출이면 짧고, 답이면 지금의 단일 호출과 비슷(수십 초) |
+| `judge` (low) | 수 초 |
+| 내보내기 | 1초 안팎 |
 
-- **마지막 답 몫을 먼저 떼어 둔다.** 남은 시간이 `CHAT_FINAL_RESERVE_SECONDS`(90초)보다 적으면 루프를 멈추고 그때까지의 결과로 답한다. 충분 판정을 받은 적이 없으면 `NOT_ENOUGH`다.
-- 지표(`chat_turns`)에 단계 수와 전체 시간을 남긴다. 180초에 자주 닿으면 gateway 제한을 늘리거나 단계 수를 줄인다. gateway는 15초 heartbeat가 있어 중간 끊김(ALB 60초)은 걱정하지 않아도 된다.
+- 단계를 시작하기 전 남은 시간이 `CHAT_ANSWER_RESERVE_SECONDS`(75초)보다 적으면 루프를 멈추고 마지막 답(`NOT_ENOUGH`)으로 간다. 답 한 번 + 여유다.
+- 지표(`chat_turns`)에 단계 수와 시간을 남긴다. 180초에 자주 닿으면 gateway의 ai-chat 제한을 늘리거나 단계 수를 줄인다. 15초 heartbeat가 있어 중간 끊김(ALB 60초)은 걱정하지 않는다.
 
-## 2. ai-chat 변경
+## 2. ai-chat 답변 서버
 
 ### 2.1 모듈별
 
 | 파일 | 처리 | 내용 |
 |---|---|---|
 | `app/agent.py` | **신규** | 루프(§1.4), `pack()`, `Outcome`, 도구 정의 |
-| `app/navigation.py` | **신규** | 지도·보유 문서·결과 XML, 짧은 id, 판정 입력, `NAVIGATE_INSTRUCTIONS`·`JUDGE_INSTRUCTIONS`·`<final>` 문구 |
-| `app/summaries.py` | **신규** | 요약 작업 큐와 작업자(§2.7) |
+| `app/navigation.py` | **신규** | `TurnInput`, 지도·보유 문서·결과·review XML, 짧은 id, 판정 입력, 지시문 |
 | `app/content.py` | 수정 | `Node`·`ChatMap` 파싱, `ContentSource.map()`·`documents()` 추가. `snapshot()`은 지운다 |
-| `app/prompt.py` | 수정 | `build_prompt`·`Aliases`·최근 회차 분리를 지운다. `document_xml`·`question_xml`·`history_answer`·`select_history`·`TASKS`·`Material`은 남겨 `navigation.py`가 쓴다. `materials()`를 스냅샷 대신 문서 목록을 받게 바꾼다 |
-| `app/model.py` | 수정 | `AnswerModel`에 `step()`·`judge()`·`summarize()`를 더한다. `OpenAIModel`의 오류 변환은 공용 함수로 뺀다. `stream()`은 `Prompt` 대신 `(instructions, items, tools)`를 받는다 |
-| `app/turns.py` | 수정 | `run()`의 "스냅샷 → `build_prompt` → `stream`"을 "턴 입력 만들기 → `Agent.run` → `<final>` → `stream`"으로 바꾼다. 취소·마감·지표·저장은 그대로 |
-| `app/citations.py` | 그대로 | `CitationStream(materials)`에 넘기는 대상이 "보유 문서 + 이번 턴에 읽은 문서"로 바뀔 뿐이다. 지도에서만 본 노드는 `materials`에 없으니 지금 코드대로 근거에서 빠진다 |
-| `app/store.py` | 수정 | 보유 문서 읽기·저장·정리, 요약 읽기·저장, `complete_turn`에 `grounding`·보유 문서·새 지표, `message_json`에 `grounding` |
-| `app/routes.py` | 수정 | `send`의 분량 초과 검사를 지운다. `availability`는 항상 `available`(응답 모양은 유지) |
-| `app/settings.py` | 수정 | §2.8 |
-| `app/main.py` | 수정 | `Summarizer`를 lifespan에서 시작·정리 |
-| `db/migration/V3__…sql` | **신규** | §2.6 |
-| `tests/` | 수정·추가 | §2.9 |
+| `app/prompt.py` | 수정 | `build_prompt`·`Aliases`·최근 회차 분리를 지운다. `document_xml`·`question_xml`·`history_answer`·`select_history`·`TASKS`·`Material`은 남긴다. `materials()`는 문서 목록을 받게 바꾼다 |
+| `app/model.py` | 수정 | `AnswerModel`을 `step()`·`judge()`·`summarize()`로 바꾼다. 오류 변환(`status_code`)은 그대로 공용 |
+| `app/turns.py` | 수정 | `run()`을 "턴 입력 → `Agent.run` → `deliver()`"로 바꾼다. 취소·마감·지표·저장은 그대로. 사용량은 호출마다 합산 |
+| `app/citations.py` | 그대로 | `CitationStream(materials)`의 대상이 "보유 문서 + 이번 턴에 읽은 문서"가 될 뿐이다. 지도에서만 본 노드는 `materials`에 없으니 근거에서 빠진다 |
+| `app/store.py` | 수정 | 보유 문서 읽기·저장·정리, 요약 읽기, `complete_turn`에 `grounding`·보유 문서·새 지표, `message_json`에 `grounding` |
+| `app/routes.py` | 수정 | `send`의 분량 초과 검사를 지운다. `availability`는 항상 `available` |
+| `app/settings.py` | 수정 | §2.7 |
+| `db/migration/V3__navigation.sql` | **신규** | §4 |
 
-### 2.2 턴 입력 만들기 (`turns.py`)
+### 2.2 턴 입력 (`navigation.py`)
 
 ```text
 1. phase gathering
-2. map   = content.map(user, project)                     지도 (본문 없음)
-3. held  = store.held(session) → content.documents(...)    보유 문서를 현재 판으로
-           합이 CHAT_HELD_MAX_CHARS를 넘으면 먼저 읽은 것부터 빼고 DB에서도 지움
-           content가 missing으로 돌려준 것(삭제됨)도 DB에서 지움
-4. sums  = store.summaries(map의 문서 id) → 노드에 붙임
-           summarizer.schedule(낡은 것)                     턴은 기다리지 않음
+2. map     = content.map(user, project)
+3. held    = store.held(session) → content.documents(...)        현재 판으로
+             합이 CHAT_HELD_MAX_CHARS를 넘으면 먼저 읽은 것부터 빼고 DB에서도 지움
+             content가 missing으로 돌려준 것(삭제됨)은 DB에서 지움
+4. 요약     = store.summaries(map의 문서 id) → 노드에 붙임
 5. history = store.history(...) → select_history(…, CHAT_HISTORY_MAX_CHARS)
-6. base input:
+6. base input
      user [ <project/><author/><map/>  ← cache breakpoint
             <held/>                      ← cache breakpoint ]
      이전 턴들 (질문 / 답)
      user <turn/>
 7. phase reading → Agent.run()
-8. <final level> 덧붙임 → stream() → 첫 토큰에서 phase writing
 ```
 
 지금의 `text_block(..., breakpoint=True)`를 그대로 써서 지도 뒤와 보유 문서 뒤에 캐시 경계를 둔다.
@@ -166,47 +159,182 @@ def short_ids(ids: list[str]) -> dict[str, str]:
             return tails
 ```
 
-content의 id는 uuidv7이라 앞쪽은 생성 시각이다. 끝쪽은 무작위라 8자리면 거의 겹치지 않는다. 지도 전체(문서 + 메모)에 대해 한 번에 계산하므로 같은 자료면 같은 결과가 나온다.
+uuidv7은 앞쪽이 생성 시각이라 끝쪽을 쓴다. 지도 전체에 대해 한 번에 계산하므로 같은 자료면 같은 결과다.
 
 ### 2.4 `model.py`
 
 ```python
 class AnswerModel(Protocol):
     name: str
-    async def step(self, instructions, items, tools, force: bool) -> StepResult: ...
-    async def judge(self, instructions, items) -> Verdict: ...
-    async def summarize(self, instructions, text) -> str: ...
-    def stream(self, instructions, items, tools, cache_key) -> AsyncIterator[TextDelta | Finished]: ...
-
-@dataclass(frozen=True)
-class ToolCall:
-    id: str
-    name: str            # request_documents / ready_to_answer
-    ranking: list[str]   # ready_to_answer면 빈 목록
+    async def step(self, instructions, items, tools, tool_choice) -> StepResult: ...
+    async def judge(self, instructions, text) -> Verdict: ...
+    async def summarize(self, instructions, text) -> SummaryResult: ...
 
 @dataclass(frozen=True)
 class StepResult:
-    call: ToolCall
-    items: list[dict]    # response.output 그대로
+    call: ToolCall | None    # request_documents면 채워짐
+    text: str                # 답이면 본문
+    items: list[dict]        # response.output 그대로
     usage: Usage | None
 
 @dataclass(frozen=True)
 class Verdict:
     sufficient: bool
     missing: list[str]
+    answer_ok: bool
+    problems: list[str]
     usage: Usage | None
 ```
 
-- 판정 모델 이름은 `CHAT_JUDGE_MODEL`(기본은 `OPENAI_MODEL`)이다. `OpenAIModel`이 `judge_name`을 따로 갖는다.
-- 사용량은 `TurnRunner`가 호출마다 더해 `Metrics`에 남긴다. 지금 `with_usage()`가 덮어쓰는 것을 합산으로 바꾼다.
+지금의 `stream()`은 지운다. 답을 판정 뒤에 내보내므로 모델 쪽 스트리밍이 필요 없다.
 
-### 2.5 `routes.py`
+### 2.5 내보내기 (`turns.py`)
 
-- `send`: `size > context_limit`이면 422를 내던 검사를 지운다. 큰 작품도 답한다.
-- `availability`: 항상 `{"status": "available", "size": size, "limit": size}`. 프론트의 `too-large` 화면은 닿지 않게 되고, 프론트 정리 때 함께 지운다. 응답 모양을 유지해 프론트를 먼저 바꾸지 않아도 된다.
-- `create_session`의 `content.size()` 호출(프로젝트 접근 확인)은 그대로 둔다.
+```python
+def deliver(outcome: Outcome, materials, channel) -> CitationStream:
+    parser = CitationStream(materials)
+    channel.put("phase", {"phase": "writing"})
+    for piece in chunks(outcome.text, 60):         # 지금 delta와 비슷한 크기
+        forward(parser.feed(piece), channel)
+    forward(parser.finish(), channel)
+    return parser
+```
 
-### 2.6 DB (`V3__navigation.sql`)
+`CitationStream`과 `forward()`를 그대로 쓴다. `citation`·`delta` 이벤트 모양이 지금과 같아서 프론트는 바뀌지 않는다. `first_token_ms`는 `writing`을 보낸 시점이다.
+
+### 2.6 `routes.py`
+
+- `send`: `size > context_limit`이면 422를 내던 검사를 지운다.
+- `availability`: 항상 `{"status": "available", "size": size, "limit": size}`. 응답 모양을 유지해 프론트를 먼저 바꾸지 않아도 된다.
+- `create_session`의 `content.size()`(프로젝트 접근 확인)는 그대로 둔다.
+
+### 2.7 설정값
+
+| 이름 | 기본 | 비고 |
+|---|---|---|
+| `CHAT_STEP_MAX_CHARS` | 40,000 | 신규 |
+| `CHAT_MAX_STEPS` | 4 | 신규 |
+| `CHAT_HELD_MAX_CHARS` | 200,000 | 신규 |
+| `CHAT_HISTORY_MAX_CHARS` | 40,000 | 신규. 지금은 "한도 − 스냅샷 크기"로 계산하던 대화 예산 |
+| `CHAT_JUDGE_MODEL` / `CHAT_JUDGE_REASONING_EFFORT` | `OPENAI_MODEL` / `low` | 신규 |
+| `CHAT_ANSWER_RESERVE_SECONDS` | 75 | 신규 |
+| `CHAT_CONTEXT_LIMIT`, `CHAT_RECENT_MANUSCRIPTS`, `CHAT_HISTORY_FLOOR` | — | **삭제**. gitops의 `CHAT_CONTEXT_LIMIT`도 지운다 |
+
+### 2.8 테스트
+
+지금 구조(가짜 content, 가짜 모델, Testcontainers Postgres)를 그대로 쓴다. 가짜 모델은 **각본**을 받는다: "1단계 `request_documents([A, B])` → 2단계 답 'X' → 판정 부족(`missing`) → 3단계 `request_documents([C])` → 4단계 답 'Y' → 판정 통과".
+
+| 테스트 | 확인하는 것 |
+|---|---|
+| `pack()` 단위 | 순서 유지, 한도 안 채우기, 1순위 큰 문서 예외, 보유·모르는 id |
+| 짧은 id·지도 XML 단위 | 겹치면 늘어남, 같은 자료면 같은 바이트 |
+| 루프: 바로 통과 | `SUPPORTED`, 읽은 문서가 보유로 저장, `grounding` 저장 |
+| 루프: 부족 → 더 읽음 → 통과 | `missing`이 다음 `step` 입력에 들어감 |
+| 루프: 답에 문제 → 고쳐 씀 → 통과 | `problems`가 다음 `step` 입력에 들어감 |
+| 루프: 끝까지 실패 | 마지막 단계 `tool_choice=none`, 마지막 답에 `<final>`, `NOT_ENOUGH` |
+| 판정 입력 | 응답 모델의 추론·도구 호출이 들어가지 않음, 답과 보유 문서가 들어감 |
+| 보유 문서 갱신 | 다음 턴에 현재 판으로, 삭제된 문서는 빠짐, 한도 넘으면 오래된 것부터 |
+| 근거 | 지도에서만 본 노드를 인용하면 근거에서 빠짐 |
+| 내보내기 | `phase writing` → `citation`·`delta` 순서가 지금과 같음 |
+| 시간 예산 | 남은 시간이 예비분보다 적으면 루프를 멈추고 마지막 답 |
+| 취소 | 루프 중 취소하면 답·보유 문서가 저장되지 않음 |
+| 기존 API 테스트 | 분량 초과 거절 테스트 2개는 "큰 작품도 답한다"로 바꾼다. 나머지는 각본만 바꿔 유지 |
+
+## 3. 요약 스케줄러
+
+### 3.1 프로세스
+
+| 항목 | 내용 |
+|---|---|
+| 위치 | ai-chat 레포 `app/summarizer/`. 같은 이미지, 실행 명령만 `python -m app.summarizer` |
+| 배포 | gitops `workload/base/ai-chat-summarizer/deployment.yaml`, replicas 1. HTTP를 열지 않는다. 생존 확인은 하트비트 파일을 보는 exec probe |
+| 의존 | ai_chat DB(같은 Flyway 스키마), Kafka, OpenAI(요약 전용 키). **content를 부르지 않는다** |
+| Kafka 라이브러리 | `confluent-kafka`(graph-rag와 같다). 설정도 graph-rag의 `consumer_config`와 같은 원칙: 수동 커밋, `auto.offset.reset=earliest`, `group.protocol=classic` |
+
+### 3.2 안에서 도는 것
+
+```text
+① 컨슈머 (스레드 1)
+   토픽 content.project.changed.v1, 그룹 ai-chat-summarizer
+   header ce_type으로 거름 (value를 열기 전에)
+   FileChanged CREATED / UPDATED / RESTORED
+       → summary_queue upsert (revision_no가 더 클 때만):
+         document_id, project_id, revision_no, kind, title, body, changed_at=now()
+         설정 문서는 folder_code로 kind를 정하고, MEMO는 오지 않는다
+   FileChanged TRASHED / DELETED
+       → summary_queue, document_summaries에서 그 문서 삭제
+   ProjectDeleted
+       → 그 project_id의 행을 모두 삭제
+   DB 반영이 끝난 뒤 오프셋 커밋
+
+② 틱 (asyncio, 1분마다)
+   select … from summary_queue
+   where changed_at <= now() - SUMMARY_IDLE_MINUTES and next_attempt_at <= now()
+   order by changed_at desc
+   limit SUMMARY_MAX_PER_MINUTE
+   for update skip locked
+   → 작업자에게 넘김
+
+③ 작업자 (SUMMARY_WORKERS개)
+   fp_now = fingerprint(body)
+   s = document_summaries[document_id]
+   if s is None or changed(s.fingerprint, fp_now) ≥ threshold(len(body)):
+       summary = body if len(body) ≤ 500 else model.summarize(body)
+       upsert document_summaries (summary, revision_no, fingerprint=fp_now, model, prompt_version)
+   큐 행 삭제 (단, 처리 중 revision이 더 올라갔으면 남겨 둠)
+   실패 → attempts += 1, next_attempt_at = now() + [1, 5, 30]분, 3회 넘으면 삭제하고 로그
+```
+
+- 변화량이 기준에 못 미치면 요약과 **지문을 둘 다 그대로** 둔다. 작은 수정이 쌓여 기준을 넘으면 다시 요약된다.
+- 큐의 `body`는 처리될 때까지만 있는 임시 사본이다. 오래 남는 것은 요약과 지문뿐이다.
+- `FOR UPDATE SKIP LOCKED` 덕분에 나중에 replica를 늘려도 같은 문서를 두 번 요약하지 않는다.
+
+### 3.3 지문과 변화량
+
+```python
+SENTENCE = re.compile(r"[^.!?。…\n]+[.!?。…]*")
+
+def fingerprint(text: str) -> list[tuple[str, int]]:
+    return [(sha1(s.strip()), len(s.strip())) for s in SENTENCE.findall(text) if s.strip()]
+
+def changed(old, new) -> int:
+    a, b = Counter(h for h, _ in old), Counter(h for h, _ in new)
+    size = dict(old) | dict(new)
+    return sum(size[h] * n for h, n in ((a - b) + (b - a)).items())
+
+def threshold(length: int) -> int:
+    return min(SUMMARY_MIN_CHANGE_CHARS, int(length * SUMMARY_MIN_CHANGE_RATIO))
+```
+
+문장 하나에서 한 글자를 고치면 그 문장 길이의 두 배로 센다. 실제보다 크게 잡는 쪽이라 요약을 놓치지 않는다. 지문은 `JSONB`로 저장한다. 회차 하나에 문장 수백 개, 행 하나에 수십 KB다.
+
+### 3.4 설정값
+
+| 이름 | 기본 |
+|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | configmap `kafka`의 `bootstrap-servers`(graph-rag와 같다) |
+| `SUMMARY_TOPIC` / `SUMMARY_GROUP_ID` | `content.project.changed.v1` / `ai-chat-summarizer` |
+| `SUMMARY_OPENAI_API_KEY` | Secret `ai-chat-summarizer-openai` |
+| `SUMMARY_MODEL` / `SUMMARY_REASONING_EFFORT` | `gpt-6-luna` / `low` |
+| `SUMMARY_IDLE_MINUTES` | 10 |
+| `SUMMARY_MIN_CHANGE_CHARS` / `SUMMARY_MIN_CHANGE_RATIO` | 1,000 / 0.3 |
+| `SUMMARY_MAX_PER_MINUTE` / `SUMMARY_WORKERS` | 30 / 2 |
+| `SUMMARY_PROMPT_VERSION` | `summary-v1` |
+
+프롬프트 버전이 바뀌어도 일괄 재요약하지 않는다. 다음 변경 때 새 버전으로 바뀐다. 일괄로 바꾸려면 백필(§5.3)을 다시 돌린다.
+
+### 3.5 테스트
+
+| 테스트 | 확인하는 것 |
+|---|---|
+| 지문·변화량 단위 | 같은 글은 0, 문장 추가·삭제·수정, 기준값(짧은 문서는 30%) |
+| 이벤트 처리 | 새 revision만 큐에 반영, 옛 revision·중복은 무시, TRASHED·DELETED·ProjectDeleted는 삭제 |
+| 틱 | 10분 안 지난 행은 건너뜀, 최근 수정 순, 상한 개수 |
+| 작업자 | 요약 없음 → 생성, 변화 작음 → 건너뛰고 지문 유지, 500자 이하는 LLM 없이, 실패 재시도, 처리 중 새 revision이면 큐 유지 |
+
+Kafka는 가짜 메시지 목록으로 컨슈머 처리 함수만 테스트한다. 실제 브로커 연결은 graph-rag처럼 운영 배포에서 확인한다.
+
+## 4. DB (`V3__navigation.sql`)
 
 ```sql
 CREATE TABLE chat_held_documents (
@@ -221,17 +349,32 @@ CREATE TABLE chat_held_documents (
 );
 
 CREATE TABLE document_summaries (
-    document_id UUID         NOT NULL,
-    project_id  UUID         NOT NULL,
-    user_id     UUID         NOT NULL,
-    revision_no BIGINT       NOT NULL,
-    summary     TEXT         NOT NULL,
-    model       VARCHAR(100),
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    document_id    UUID         NOT NULL,
+    project_id     UUID         NOT NULL,
+    revision_no    BIGINT       NOT NULL,
+    summary        TEXT         NOT NULL,
+    fingerprint    JSONB        NOT NULL,
+    model          VARCHAR(100),
+    prompt_version VARCHAR(40)  NOT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT pk_document_summaries PRIMARY KEY (document_id)
 );
 CREATE INDEX ix_document_summaries_project ON document_summaries (project_id);
-CREATE INDEX ix_document_summaries_user ON document_summaries (user_id);
+
+CREATE TABLE summary_queue (
+    document_id     UUID         NOT NULL,
+    project_id      UUID         NOT NULL,
+    revision_no     BIGINT       NOT NULL,
+    kind            VARCHAR(20)  NOT NULL,
+    title           TEXT         NOT NULL,
+    body            TEXT         NOT NULL,
+    changed_at      TIMESTAMPTZ  NOT NULL,
+    attempts        INTEGER      NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT pk_summary_queue PRIMARY KEY (document_id)
+);
+CREATE INDEX ix_summary_queue_due ON summary_queue (changed_at);
+CREATE INDEX ix_summary_queue_project ON summary_queue (project_id);
 
 ALTER TABLE chat_messages ADD COLUMN grounding JSONB;
 
@@ -242,70 +385,14 @@ ALTER TABLE chat_turns
     ADD COLUMN grounding   VARCHAR(16);
 ```
 
-- **보유 문서는 `complete_turn` 트랜잭션에서만 넣는다.** 이번 턴에 읽은 것을 `ON CONFLICT DO NOTHING`으로 넣는다. 취소·실패한 턴은 보유를 늘리지 않으므로 따로 되돌릴 일이 없다.
-- `replaces`(마지막 질문 고치기)는 지금처럼 메시지만 지운다. 그 턴이 남긴 보유 문서는 남겨 둔다. 다음 질문에도 쓸모 있을 가능성이 높고, 해롭지 않다.
-- 요약 삭제: `delete_project_data`는 `project_id`로, `delete_user_data`는 `user_id`로 `document_summaries`도 지운다. 지도에 없는 문서(삭제됨)의 요약은 지도를 만들 때 지운다.
-- `chat_turns.context_chars`는 이제 지도 + 보유 문서 글자 수를 남긴다.
+- **보유 문서는 `complete_turn` 트랜잭션에서만 넣는다**(`ON CONFLICT DO NOTHING`). 취소·실패한 턴은 보유를 늘리지 않는다.
+- `replaces`(마지막 질문 고치기)는 지금처럼 메시지만 지운다. 그 턴이 남긴 보유 문서는 남긴다.
+- 요약·큐는 사용자와 무관한 문서 단위 데이터라 `user_id`가 없다. 삭제는 요약 스케줄러가 이벤트로 한다(계정 삭제도 content가 프로젝트마다 `ProjectDeleted`를 낸다). 답변 서버의 `delete_user_data`·`delete_project_data`는 지금처럼 챗 데이터만 지운다.
+- 마이그레이션은 답변 서버 컨테이너가 시작할 때 돌린다(지금과 같다). 요약 스케줄러는 Flyway를 돌리지 않고, 테이블이 없으면 기다렸다 다시 시도한다. 배포 순서(§7)로 답변 서버가 먼저 올라간다.
 
-### 2.7 요약 (`summaries.py`)
+## 5. content 변경
 
-```text
-Summarizer
-  queue: asyncio.Queue[(user_id, project_id, document_id)]   중복은 set으로 거름
-  worker 1개 (lifespan에서 시작, 종료 때 취소)
-  처리: content.documents([id]) → model.summarize() → store.save_summary()
-        저장할 때 더 새 revision의 요약이 이미 있으면 버림
-schedule 조건: summary_rev != rev 이고 updated_at이 SUMMARY_IDLE_MINUTES보다 오래됨
-```
-
-- replica가 1개라 프로세스 안 큐로 충분하다. 재시작하면 큐는 사라지지만, 다음 턴의 지도에서 다시 찾아 넣는다.
-- 요약 호출은 사용자 턴과 같은 OpenAI 키를 쓴다. 지표는 로그로만 남긴다(`summary finished`, 문서 id, 토큰).
-
-### 2.8 설정값
-
-| 이름 | 기본 | 비고 |
-|---|---|---|
-| `CHAT_STEP_MAX_CHARS` | 40,000 | 신규 |
-| `CHAT_MAX_STEPS` | 4 | 신규 |
-| `CHAT_HELD_MAX_CHARS` | 200,000 | 신규 |
-| `CHAT_HISTORY_MAX_CHARS` | 40,000 | 신규. 지금은 "한도 − 스냅샷 크기"로 계산하던 대화 예산 |
-| `CHAT_STEP_REASONING_EFFORT` | `low` | 신규. `step`·`judge` 공통 |
-| `CHAT_JUDGE_MODEL` | `OPENAI_MODEL` | 신규 |
-| `CHAT_FINAL_RESERVE_SECONDS` | 90 | 신규 |
-| `SUMMARY_IDLE_MINUTES` | 10 | 신규 |
-| `CHAT_CONTEXT_LIMIT`, `CHAT_RECENT_MANUSCRIPTS`, `CHAT_HISTORY_FLOOR` | — | **삭제**. gitops `deployment.yaml`의 `CHAT_CONTEXT_LIMIT`도 지운다 |
-
-### 2.9 테스트
-
-지금 테스트 구조(가짜 content, 가짜 모델, Testcontainers Postgres)를 그대로 쓴다. 가짜 모델은 **각본**을 받는다: "1단계에 `request_documents([A, B])`, 판정은 부족(`missing=[…]`), 2단계에 `request_documents([C])`, 판정은 충분, 답은 '…'".
-
-| 테스트 | 확인하는 것 |
-|---|---|
-| `pack()` 단위 | 순서 유지, 한도 안 채우기, 1순위 큰 문서 예외, 보유·모르는 id 처리 |
-| 짧은 id 단위 | 겹치면 늘어남, 같은 입력에 같은 결과 |
-| 지도 XML 단위 | 같은 자료면 같은 바이트 |
-| 루프: 바로 충분 | `SUPPORTED`, 읽은 문서가 보유로 저장됨, `grounding` 저장 |
-| 루프: 부족 → 다시 찾음 → 충분 | 판정의 `missing`이 다음 `step` 입력에 들어감 |
-| 루프: 끝까지 부족 | 마지막 단계가 `ready_to_answer`로 강제됨, `NOT_ENOUGH`와 `<final>` 문구 |
-| 판정 입력 | 응답 모델의 도구 호출·추론이 들어가지 않음 |
-| 보유 문서 갱신 | 다음 턴에 현재 판으로 다시 들어감, 삭제된 문서는 빠짐, 한도 넘으면 오래된 것부터 빠짐 |
-| 근거 | 지도에서만 본 노드를 인용하면 근거에서 빠짐 |
-| 시간 예산 | 남은 시간이 예비분보다 적으면 루프를 멈추고 답함 |
-| 취소 | 루프 중 취소하면 답·보유 문서가 저장되지 않음 |
-| 기존 API 테스트 | 분량 초과 거절 테스트 2개는 "큰 작품도 답한다"로 바꾼다. 나머지는 가짜 모델 각본만 바꿔 유지 |
-
-## 3. content 변경
-
-### 3.1 `chat` 패키지
-
-| 파일 | 추가 |
-|---|---|
-| `ChatController` | `GET /internal/projects/{id}/chat-map`, `POST /internal/projects/{id}/chat-documents` |
-| `ChatService` | `map()`, `documents()`. 둘 다 `readOnly`, `REPEATABLE_READ`(기존과 같다) |
-| `ChatRepository` | 아래 쿼리 |
-| `ChatResponses` | `MapManuscript`, `MapSetting`, `MapMemo`, `ChatMap`, `DocumentsRequest`, `Documents` |
-
-### 3.2 `chat-map`
+### 5.1 `chat-map`
 
 기존 `manuscripts`·`settings`·`memos` 쿼리에서 본문 대신 길이를 읽는다.
 
@@ -318,69 +405,78 @@ order by (e.id is null), e.rank, e.id, d.rank, d.id
 ```
 
 - `chars` = 제목 + `body_chars` + 속성 값의 코드 포인트 수. 지금 `sizeOf()`가 문서 하나에 더하는 값과 같다. Postgres `char_length`는 코드 포인트를 센다.
-- 속성(`properties`)과 관계(`relations`)는 기존 쿼리를 그대로 쓴다. 메모는 본문 대신 `char_length(body)`를 읽는다.
+- 속성·관계는 기존 쿼리를 그대로 쓴다. 메모는 본문 대신 `char_length(body)`를 읽는다.
 
-### 3.3 `chat-documents`
+### 5.2 `chat-documents`
 
 ```json
 요청 { "document_ids": ["…"], "memo_ids": ["…"] }
 응답 { "manuscripts": [Manuscript…], "settings": [Setting…], "memos": [Memo…], "missing": ["…"] }
 ```
 
-- 항목 모양은 `chat-snapshot`의 `Manuscript`·`Setting`·`Memo`를 그대로 쓴다.
+- 항목 모양은 `chat-snapshot`의 `Manuscript`·`Setting`·`Memo`와 같다.
 - 원고의 `ordinal`은 프로젝트 전체 순서여야 하므로, 전체 순서에 `row_number()`를 매긴 뒤 id로 거른다.
+- 한 번에 최대 100개. 넘으면 400 `INVALID_REQUEST`. 없거나 휴지통에 있거나 다른 프로젝트의 id는 `missing`.
 
-```sql
-select * from (
-  select d.id, …, row_number() over (order by (e.id is null), e.rank, e.id, d.rank, d.id) as ordinal
-  from document d left join episode_folders e on e.id = d.episode_id
-  where d.project_id = :project and d.folder_id = 4 and d.trashed_at is null
-) m where m.id = any(:ids)
-```
+### 5.3 백필: `POST /internal/admin/file-events/replay`
 
-- 한 번에 최대 100개. 넘으면 400 `INVALID_REQUEST`. 없거나 휴지통에 있거나 다른 프로젝트의 id는 `missing`에 넣는다.
+- 휴지통에 없는 모든 문서에 대해 `FileChanged(UPDATED)`를 outbox에 다시 쓴다. 프로젝트 하나를 트랜잭션 하나로 묶고, 지금 `ContentEvents`의 규칙대로 소유자 잠금(`lock(userId)`) 뒤에 쓴다.
+- 쿼리 파라미터 `after`(project id)와 `limit`(프로젝트 수)으로 나눠 돌린다. 응답은 처리한 마지막 project id다.
+- gateway에 노출하지 않는다(ClusterIP 내부 경로). 운영자가 `kubectl port-forward`로 한 번 부른다.
+- graph-rag도 이 이벤트를 받는다. 같은 revision은 revision 가드에서 무시하므로 결과는 바뀌지 않고, 처리 부하만 생긴다. 그래서 `limit`으로 나눠 돌린다.
 
-### 3.4 테스트
+### 5.4 테스트
 
-`ChatApiTest`에 더한다: 지도에 본문이 없고 `chars`가 `chat-size`의 문서별 합과 맞음, 순서가 스냅샷과 같음, 문서 요청이 원고 `ordinal`을 프로젝트 전체 기준으로 줌, 다른 프로젝트·휴지통 id는 `missing`, 다른 사용자는 404, 100개 초과는 400.
+`ChatApiTest`: 지도에 본문이 없고 `chars`가 `chat-size`의 문서별 합과 맞음, 순서가 스냅샷과 같음, 문서 요청의 원고 `ordinal`이 프로젝트 전체 기준, 다른 프로젝트·휴지통 id는 `missing`, 다른 사용자는 404, 100개 초과는 400.
+백필: 모든 활성 문서에 outbox 행이 생김, 휴지통 문서는 빠짐, `after`·`limit`으로 나뉨.
 
 `chat-snapshot`은 ai-chat이 더 이상 부르지 않게 된 뒤 정리 PR에서 지운다.
 
-## 4. frontend
+## 6. gitops · frontend
 
-- `src/features/chat/waiting.tsx`의 `reading` 문구: "작품 전체를 읽는 중" → "필요한 문서를 읽는 중"(영어 번역 포함).
-- 그 밖의 계약은 바뀌지 않는다. `phase`는 지금의 `gathering`·`reading`·`writing`만 쓴다. 답 메시지의 `grounding`은 지금은 쓰지 않는다(본문에 이미 단서가 들어간다).
-- `too-large` 화면과 `availability` 호출은 닿지 않게 된다. 정리 PR에서 지운다.
+**gitops**
 
-## 5. 배포 순서
+- `workload/base/ai-chat-summarizer/`: Deployment(replicas 1, 이미지는 ai-chat과 같은 태그, `command: ["python", "-m", "app.summarizer"]`), kustomization. 환경 변수는 §3.4와 DB 연결(ai-chat과 같은 Secret).
+- Secret `ai-chat-summarizer-openai`는 Git 밖에서 만든다(`bootstrap/secrets/README.md`에 절차 추가). 챗 키·graph-rag 키와 나눠 비용을 따로 본다.
+- CI의 이미지 태그 갱신 Lambda가 ai-chat 이미지 태그를 두 Deployment에 함께 반영하도록 overlay를 맞춘다.
+- ai-chat Deployment의 `CHAT_CONTEXT_LIMIT`을 지운다.
+
+**frontend**
+
+- `src/features/chat/waiting.tsx`의 `reading` 문구: "작품 전체를 읽는 중" → "필요한 문서를 읽는 중"(영어 포함).
+- 그 밖의 계약은 그대로다. `grounding`은 지금은 쓰지 않는다(본문에 이미 단서가 들어간다). `too-large` 화면은 닿지 않게 되고 정리 PR에서 지운다.
+
+## 7. 배포 순서
 
 | 순서 | 레포 | 내용 | 되돌리기 |
 |---|---|---|---|
-| 1 | content | `chat-map`, `chat-documents` 추가 | 추가만 하므로 영향 없음 |
-| 2 | ai-chat | 루프, V3 마이그레이션, 설정값. 요약 작업 없이 | gitops 이미지 태그 `git revert`. V3는 추가만 하므로 옛 이미지도 동작한다 |
-| 3 | ai-chat | 요약 작업 | 같음 |
-| 4 | frontend | 대기 문구 | |
-| 5 | 정리 | content `chat-snapshot` 삭제, frontend `too-large` 삭제, gitops `CHAT_CONTEXT_LIMIT` 삭제, [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) §3.3·§3.4 갱신 | |
+| 1 | content | `chat-map`, `chat-documents`, 백필 API | 추가만 하므로 영향 없음 |
+| 2 | ai-chat | 답변 서버 루프 + V3 마이그레이션 | gitops 이미지 태그 `git revert`. V3는 추가만 하므로 옛 이미지도 동작한다 |
+| 3 | ai-chat + gitops | 요약 스케줄러 Deployment, Secret | Deployment 삭제. 요약이 없어도 답변 서버는 동작한다 |
+| 4 | 운영 | 백필 API를 나눠 호출 | |
+| 5 | frontend | 대기 문구 | |
+| 6 | 정리 | content `chat-snapshot`, frontend `too-large`, gitops `CHAT_CONTEXT_LIMIT` 삭제, [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) §3.3·§3.4·§3.5 갱신 | |
 
 기능 플래그는 두지 않는다. 옛 경로를 함께 남기면 코드가 두 벌이 된다. 문제가 생기면 gitops의 이미지 태그를 되돌린다.
 
 2단계는 요약 없이도 동작한다. 지도에 요약이 비어 있으면 모델이 제목·순번·관계로 고른다. 그 상태의 지표가 요약의 효과를 재는 기준선이 된다.
 
-## 6. PR 단위
+## 8. PR 단위
 
 | PR | 레포 | 범위 |
 |---|---|---|
-| A | content | §3 전체 |
-| B | ai-chat | `content.py`, `navigation.py`, `agent.py`, `model.py`, `turns.py`, `prompt.py`, `store.py`, `routes.py`, `settings.py`, V3, 테스트. **요약 제외** |
-| C | ai-chat | `summaries.py`, `main.py`, 요약 저장·삭제, 테스트 |
-| D | frontend | 대기 문구 |
-| E | 정리 | §5의 5단계 |
+| A | content | §5 전체 |
+| B | ai-chat | 답변 서버(§2)와 V3의 챗 부분. 커밋은 "content 클라이언트 → 지도·XML → `pack()` → 모델 호출 → 루프 → 내보내기 → `turns.py` 연결 → 저장 → 라우트" 순서 |
+| C | ai-chat | 요약 스케줄러(§3)와 V3의 요약 부분 |
+| D | gitops | 요약 스케줄러 Deployment, Secret 절차, 설정값 |
+| E | frontend | 대기 문구 |
+| F | 정리 | §7의 6단계 |
 
-B가 가장 크다. 리뷰를 쉽게 하려면 커밋을 "content 클라이언트 → 지도·XML → `pack()` → 모델 호출 → 루프 → `turns.py` 연결 → 저장 → 라우트" 순서로 나눈다.
+V3를 B와 C에 나눠 넣지 않고 B에서 한 번에 만든다. 마이그레이션을 두 번 내지 않으려는 것이다.
 
-## 7. 열린 점
+## 9. 열린 점
 
-- **시간:** 4단계 + 판정 + 답이 180초 안에 드는지는 실측해야 한다. 자주 넘으면 gateway `request-timeout`을 늘린다(ai-chat 클라이언트만).
-- **`step` 추론 강도:** low로 순서 품질이 충분한지 본다. 부족하면 medium으로 올리고 단계 수를 줄인다.
-- **판정 모델:** 같은 모델로 시작한다. 비용이 크면 작은 모델로 바꾼다.
+- **시간:** 단계 수 × medium 호출 + 판정이 180초 안에 드는지는 실측한다. 자주 넘으면 gateway의 ai-chat `request-timeout`을 늘린다.
 - **추론 항목:** `store=False`에서 `reasoning.encrypted_content`를 돌려주는 방식이 `gpt-6-luna`에서 동작하는지 구현 첫날 확인한다. 안 되면 단계 사이 추론 없이 도구 호출과 결과만 넘긴다.
+- **판정 통과율:** 첫 답이 통과하는 비율을 보고 스트리밍 복원(설계 §10)을 판단한다.
+- **처리방침:** 요약 스케줄러가 저장된 원고를 자동으로 OpenAI에 보내는 것은 지금 처리방침과 어긋난다. 이 설계에서는 고려하지 않기로 했고(2026-10-21), 출시 전에 처리방침을 맞춘다.
