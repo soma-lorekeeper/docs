@@ -222,7 +222,9 @@ Write in the language of the document. 2 to 4 sentences on what it says or what 
 **content 내부 API** (권한·404 규칙은 기존 내부 API와 같다)
 
 - `GET /internal/projects/{id}/chat-map`: `chat-snapshot`에서 본문을 빼고 문서마다 `chars`를 더한 것. 관계와 메모 목록(본문 없이)을 포함한다.
-- `POST /internal/projects/{id}/chat-documents` `{"ids": [...]}`: 고른 문서·메모의 본문. 모양은 `chat-snapshot`의 항목과 같다.
+- `POST /internal/projects/{id}/chat-documents` `{"document_ids": [...], "memo_ids": [...]}`: 고른 문서·메모의 본문. 모양은 `chat-snapshot`의 항목과 같다.
+
+구현은 [AI_CHAT_NAVIGATION_IMPLEMENTATION.md](AI_CHAT_NAVIGATION_IMPLEMENTATION.md)에 있다.
 
 **ai_chat DB**
 
@@ -245,7 +247,7 @@ chat_turns            + steps, chars_read, grounding
 | `CHAT_JUDGE_MODEL` | 답변 모델과 같음 |
 | `SUMMARY_IDLE_MINUTES` | 10 |
 
-**SSE:** `phase`에 `{"phase":"navigating","step":n,"reading":[{"file_id","title"}]}`와 `{"phase":"checking"}`을 더한다. 프론트가 모르는 `phase`는 무시해도 동작한다.
+**SSE:** 바꾸지 않는다. 지도를 받는 동안 `gathering`, 루프 동안 `reading`, 첫 답 토큰부터 `writing`이다. 읽는 문서를 보여 주는 `phase`는 나중에 더한다.
 
 ## 9. 나중에 고도화할 것
 
