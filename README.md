@@ -9,6 +9,7 @@
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |
 | [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) | **AI 챗 백엔드 요구사항.** 세션·질문과 답·컨텍스트 스냅샷·분량 판정·근거 형식·SSE·검색·드래그 질의·API 계약·데이터 모델 |
+| [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md) | **AI 챗 탐색 모드 설계.** 한 번에 읽을 수 없는 큰 작품. 지도(노드·관계·요약)·LLM이 정하는 문서 순서·예산 담기·충분도 판정과 확신도·답의 단서·세션 구성·프롬프트 전문 |
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [OUTBOX_CDC_VS_POLLING.md](OUTBOX_CDC_VS_POLLING.md) | Outbox 행을 Kafka로 내보내는 방식 비교. 폴링 퍼블리셔와 CDC(Debezium)의 장단점과 선택 근거 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
