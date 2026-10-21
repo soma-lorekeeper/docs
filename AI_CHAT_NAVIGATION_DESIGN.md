@@ -7,17 +7,17 @@
 
 ## 0. 요약
 
-작품 크기와 상관없이 같은 방식으로 답한다. 모델은 먼저 **지도**(모든 문서의 노드·관계·요약)를 보고, **필요하다고 생각하는 순서대로** 문서를 요청한다. 서버는 한 단계에서 정해진 글자 수만큼 그 순서대로 읽어 준다. 모델이 충분하다고 하면 별도 판정으로 확인하고 답한다. 끝까지 충분하지 않으면 그 사실을 답에 밝힌다.
+작품 크기와 상관없이 같은 방식으로 답한다. 모델은 먼저 **지도**(모든 문서의 노드·관계·요약)를 보고, **필요하다고 생각하는 순서대로** 문서를 요청한다. 서버는 한 단계에서 정해진 글자 수만큼 그 순서대로 읽어 준다. 모델이 답할 준비가 됐다고 하면 별도 판정 모델이 충분한지 본다. 끝까지 충분하지 않으면 그 사실을 답에 밝힌다.
 
 ```text
 질문
  └ 지도 + 보유 문서 + 대화 기록 + 질문
     └ 반복 (최대 CHAT_MAX_STEPS)
        ├ request_documents(순위) → 서버가 순서대로 CHAT_STEP_MAX_CHARS까지 읽어 줌
-       └ ready_to_answer(사실, 답 후보) → 충분도 판정
-            충분 ∧ 확신 → 답
-            아니면     → 빠진 사실을 알려 주고 계속
-    └ 최대 단계 도달 → 그때의 충분도·확신도로 단서를 붙여 답
+       └ ready_to_answer()       → 판정 모델: { sufficient, missing }
+            충분 → 답
+            부족 → missing을 알려 주고 계속
+    └ 최대 단계 도달 → "충분한 원고 내용을 찾지 못했다"로 시작해 답
 ```
 
 | 항목 | 결정 |
@@ -25,8 +25,8 @@
 | 적용 범위 | 모든 프로젝트. 작은 작품은 한두 단계에 다 읽고 끝난다 |
 | 문서 순서 | **답변 모델이 정한다.** 매 단계 처음부터 다시 정렬한다 |
 | 비용 상한 | 단계당 최대 글자 수 `CHAT_STEP_MAX_CHARS` 하나. 질문당 상한은 단계당 상한 × 최대 단계 수다 |
-| 종료 | 충분도 판정과 확신도가 모두 기준 이상, 또는 최대 단계 도달 |
-| 답의 단서 | `SUPPORTED`(그대로) / `AMBIGUOUS`(해석이 갈림) / `NOT_ENOUGH`(충분한 원고 내용을 찾지 못함) |
+| 종료 | 판정 모델이 충분하다고 할 때, 또는 최대 단계 도달 |
+| 답의 단서 | `SUPPORTED`(그대로) / `NOT_ENOUGH`(충분한 원고 내용을 찾지 못함) |
 | 문서 편집 | 턴마다 보유 문서를 **현재 판으로 다시 넣는다.** 편집된 문서가 저절로 최신이 된다 |
 | 관계 출처 | content의 `document_relations` |
 
@@ -68,7 +68,7 @@ held = 이 세션의 보유 문서 (현재 판으로 다시 읽음)
 for step in 1..CHAT_MAX_STEPS:
     모델 호출 (도구 필수, 마지막 단계는 ready_to_answer 강제)
 
-    request_documents(ranking, missing):
+    request_documents(ranking):
         cap = CHAT_STEP_MAX_CHARS
         for id in ranking:
             if id in held:            건너뜀
@@ -77,12 +77,12 @@ for step in 1..CHAT_MAX_STEPS:
             else:                     건너뜀 (다음 단계에 다시 요청 가능)
         읽은 문서를 held에 넣고 도구 결과로 돌려줌
 
-    ready_to_answer(facts, answers):
-        충분도 판정 (§3)
-        충분 ∧ 확신 → 종료(SUPPORTED)
-        아니면 → 판정 결과(빠진 사실)를 도구 결과로 돌려줌
+    ready_to_answer():
+        판정 모델 호출 (§3) → { sufficient, missing }
+        충분 → 종료(SUPPORTED)
+        부족 → missing을 도구 결과로 돌려줌
 
-최대 단계 도달 → 마지막 판정 결과로 수준을 정해 종료 (§3)
+최대 단계 도달 → 종료(NOT_ENOUGH, 마지막 판정의 missing을 씀)
 종료 → <final> 지시를 붙이고 도구 없이 답을 스트리밍
 ```
 
@@ -91,19 +91,24 @@ for step in 1..CHAT_MAX_STEPS:
 
 ## 3. 종료와 답의 단서
 
-**충분도.** `ready_to_answer`가 오면 같은 모델에 판정 지시(§6.3)를 붙여 한 번 더 호출한다. 판정은 필요한 사실마다 `FOUND`(문서 id와 인용)·`MISSING`을 내고, 서버는 인용이 실제 그 문서 본문에 있는지 확인한다(지금 쓰는 근거 검증을 재사용). 검증된 사실이 모두 `FOUND`면 **충분**이다.
+응답 모델이 `ready_to_answer`를 부르면 **별도 판정 모델**을 한 번 호출한다. 응답 모델이 스스로 "충분하다"고 하는 말은 믿지 않는다. 모델은 자료가 부족해도 그럴듯하게 지어내는 경향이 있다.
 
-정의는 Sufficient Context(ICLR 2025)를 따른다. 보유 문서만으로 그럴듯한 답을 확정할 수 있으면 충분하다. 답이 맞는지가 아니라 근거가 있는지를 본다.
+- **판정 모델에 주는 것:** 질문, 직전 대화(질문과 답 본문), 지금까지 읽은 문서 본문. 지도와 요약은 주지 않는다. 요약은 근거가 아니기 때문이다.
+- **판정 모델이 내는 것:**
 
-**확신도.** `ready_to_answer`의 답 후보(최대 두 개)와 확률을 쓴다. 1순위 확률 ≥ `CHAT_CONFIDENCE_MIN`이고, 1·2순위 차이 ≥ `CHAT_CONFIDENCE_MARGIN`이면 **확신**이다. "0~100으로 확신도를 말하라"는 방식은 쓰지 않는다. RLHF로 다듬은 모델은 거의 항상 최고점을 말한다.
+```json
+{ "sufficient": false, "missing": ["그것이 레나의 첫 각성이라는 근거"] }
+```
+
+- **충분의 정의**는 Sufficient Context(ICLR 2025)를 따른다. 읽은 문서만으로 그럴듯한 답을 확정할 수 있으면 충분하다. 답이 맞는지가 아니라 근거가 있는지를 본다. 정답을 몰라도 판정할 수 있다.
+- `missing`은 부족할 때 응답 모델에게 돌려준다. 응답 모델은 이를 보고 다음에 읽을 문서를 다시 정렬한다.
 
 | 수준 | 조건 | 답 |
 |---|---|---|
-| `SUPPORTED` | 충분 ∧ 확신 | 그대로 답한다 |
-| `AMBIGUOUS` | 충분 ∧ 확신 아님 | 근거는 있지만 해석이 갈린다고 말하고, 해석마다 근거를 보인다 |
-| `NOT_ENOUGH` | 충분하지 않음 | **"원고에서 충분한 내용을 찾지 못했다"로 시작한다.** 읽은 문서가 보여 주는 것만 답하고, 빠진 것을 말한다. 추정하지 않는다 |
+| `SUPPORTED` | 판정이 충분 | 그대로 답한다 |
+| `NOT_ENOUGH` | 최대 단계까지 충분하지 않음 | **"원고에서 충분한 내용을 찾지 못했다"로 시작한다.** 읽은 문서가 보여 주는 것만 답하고, `missing`을 말한다. 추정하지 않는다 |
 
-충분하지 않은데 확신하는 경우도 `NOT_ENOUGH`다. 자료가 부족한데 확신하는 것이 지어내기의 전형이다.
+해석이 여러 갈래인 경우는 따로 수준을 두지 않는다. 응답 모델의 지시에 "해석이 갈리면 그렇다고 말하라"를 넣는다(§6.1).
 
 수준은 답 메시지에 `grounding`으로 저장하고 `done`으로 내려보낸다.
 
@@ -149,13 +154,14 @@ You are the story assistant inside Lore Sentry, a writing tool for web novel aut
 
 # Finding what you need
 At each step, call one tool.
-- request_documents(ranking, missing): the documents to read next, most necessary first. The server reads them in your order until this step's size limit is reached; the rest can be requested at a later step. Re-rank from scratch at every step using what you have read. Do not list held documents. Write the facts you still need in `missing`.
-- ready_to_answer(facts, answers): when the documents you hold are enough. List each fact the answer needs with the document that shows it and an exact quote. Give your one or two most likely answers, each with the probability that it is right.
-Rank by how likely a document is to contain the missing facts. Start from the quoted passage, the document the author is viewing, and nodes whose title or summary match the question. Follow edges from documents that turned out useful.
+- request_documents(ranking): the documents to read next, most necessary first. The server reads them in your order until this step's size limit is reached; the rest can be requested at a later step. Re-rank from scratch at every step using what you have read. Do not list held documents.
+- ready_to_answer(): when you think the documents you hold are enough. A reviewer checks them. If it reports missing facts, look for those next.
+Rank by how likely a document is to contain the facts the answer still needs. Start from the quoted passage, the document the author is viewing, and nodes whose title or summary match the question. Follow edges from documents that turned out useful.
 
 # How to answer
 - Answer only from documents you have read. Never from summaries or general knowledge. If they do not contain the answer, say so and say what is missing. Do not invent events, traits or settings.
 - Distinguish what the manuscript shows from what setting documents or memos say. Point out contradictions.
+- If the documents support more than one reading, say so and give each reading with what it rests on.
 - You cannot edit documents. You may offer wording, but the author has to apply it.
 - Answer in the language of the author's question; if unclear, use the author's locale.
 - Lead with the answer, then the supporting points. Prefer chapter titles and character names.
@@ -175,49 +181,41 @@ Rank by how likely a document is to contain the missing facts. Start from the qu
 [
   { "type": "function", "name": "request_documents", "strict": true,
     "parameters": { "type": "object", "additionalProperties": false,
-      "required": ["ranking", "missing"],
+      "required": ["ranking"],
       "properties": {
-        "ranking": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 20 },
-        "missing": { "type": "array", "items": { "type": "string" }, "maxItems": 8 } } } },
+        "ranking": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 20 } } } },
   { "type": "function", "name": "ready_to_answer", "strict": true,
-    "parameters": { "type": "object", "additionalProperties": false,
-      "required": ["facts", "answers"],
-      "properties": {
-        "facts": { "type": "array", "maxItems": 12, "items": { "type": "object", "additionalProperties": false,
-          "required": ["fact", "id", "quote"],
-          "properties": { "fact": { "type": "string" }, "id": { "type": "string" }, "quote": { "type": "string" } } } },
-        "answers": { "type": "array", "minItems": 1, "maxItems": 2, "items": { "type": "object", "additionalProperties": false,
-          "required": ["answer", "probability"],
-          "properties": { "answer": { "type": "string" }, "probability": { "type": "number" } } } } } } }
+    "parameters": { "type": "object", "additionalProperties": false, "properties": {} } }
 ]
 ```
 
-### 6.3 충분도 판정 (마지막 user 메시지로 붙인다)
+### 6.3 판정 모델 (별도 호출)
 
-시스템 지시를 바꾸지 않고 메시지로 붙여야 앞부분 캐시를 함께 쓴다. 출력은 JSON 스키마로 받는다.
+시스템 지시:
 
 ```text
-<review>
-Act as a strict reviewer for this message. Decide whether the documents read in this conversation are enough to answer the latest question.
-They are enough if a definite, plausible answer can be built from the full documents alone, without summaries, memos taken as story facts, or outside knowledge. Every step of a multi-step answer must appear in the documents. If several answers are possible, the documents must give a reason to choose one.
-List the facts the answer needs. Mark each FOUND, with the document id and an exact quote, or MISSING.
+You review whether a set of documents from a web novel project is enough to answer the author's question.
+The documents are enough if a definite, plausible answer can be built from them alone, without outside knowledge and without treating the author's memos as story facts. The answer does not have to be right, only supported by the documents. Every step of a multi-step answer must appear in the documents. If several answers are possible, the documents must give a reason to choose one.
+If they are not enough, list what is missing as short facts to look for.
 
 Example
 Question: 레나가 처음 각성한 곳은 어디야?
-If 5f0c9a21 says "레나는 무너진 성당의 제단 앞에서 처음으로 빛을 끌어냈다." → the place and "first time" are FOUND. Enough.
-If only another chapter says "성당에서의 각성 이후" → the place is FOUND, "first time" is MISSING. Not enough.
-</review>
+Documents say "레나는 무너진 성당의 제단 앞에서 처음으로 빛을 끌어냈다." → {"sufficient": true, "missing": []}
+Documents only say "성당에서의 각성 이후 레나는 달라졌다." → {"sufficient": false, "missing": ["그것이 레나의 첫 각성이라는 근거"]}
 ```
 
+입력은 `<conversation>`(직전 대화), `<documents>`(읽은 문서 본문), `<question>`이다. 출력은 JSON 스키마로 받는다.
+
 ```json
-{ "facts": [ { "fact": "…", "status": "FOUND", "id": "…", "quote": "…" } ], "sufficient": true }
+{ "type": "object", "additionalProperties": false, "required": ["sufficient", "missing"],
+  "properties": { "sufficient": { "type": "boolean" },
+                  "missing": { "type": "array", "items": { "type": "string" }, "maxItems": 5 } } }
 ```
 
 ### 6.4 마지막 답 지시
 
 ```text
 <final level="SUPPORTED">Answer the question now.</final>
-<final level="AMBIGUOUS">Answer now. The documents support more than one reading: give each reading and what it rests on, without picking one as certain.</final>
 <final level="NOT_ENOUGH">Answer now. Begin by saying you could not find enough in the manuscript. Answer only what the documents you read show, and name what is missing: {missing}. Do not guess.</final>
 ```
 
@@ -253,7 +251,7 @@ chat_turns            + steps, chars_read, grounding
 | `CHAT_STEP_MAX_CHARS` | 40,000 |
 | `CHAT_MAX_STEPS` | 4 |
 | `CHAT_HELD_MAX_CHARS` | 200,000 |
-| `CHAT_CONFIDENCE_MIN` / `CHAT_CONFIDENCE_MARGIN` | 0.6 / 0.2 |
+| `CHAT_JUDGE_MODEL` | 답변 모델과 같음 |
 | `SUMMARY_IDLE_MINUTES` | 10 |
 
 **SSE:** `phase`에 `{"phase":"navigating","step":n,"reading":[{"file_id","title"}]}`를 더한다. 프론트가 모르는 `phase`는 무시해도 동작한다.
@@ -265,13 +263,14 @@ chat_turns            + steps, chars_read, grounding
 - **본문 검색 도구:** 지도로 찾기 어려운 질문("~한 적 있어?", "몇 화에 나왔지?")용. content 검색이 이미 있다.
 - **캐시 최적화:** 보유 문서를 다시 넣지 않고 기록에 덧붙이기, 편집은 뒤에 덧붙이기, 기록 압축.
 - **요약 갱신 정책:** 변경량 기준, 최근 회차 우선, 일괄 생성.
-- **근거 수준 세분화:** `NOT_ENOUGH`를 일부만 찾음과 전혀 못 찾음으로 나누기.
-- **판정 모델 분리:** 작은 모델로 따로 판정하기.
+- **근거 수준 세분화:** `NOT_ENOUGH`를 일부만 찾음과 전혀 못 찾음으로 나누기. 해석이 갈림을 따로 두기.
+- **모델 확신도:** 판정에 응답 모델의 답 후보와 확률을 더해 함께 보기(Sufficient Context 논문의 선택적 생성).
+- **판정 근거 검증:** 판정 모델이 사실마다 인용을 달게 하고 서버가 본문과 대조하기.
+- **판정 모델 교체:** 작은 모델로 바꿔 비용 줄이기.
 - **아주 큰 작품의 지도:** 에피소드 단위로 접고 펼치기.
 - **평가:** 같은 작품을 단계 상한을 크게 잡아 전부 읽게 한 답을 기준으로, 비용 대비 필요 문서 재현율과 수준별 정답률을 잰다.
 
 ## 9. 참고
 
-- Joren 외, [Sufficient Context](https://arxiv.org/abs/2411.06037) (ICLR 2025): 충분도의 정의, 판정 예시, 부족한데 확신하면 지어낸다는 관찰
-- Kieback 외, [TASR](https://arxiv.org/abs/2606.13814) (2026): 말로 하는 확신도 점수가 쓸모없다는 근거
+- Joren 외, [Sufficient Context](https://arxiv.org/abs/2411.06037) (ICLR 2025): 충분도의 정의, 예시 하나를 준 판정 프롬프트(이진 라벨로 정확도 93%), 자료가 부족해도 모델이 지어낸다는 관찰
 - Li 외, [GraphReader](https://arxiv.org/abs/2406.14550) (EMNLP Findings 2024): 그래프를 보고 노드를 골라 읽다가 충분하면 멈추는 구조
