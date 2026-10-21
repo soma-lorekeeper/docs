@@ -33,22 +33,24 @@ TurnRunner (turns.py, 기존)          턴의 수명: 취소 감시, 마감, 지
  ├ Agent (agent.py, 신규)             루프
  │   ├ model.step()                   응답 모델 호출 한 번 → 도구 호출 또는 답
  │   ├ pack() + content.documents()   request_documents 실행
- │   └ model.judge()                  판정 모델 호출
+ │   ├ model.sufficiency()            충분도 판정 (AI가 쓴 글 없이)
+│   └ model.check_answer()           답 판정 (둘을 동시에)
  └ deliver()                          통과한 답을 CitationStream에 통과시켜 SSE로 보냄
 ```
 
-### 1.3 모델 호출 두 가지 (+ 요약)
+### 1.3 모델 호출
 
 | 호출 | 용도 | 출력 | 설정 | 스트리밍 |
 |---|---|---|---|---|
 | `step` | 다음 행동 또는 답 | 도구 호출 1개 **또는** 답 본문 | 도구 `request_documents`, `tool_choice=auto`(마지막 단계·마지막 답은 `none`), 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS` | 아니요 |
-| `judge` | 충분도 + 합리성 | `{sufficient, missing, answer_ok, problems}` | 모델 `CHAT_JUDGE_MODEL`, `text.format=json_schema`, 추론 강도 `CHAT_JUDGE_REASONING_EFFORT`(low), 출력 상한 2,000 | 아니요 |
+| `sufficiency` | 충분도 판정 | `{sufficient, missing}` | 모델 `CHAT_JUDGE_MODEL`, `text.format=json_schema`, 추론 강도 `CHAT_JUDGE_REASONING_EFFORT`(low), 출력 상한 2,000 | 아니요 |
+| `check_answer` | 답 판정 | `{answer_ok, problems}` | 위와 같다 | 아니요 |
 | `summarize` | 요약 스케줄러 전용(§3) | 요약 본문 | 모델 `SUMMARY_MODEL`, low, 1,000 | 아니요 |
 
 - 모든 호출이 `store=False`다. `step`은 `prompt_cache_key=project_id`(기존과 같다).
 - `step`은 `include=["reasoning.encrypted_content"]`로 받고, 응답의 `output` 항목(추론 + `function_call` 또는 `message`)을 **그대로** 다음 입력에 덧붙인다. `store=False`에서 단계 사이에 추론을 이어 가는 방법이다.
 - 도구가 한 번이라도 쓰인 입력에는 `function_call` 항목이 있으므로, `tool_choice=none`인 호출에도 도구 정의는 함께 보낸다.
-- `judge`는 응답 모델과 다른 지시·입력을 쓰므로 캐시를 공유하지 않는다. 입력은 질문 + 대화 + 보유 문서 + 답이다.
+- 두 판정은 응답 모델과 다른 지시·입력을 쓰므로 응답 모델과 캐시를 공유하지 않는다. 충분도 입력은 질문 + 이전 질문들 + 보유 문서, 답 판정 입력은 질문 + 대화 + 보유 문서 + 답이다. 보유 문서 블록을 입력 맨 앞에 두어 두 판정끼리는 앞부분이 같게 한다.
 
 ### 1.4 루프
 
@@ -56,7 +58,8 @@ TurnRunner (turns.py, 기존)          턴의 수명: 취소 감시, 마감, 지
 # app/agent.py (요지)
 async def run(self, turn: TurnInput) -> Outcome:
     items = turn.base_input()                      # 지도, 보유 문서, 대화, 이번 질문
-    review: Verdict | None = None
+    sufficiency: Sufficiency | None = None
+    reviews: list[Review] = []
     for step in range(1, self.settings.max_steps + 1):
         if self.clock.remaining() < self.settings.answer_reserve_seconds:
             break                                  # 마지막 답 시간을 남긴다 (§1.6)
@@ -71,17 +74,28 @@ async def run(self, turn: TurnInput) -> Outcome:
             turn.hold(docs)
             items.append(tool_output(out.call.id, context_xml(docs, picked)))
             continue
-        review = await self.model.judge(JUDGE_INSTRUCTIONS, judge_input(turn, out.text))
-        if review.sufficient and review.answer_ok:
-            return Outcome("SUPPORTED", out.text, turn.read)
+        if sufficiency is None or turn.read_since_check:
+            sufficiency_call = self.model.sufficiency(SUFFICIENCY_INSTRUCTIONS, sufficiency_input(turn))
+        else:
+            sufficiency_call = done(sufficiency)    # 읽은 문서가 그대로면 지난 결과
+        sufficiency, check = await asyncio.gather(
+            sufficiency_call,
+            self.model.check_answer(ANSWER_CHECK_INSTRUCTIONS, answer_input(turn, out.text)))
+        turn.read_since_check = False
+        if sufficiency.sufficient and check.answer_ok:
+            return Outcome("SUPPORTED", out.text, turn.read, reviews)
+        review = Review(len(reviews) + 1, sufficiency, check)
+        reviews.append(review)
         items.append(user_message(review_xml(review)))
-    final = await self.model.step(NAVIGATE_INSTRUCTIONS, items + [user_message(final_xml(review))],
+    final = await self.model.step(NAVIGATE_INSTRUCTIONS, items + [user_message(final_xml(reviews))],
                                   TOOLS, tool_choice="none")
-    return Outcome("NOT_ENOUGH", final.text, turn.read)
+    return Outcome("NOT_ENOUGH", final.text, turn.read, reviews)
 ```
 
 - **`pack()`는 순수 함수**다. 순위, 노드의 `chars`, 보유 목록, 한도를 받아 읽을 id·건너뛴 id·모르는 id를 돌려준다. 담기 규칙(설계 §4)이 여기 다 있다.
-- `judge_input()`은 질문, 직전 대화, **이번 턴까지의 보유 문서 본문**, 답으로 만든다. 응답 모델의 `items`(추론·도구 호출)는 넣지 않는다.
+- `sufficiency_input()`은 질문, **이전 질문들**, 이번 턴까지의 보유 문서 본문으로 만든다. **AI가 쓴 글(이번 답, 이전 답, 추론)은 하나도 넣지 않는다.**
+- `answer_input()`은 질문, 직전 대화, 보유 문서 본문, 답으로 만든다. 응답 모델의 `items`(추론·도구 호출)는 넣지 않는다.
+- 거절된 답(`out.items`의 assistant 메시지)은 입력에서 지우지 않고, 그 뒤에 `<review>`를 붙인다. 한 턴의 `<review>`는 모두 누적된다.
 - 판정이 `problems`만 지적했는데 다음 단계가 마지막이면, 마지막 단계의 `tool_choice=none`이 곧 고쳐 쓰기다. 그 답도 판정을 받는다.
 - `Outcome`을 받은 `TurnRunner`는 `deliver()`로 답을 내보내고(§2.5), 지금처럼 저장하고 `done`을 보낸다.
 
@@ -92,7 +106,7 @@ async def run(self, turn: TurnInput) -> Outcome:
 | 모델이 지도에 없는 id만 요청 | `pack()`이 `<unknown/>`로 알리고 단계를 소비한다 |
 | 순위가 모두 보유 문서 | 읽을 게 없다고 알린다. 연속 두 번이면 다음 단계를 `tool_choice=none`으로 강제한다 |
 | 답이 비어 있음 | 지금처럼 `MODEL_EMPTY_RESPONSE`로 턴 실패 |
-| 판정 호출 실패 | 그 답을 `NOT_ENOUGH`로 내보낸다. 다시 쓰지 않는다 |
+| 판정 호출 실패(둘 중 하나라도) | 그 답을 `NOT_ENOUGH`로 내보낸다. 다시 쓰지 않는다 |
 | `step` 호출 실패 | 지금과 같은 `ModelFailure` → `CHAT_MODEL_UNAVAILABLE` |
 | content 실패 | 지금과 같은 `CONTENT_UNAVAILABLE` |
 | 취소 | 지금 감시자(`watch`)가 태스크를 취소한다. 루프 어디서든 `CancelledError`로 빠진다. **보유 문서는 턴이 완료될 때만 저장하므로**(§4) 취소·실패한 턴은 아무것도 남기지 않는다 |
@@ -121,7 +135,7 @@ gateway가 ai-chat 요청 전체를 180초에서 끊는다(`application.yaml`의
 | `app/navigation.py` | **신규** | `TurnInput`, 지도·보유 문서·결과·review XML, 짧은 id, 판정 입력, 지시문 |
 | `app/content.py` | 수정 | `Node`·`ChatMap` 파싱, `ContentSource.map()`·`documents()` 추가. `snapshot()`은 지운다 |
 | `app/prompt.py` | 수정 | `build_prompt`·`Aliases`·최근 회차 분리를 지운다. `document_xml`·`question_xml`·`history_answer`·`select_history`·`TASKS`·`Material`은 남긴다. `materials()`는 문서 목록을 받게 바꾼다 |
-| `app/model.py` | 수정 | `AnswerModel`을 `step()`·`judge()`·`summarize()`로 바꾼다. 오류 변환(`status_code`)은 그대로 공용 |
+| `app/model.py` | 수정 | `AnswerModel`을 `step()`·`sufficiency()`·`check_answer()`·`summarize()`로 바꾼다. 오류 변환(`status_code`)은 그대로 공용 |
 | `app/turns.py` | 수정 | `run()`을 "턴 입력 → `Agent.run` → `deliver()`"로 바꾼다. 취소·마감·지표·저장은 그대로. 사용량은 호출마다 합산 |
 | `app/citations.py` | 그대로 | `CitationStream(materials)`의 대상이 "보유 문서 + 이번 턴에 읽은 문서"가 될 뿐이다. 지도에서만 본 노드는 `materials`에 없으니 근거에서 빠진다 |
 | `app/store.py` | 수정 | 보유 문서 읽기·저장·정리, 요약 읽기, `complete_turn`에 `grounding`·보유 문서·새 지표, `message_json`에 `grounding` |
@@ -167,7 +181,8 @@ uuidv7은 앞쪽이 생성 시각이라 끝쪽을 쓴다. 지도 전체에 대�
 class AnswerModel(Protocol):
     name: str
     async def step(self, instructions, items, tools, tool_choice) -> StepResult: ...
-    async def judge(self, instructions, text) -> Verdict: ...
+    async def sufficiency(self, instructions, text) -> Sufficiency: ...
+    async def check_answer(self, instructions, text) -> AnswerCheck: ...
     async def summarize(self, instructions, text) -> SummaryResult: ...
 
 @dataclass(frozen=True)
@@ -178,9 +193,13 @@ class StepResult:
     usage: Usage | None
 
 @dataclass(frozen=True)
-class Verdict:
+class Sufficiency:
     sufficient: bool
     missing: list[str]
+    usage: Usage | None
+
+@dataclass(frozen=True)
+class AnswerCheck:
     answer_ok: bool
     problems: list[str]
     usage: Usage | None
@@ -232,7 +251,9 @@ def deliver(outcome: Outcome, materials, channel) -> CitationStream:
 | 루프: 부족 → 더 읽음 → 통과 | `missing`이 다음 `step` 입력에 들어감 |
 | 루프: 답에 문제 → 고쳐 씀 → 통과 | `problems`가 다음 `step` 입력에 들어감 |
 | 루프: 끝까지 실패 | 마지막 단계 `tool_choice=none`, 마지막 답에 `<final>`, `NOT_ENOUGH` |
-| 판정 입력 | 응답 모델의 추론·도구 호출이 들어가지 않음, 답과 보유 문서가 들어감 |
+| 판정 입력 | 충분도 입력에 AI가 쓴 글(이번 답·이전 답·추론)이 없음. 답 판정 입력에 답과 보유 문서가 있음 |
+| 충분도 재사용 | 답 판정만 거절된 뒤 더 읽지 않고 고쳐 쓰면 충분도를 다시 부르지 않음 |
+| 거절 누적 | 두 번째 `step` 입력에 첫 답과 첫 `<review>`가 그대로 있음 |
 | 보유 문서 갱신 | 다음 턴에 현재 판으로, 삭제된 문서는 빠짐, 한도 넘으면 오래된 것부터 |
 | 근거 | 지도에서만 본 노드를 인용하면 근거에서 빠짐 |
 | 내보내기 | `phase writing` → `citation`·`delta` 순서가 지금과 같음 |
@@ -381,10 +402,13 @@ ALTER TABLE chat_messages ADD COLUMN grounding JSONB;
 ALTER TABLE chat_turns
     ADD COLUMN steps       INTEGER,
     ADD COLUMN judge_calls INTEGER,
+    ADD COLUMN rejections  INTEGER,
+    ADD COLUMN reviews     JSONB,
     ADD COLUMN chars_read  INTEGER,
     ADD COLUMN grounding   VARCHAR(16);
 ```
 
+- `chat_turns.reviews`에는 그 턴의 거절 이유(`missing`·`problems`)를 남긴다. 어떤 질문에서 자주 거절되는지 보는 지표다. 다음 턴에는 넘기지 않는다.
 - **보유 문서는 `complete_turn` 트랜잭션에서만 넣는다**(`ON CONFLICT DO NOTHING`). 취소·실패한 턴은 보유를 늘리지 않는다.
 - `replaces`(마지막 질문 고치기)는 지금처럼 메시지만 지운다. 그 턴이 남긴 보유 문서는 남긴다.
 - 요약·큐는 사용자와 무관한 문서 단위 데이터라 `user_id`가 없다. 삭제는 요약 스케줄러가 이벤트로 한다(계정 삭제도 content가 프로젝트마다 `ProjectDeleted`를 낸다). 답변 서버의 `delete_user_data`·`delete_project_data`는 지금처럼 챗 데이터만 지운다.

@@ -7,14 +7,15 @@
 
 ## 0. 한 줄 요약
 
-**응답 모델**이 지도를 보고 필요한 순서대로 문서를 읽다가, 충분하다고 보면 도구 대신 **답**을 쓴다. 그 답을 **판정 모델**이 읽은 문서와 함께 보고 **컨텍스트가 충분한지, 답이 합리적인지**를 검토한다. 통과한 답만 작가에게 내보낸다. 통과하지 못하면 판정의 지적을 받아 더 읽거나 다시 쓴다. 답 → 판정 → 전달이 직렬로 이어진다. 작품 크기와 상관없이 모든 프로젝트에 같은 방식을 쓴다. 지도의 요약은 별도 **요약 스케줄러**가 미리 만들어 둔다.
+**응답 모델**이 지도를 보고 필요한 순서대로 문서를 읽다가, 충분하다고 보면 도구 대신 **답**을 쓴다. 그 답을 두 판정이 동시에 검토한다. **충분도 판정**은 AI가 쓴 글을 보지 않고 읽은 문서만으로 답할 수 있는지 보고, **답 판정**은 답이 그 문서에 근거해 합리적인지 본다. 통과한 답만 작가에게 내보낸다. 통과하지 못하면 판정의 지적을 받아 더 읽거나 다시 쓴다. 답 → 판정 → 전달이 직렬로 이어진다. 작품 크기와 상관없이 모든 프로젝트에 같은 방식을 쓴다. 지도의 요약은 별도 **요약 스케줄러**가 미리 만들어 둔다.
 
 ## 1. 역할
 
 | 역할 | 하는 일 | 하지 않는 일 |
 |---|---|---|
 | **응답 모델** | 읽을 문서의 순서를 정한다. 충분하다고 보면 답을 쓰고, 판정의 지적을 받으면 더 읽거나 고쳐 쓴다 | 자기 답을 최종 승인하지 않는다 |
-| **판정 모델** | 읽은 문서가 질문에 답하기에 충분한지, 답이 그 문서에 근거해 질문에 합리적으로 답하는지 검토한다. 문제가 있으면 무엇이 빠졌고 무엇이 틀렸는지 말한다 | 답을 대신 쓰지 않는다. 응답 모델의 추론이나 도구 호출은 보지 않는다 |
+| **충분도 판정** | 읽은 문서만으로 질문에 답할 수 있는지 본다. 부족하면 무엇이 빠졌는지 말한다 | **AI가 쓴 글을 하나도 보지 않는다**(이번 답, 이전 턴의 답, 추론) |
+| **답 판정** | 답이 읽은 문서에 근거해 질문에 합리적으로 답하는지 본다. 틀린 곳을 말한다 | 답을 대신 쓰지 않는다. 응답 모델의 추론이나 도구 호출은 보지 않는다 |
 | **서버** | 응답 모델이 정한 순서대로 단계당 글자 수 한도 안에서 문서를 읽어 준다. 단계와 시간을 센다. 통과한 답을 근거 검증을 거쳐 내보낸다 | 순서를 바꾸지 않는다 |
 | **요약 스케줄러** | 모든 문서의 요약을 미리 만들고, 많이 바뀐 문서는 다시 만든다(§5) | 챗 턴에 끼어들지 않는다 |
 
@@ -30,8 +31,8 @@
  │     서버: 순서대로 CHAT_STEP_MAX_CHARS까지 읽음 ──────▶ 읽은 문서
  │                                                     │
  └─ 일반 메시지 = 답                                     │
-       판정 모델: 컨텍스트 충분? 답 합리적?                │
-         ├─ 아니오 ─────────────────────────────────────▶ <review> missing, problems
+       충분도 판정 ∥ 답 판정 (동시에)                     │
+         ├─ 하나라도 아니오 ─────────────────────────────▶ <review> missing, problems
          └─ 예 ─▶ 답을 내보냄 (SUPPORTED) ─▶ 끝
 
 CHAT_MAX_STEPS 또는 시간 한도 도달 ─▶ 지적을 반영한 마지막 답을 쓰고 판정 없이 내보냄 (NOT_ENOUGH)
@@ -47,31 +48,41 @@ for step in 1..CHAT_MAX_STEPS:
         continue
 
     answer = out의 본문
-    v = 판정 모델(질문, 직전 대화, held 본문, answer)
-    if v.sufficient and v.answer_ok:  answer를 내보냄 (SUPPORTED); 끝
-    <review missing=v.missing problems=v.problems>를 덧붙임
+    s = 충분도 판정(질문, 이전 질문들, held 본문)        held가 지난 판정 뒤 그대로면 지난 결과 재사용
+    a = 답 판정(질문, 직전 대화, held 본문, answer)      s와 동시에 실행
+    if s.sufficient and a.answer_ok:  answer를 내보냄 (SUPPORTED); 끝
+    <review missing=s.missing problems=a.problems>를 덧붙임
 
 answer = 응답 모델 호출 (tool_choice=none, <final> 지시 + 마지막 review); 판정 없이 내보냄 (NOT_ENOUGH)
 ```
 
 - **"준비됨"을 알리는 도구는 없다.** 응답 모델이 도구를 부르지 않고 일반 메시지를 쓰면 그것이 답이다. 답을 도구 인자에 넣으면 근거 표시의 따옴표를 JSON 안에서 이스케이프해야 해서 모델이 자주 틀린다.
 - 응답 모델은 **매 단계 처음부터 다시 정렬**한다. 방금 읽은 내용과 판정의 `missing`이 다음 순서를 바꾼다.
-- 판정이 `problems`만 지적하면(컨텍스트는 충분) 응답 모델은 보통 바로 고쳐 쓴다. 더 읽을지는 응답 모델이 정한다.
+- 답 판정만 거절하면(컨텍스트는 충분) 응답 모델은 보통 바로 고쳐 쓴다. 더 읽을지는 응답 모델이 정한다. 이때 읽은 문서가 그대로라 충분도는 다시 묻지 않는다.
+- 거절된 답은 입력에서 지우지 않는다. 응답 모델이 "무엇을 썼고 왜 거절됐는지"를 함께 봐야 같은 실수를 반복하지 않는다. 한 턴의 `<review>`는 모두 누적된다.
 - 어느 호출이 답이 될지 모르므로 모든 단계를 답 품질에 맞는 추론 강도로 부른다.
 - 한 턴 안에서는 도구 호출과 결과, 답과 판정 지적이 계속 덧붙으므로 단계마다 앞부분의 프롬프트 캐시가 맞는다.
 
-## 3. 판정: 컨텍스트와 답을 함께 본다
+## 3. 판정: 충분도와 답을 따로 본다
 
 판정은 답이 나온 뒤, **작가에게 보내기 전에** 한다. 응답 모델이 스스로 충분하다고 하거나 자기 답이 맞다고 하는 말은 믿지 않는다. 모델은 자료가 부족해도 충분하다고 여기고 그럴듯하게 지어내는 경향이 있다.
 
-| | 내용 |
-|---|---|
-| **입력** | 질문, 직전 대화(질문과 답 본문), 읽은 문서 본문, 응답 모델의 답(근거 표시 포함) |
-| **넣지 않는 것** | 응답 모델의 추론·도구 호출, 지도, 요약 |
-| **출력** | `{ "sufficient": bool, "missing": [...], "answer_ok": bool, "problems": [...] }` |
-| **통과** | `sufficient`와 `answer_ok`가 모두 true |
+두 판정으로 나눈다. 한 번에 답과 문서를 같이 보면 판정이 **답을 보고 거꾸로 추론**할 수 있다("답이 그럴듯하니 자료도 충분하겠지"). 충분도는 원래 답이 필요 없는 질문이다.
+
+| | 충분도 판정 | 답 판정 |
+|---|---|---|
+| 묻는 것 | 이 문서들만으로 답을 확정할 수 있는가 | 이 답이 문서에 근거해 질문에 합리적으로 답하는가 |
+| 입력 | 질문, **이전 질문들(작가가 쓴 글만)**, 읽은 문서 본문 | 질문, 직전 대화(질문과 답 본문), 읽은 문서 본문, 응답 모델의 답(근거 표시 포함) |
+| 넣지 않는 것 | **AI가 쓴 글 전부**(이번 답, 이전 턴의 답, 추론), 지도, 요약 | 응답 모델의 추론·도구 호출, 지도, 요약 |
+| 출력 | `{ "sufficient": bool, "missing": [...] }` | `{ "answer_ok": bool, "problems": [...] }` |
+
+- 둘은 **동시에** 실행한다. 지연은 판정 한 번과 같다.
+- **통과**는 `sufficient`와 `answer_ok`가 모두 true일 때다.
+- 답 판정만 거절되어 응답 모델이 더 읽지 않고 고쳐 쓰면, 읽은 문서가 그대로이므로 충분도 결과를 다시 쓴다.
 
 **충분(`sufficient`)** — 읽은 문서만으로 그럴듯한 답을 확정할 수 있으면 충분하다. 답이 맞는지가 아니라 근거가 있는지를 본다(Sufficient Context, ICLR 2025). `missing`은 더 찾아야 할 사실이다.
+
+이전 턴의 답도 AI가 쓴 글이라 충분도 판정에서 뺀다. 그래서 "그때 누구랑 있었어?"처럼 이전 답의 내용을 가리키는 후속 질문에서는 충분도 판정이 "부족"으로 기울 수 있다. 틀린 답을 통과시키는 쪽이 아니라 한 단계를 더 쓰는 쪽으로 실패하므로 감수한다.
 
 **합리적(`answer_ok`)** — 답이 다음을 모두 지키면 합리적이다. 어긋난 점은 `problems`에 적는다.
 
@@ -81,9 +92,11 @@ answer = 응답 모델 호출 (tool_choice=none, <final> 지시 + 마지막 revi
 4. 문서와 모순되지 않고, 원고가 보여 주는 것과 설정·메모가 말하는 것을 섞지 않는다.
 5. 해석이 갈리거나 빠진 것이 있으면 그렇다고 밝힌다.
 
-**직전 대화**는 질문이 무엇을 가리키는지("그때", "그 사람") 알기 위해서만 쓴다. **이전 답은 근거가 아니다.** 근거는 문서뿐이다. 이전 턴의 틀린 답이 다음 턴의 근거로 둔갑하는 것을 막는다.
+답 판정의 **직전 대화**는 질문이 무엇을 가리키는지("그때", "그 사람") 알기 위해서만 쓴다. **이전 답은 근거가 아니다.** 근거는 문서뿐이다.
 
-판정이 응답 모델에 의존하는 곳은 **어떤 문서를 읽었는지**와 **답**이다. 둘 다 판정이 검토하는 대상이고, 응답 모델의 추론 과정은 보지 않는다.
+**거절의 이유는 응답 모델에게 돌려준다.** `missing`은 다음에 읽을 문서를 고르는 데, `problems`는 고쳐 쓰는 데 쓴다. 무엇이 빠졌는지는 판정이, 어디서 찾을지는 응답 모델이 정한다. 판정은 지도를 보지 않으므로 문서를 추천하지 않는다.
+
+남는 의존은 **어떤 문서를 읽었는지는 응답 모델이 정한다**는 것 하나다. 충분도 판정이 검토하는 대상 자체가 그것이다.
 
 ## 4. 응답 모델이 보는 입력과 문서 담기
 
@@ -180,7 +193,9 @@ You are the story assistant inside Lore Sentry, a writing tool for web novel aut
 # Finding what you need
 At each step, either call request_documents or write your answer.
 - request_documents(ranking): the documents to read next, most necessary first. The server reads them in your order until this step's size limit is reached; the rest can be requested at a later step. Re-rank from scratch at every step using what you have read. Do not list held documents.
-- When the documents you hold are enough, write your answer as a normal message instead of calling the tool. A reviewer checks it against the documents. If a <review> reports missing facts, look for them. If it reports problems in your answer, fix them.
+- When the documents you hold are enough, write your answer as a normal message instead of calling the tool. Reviewers check it against the documents.
+- After a <review>, rank first the documents most likely to contain each <missing> fact. Do not request again documents that turned out not to help.
+- When rewriting after a <review>, fix every <problem> and keep the parts of your previous answer that were not criticized.
 Rank by how likely a document is to contain the facts the answer still needs. Start from the quoted passage, the document the author is viewing, and nodes whose title or summary match the question. Follow edges from documents that turned out useful.
 
 # How to answer
@@ -214,8 +229,9 @@ Rank by how likely a document is to contain the facts the answer still needs. St
 판정을 통과하지 못하면 다음을 user 메시지로 덧붙이고 루프를 이어 간다.
 
 ```text
-<review sufficient="false" answer_ok="true">
+<review n="2" sufficient="false" answer_ok="false">
 <missing>그것이 레나의 첫 각성이라는 근거</missing>
+<problem>답은 12화라고 하지만 인용한 문서는 30화다</problem>
 </review>
 ```
 
@@ -225,37 +241,51 @@ Rank by how likely a document is to contain the facts the answer still needs. St
 <final>Write your answer now. Begin by saying you could not find a certain answer in the manuscript. Answer only what the documents you read show. Still missing: {missing}. Problems to avoid: {problems}. Do not guess.</final>
 ```
 
-### 7.4 판정 모델 시스템 지시
+### 7.4 충분도 판정 시스템 지시
 
 ```text
-You review an answer to an author's question about their web novel project, together with the documents it was based on. You do not rewrite the answer.
+You decide whether a set of documents from a web novel project is enough to answer the author's question. You do not answer it.
+The documents are enough if a definite, plausible answer can be built from them alone, without outside knowledge and without treating the author's memos as story facts. The answer does not have to be right, only supported by the documents. Every step of a multi-step answer must appear in the documents. If several answers are possible, the documents must give a reason to choose one.
+The author's earlier questions are only for understanding what the question refers to.
+If the documents are not enough, list in `missing` the facts still to look for, as short phrases.
 
-1. Sufficient: can a definite, plausible answer be built from the documents alone, without outside knowledge and without treating the author's memos as story facts? The answer does not have to be right, only supported by the documents. Every step of a multi-step answer must appear in the documents. If several answers are possible, the documents must give a reason to choose one. If not sufficient, list in `missing` the facts still to look for.
-2. Answer ok: does the answer address the question that was asked; is every claim supported by the documents; does each <cite> point to a document that actually contains what it supports; does it avoid contradicting the documents and avoid presenting setting documents or memos as events of the manuscript; does it say so where the documents are ambiguous or silent? List each failure in `problems`, briefly and specifically.
+Example
+Question: 레나가 처음 각성한 곳은 어디야?
+Documents say "레나는 무너진 성당의 제단 앞에서 처음으로 빛을 끌어냈다." → {"sufficient": true, "missing": []}
+Documents only say "성당에서의 각성 이후 레나는 달라졌다." → {"sufficient": false, "missing": ["그것이 레나의 첫 각성이라는 근거"]}
+```
 
+입력은 `<earlier_questions>`·`<documents>`·`<question>`이다. 출력 스키마:
+
+```json
+{ "type": "object", "additionalProperties": false, "required": ["sufficient", "missing"],
+  "properties": { "sufficient": { "type": "boolean" },
+                  "missing": { "type": "array", "items": { "type": "string" }, "maxItems": 5 } } }
+```
+
+### 7.5 답 판정 시스템 지시
+
+```text
+You review an answer to an author's question about their web novel project against the documents it was based on. You do not rewrite it.
+The answer is ok if it addresses the question that was asked; every claim is supported by the documents; each <cite> points to a document that actually contains what it supports; it does not contradict the documents or present setting documents or memos as events of the manuscript; and it says so where the documents are ambiguous or silent. List each failure in `problems`, briefly and specifically.
 The conversation is only for understanding what the question refers to. Earlier answers are not evidence; only the documents are.
 
 Example
 Question: 레나가 처음 각성한 곳은 어디야?
 Documents: 5f0c9a21 says "레나는 무너진 성당의 제단 앞에서 처음으로 빛을 끌어냈다."
-Answer: "레나는 12화에서 무너진 성당의 제단 앞에서 처음 각성했어요.<cite id="5f0c9a21" .../>"
-→ {"sufficient": true, "missing": [], "answer_ok": true, "problems": []}
-Answer: "레나는 북쪽 온실에서 처음 각성했어요."
-→ {"sufficient": true, "missing": [], "answer_ok": false, "problems": ["문서는 무너진 성당이라고 하는데 답은 북쪽 온실이라고 한다"]}
+Answer: "레나는 12화에서 무너진 성당의 제단 앞에서 처음 각성했어요.<cite id="5f0c9a21" .../>" → {"answer_ok": true, "problems": []}
+Answer: "레나는 북쪽 온실에서 처음 각성했어요." → {"answer_ok": false, "problems": ["문서는 무너진 성당이라고 하는데 답은 북쪽 온실이라고 한다"]}
 ```
 
-입력은 `<conversation>`·`<documents>`·`<question>`·`<answer>`이고, 출력은 JSON 스키마로 받는다.
+입력은 `<conversation>`·`<documents>`·`<question>`·`<answer>`이다. 출력 스키마:
 
 ```json
-{ "type": "object", "additionalProperties": false,
-  "required": ["sufficient", "missing", "answer_ok", "problems"],
-  "properties": { "sufficient": { "type": "boolean" },
-                  "missing": { "type": "array", "items": { "type": "string" }, "maxItems": 5 },
-                  "answer_ok": { "type": "boolean" },
+{ "type": "object", "additionalProperties": false, "required": ["answer_ok", "problems"],
+  "properties": { "answer_ok": { "type": "boolean" },
                   "problems": { "type": "array", "items": { "type": "string" }, "maxItems": 5 } } }
 ```
 
-### 7.5 요약 생성
+### 7.6 요약 생성
 
 ```text
 Summarize this document from a web novel project so that someone can decide, without reading it, whether it answers a question about the story.
