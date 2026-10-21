@@ -1,7 +1,7 @@
 # AI 챗 탐색 구현 설계
 
 > 갱신일: 2026-10-21
-> 상태: **구현 설계.** [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md)(무엇을 하는가)를 지금 코드에 어떻게 넣는가를 정한다.
+> 상태: **구현 완료, 로컬 검증 완료(§10).** [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md)(무엇을 하는가)를 지금 코드에 어떻게 넣는가를 정한다.
 > 독자: ai-chat·content를 구현하는 사람.
 > 기준 코드: `loresentry-ai-chat` `41ef19b`, `loresentry-content` `4aeec2e`, `loresentry-gateway` `12fe815`, `loresentry-frontend` `a3f4a86`, `loresentry-gitops` `bdb1cd3`
 
@@ -269,7 +269,7 @@ def deliver(outcome: Outcome, materials, channel) -> CitationStream:
 |---|---|
 | 위치 | ai-chat 레포 `app/summarizer/`. 같은 이미지, 실행 명령만 `python -m app.summarizer` |
 | 배포 | gitops `workload/base/ai-chat-summarizer/deployment.yaml`, replicas 1. HTTP를 열지 않는다. 생존 확인은 하트비트 파일을 보는 exec probe |
-| 의존 | ai_chat DB(같은 Flyway 스키마), Kafka, OpenAI(요약 전용 키). **content를 부르지 않는다** |
+| 의존 | ai_chat DB(같은 Flyway 스키마), Kafka, OpenAI(지금은 챗 키 `ai-chat-openai`를 같이 쓴다). **content를 부르지 않는다** |
 | Kafka 라이브러리 | `confluent-kafka`(graph-rag와 같다). 설정도 graph-rag의 `consumer_config`와 같은 원칙: 수동 커밋, `auto.offset.reset=earliest`, `group.protocol=classic` |
 
 ### 3.2 안에서 도는 것
@@ -281,7 +281,7 @@ def deliver(outcome: Outcome, materials, channel) -> CitationStream:
    FileChanged CREATED / UPDATED / RESTORED
        → summary_queue upsert (revision_no가 더 클 때만):
          document_id, project_id, revision_no, kind, title, body, changed_at=now()
-         설정 문서는 folder_code로 kind를 정하고, MEMO는 오지 않는다
+         메모는 FileChanged가 없어 오지 않는다
    FileChanged TRASHED / DELETED
        → summary_queue, document_summaries에서 그 문서 삭제
    ProjectDeleted
@@ -335,7 +335,7 @@ def threshold(length: int) -> int:
 |---|---|
 | `KAFKA_BOOTSTRAP_SERVERS` | configmap `kafka`의 `bootstrap-servers`(graph-rag와 같다) |
 | `SUMMARY_TOPIC` / `SUMMARY_GROUP_ID` | `content.project.changed.v1` / `ai-chat-summarizer` |
-| `SUMMARY_OPENAI_API_KEY` | Secret `ai-chat-summarizer-openai` |
+| `SUMMARY_OPENAI_API_KEY` | 비면 `OPENAI_API_KEY`. 운영은 Secret `ai-chat-openai`를 같이 쓴다 |
 | `SUMMARY_MODEL` / `SUMMARY_REASONING_EFFORT` | `gpt-6-luna` / `low` |
 | `SUMMARY_IDLE_MINUTES` | 10 |
 | `SUMMARY_MIN_CHANGE_CHARS` / `SUMMARY_MIN_CHANGE_RATIO` | 1,000 / 0.3 |
@@ -386,7 +386,7 @@ CREATE TABLE summary_queue (
     document_id     UUID         NOT NULL,
     project_id      UUID         NOT NULL,
     revision_no     BIGINT       NOT NULL,
-    kind            VARCHAR(20)  NOT NULL,
+    folder_code     VARCHAR(40)  NOT NULL,
     title           TEXT         NOT NULL,
     body            TEXT         NOT NULL,
     changed_at      TIMESTAMPTZ  NOT NULL,
@@ -461,7 +461,7 @@ order by (e.id is null), e.rank, e.id, d.rank, d.id
 **gitops**
 
 - `workload/base/ai-chat-summarizer/`: Deployment(replicas 1, 이미지는 ai-chat과 같은 태그, `command: ["python", "-m", "app.summarizer"]`), kustomization. 환경 변수는 §3.4와 DB 연결(ai-chat과 같은 Secret).
-- Secret `ai-chat-summarizer-openai`는 Git 밖에서 만든다(`bootstrap/secrets/README.md`에 절차 추가). 챗 키·graph-rag 키와 나눠 비용을 따로 본다.
+- OpenAI 키는 지금 챗 Secret `ai-chat-openai`를 같이 쓴다. 요약 비용을 따로 보려면 전용 Secret을 만들고 그 Deployment의 참조만 바꾼다(`bootstrap/secrets/README.md`).
 - CI의 이미지 태그 갱신 Lambda가 ai-chat 이미지 태그를 두 Deployment에 함께 반영하도록 overlay를 맞춘다.
 - ai-chat Deployment의 `CHAT_CONTEXT_LIMIT`을 지운다.
 
@@ -504,3 +504,35 @@ V3를 B와 C에 나눠 넣지 않고 B에서 한 번에 만든다. 마이그레�
 - **추론 항목:** `store=False`에서 `reasoning.encrypted_content`를 돌려주는 방식이 `gpt-6-luna`에서 동작하는지 구현 첫날 확인한다. 안 되면 단계 사이 추론 없이 도구 호출과 결과만 넘긴다.
 - **판정 통과율:** 첫 답이 통과하는 비율을 보고 스트리밍 복원(설계 §10)을 판단한다.
 - **처리방침:** 요약 스케줄러가 저장된 원고를 자동으로 OpenAI에 보내는 것은 지금 처리방침과 어긋난다. 이 설계에서는 고려하지 않기로 했고(2026-10-21), 출시 전에 처리방침을 맞춘다.
+
+## 10. 로컬 검증 (2026-10-22)
+
+Docker의 Postgres 18 · Kafka 4.1(KRaft 단일 브로커) 위에 content(`bootRun`), ai-chat 답변 서버(`uvicorn`), 요약 스케줄러(`python -m app.summarizer`)를 띄우고 실제 `gpt-6-luna`로 돌렸다.
+
+**자료.** 원고 24화(3부, 회차당 약 4,000자)와 설정 문서 8개(인물 4, 장소 2, 사물 1, 세계관 1), 관계 5개, 메모 2개. 분량 107,838자. 회차마다 확인할 사실을 하나씩 심었다(7화 첫 각성, 12화 유리 열쇠 발견, 15화 오렌의 거래, 21화 카엘이 문을 엶, 24화 봉인). 단계 한도 40,000자라 한 단계에 다 읽을 수 없다.
+
+**요약 스케줄러**
+
+| 확인 | 결과 |
+|---|---|
+| 생성 | 이벤트 32건이 큐에 들어가고 15초 디바운스 뒤 두 틱에 걸쳐 처리됨. 원고 24개는 모델 요약(132~302자), 짧은 설정 문서 8개는 본문 그대로 |
+| 요약 품질 | 7화 요약에 "무너진 성당의 제단 앞에서 레나가 처음 빛을 끌어내고"가 들어감 |
+| 작은 수정 | 한 문장 추가(rev 2) → `unchanged`, 요약은 rev 1 그대로 |
+| 큰 수정 | 장소를 바꾼 고쳐 쓰기(rev 3) → 새 요약 rev 3, 바뀐 장소 반영 |
+| 백필 | 재발행 API로 32건 → 컨슈머가 모두 받았고, 이미 같은 판이 요약돼 있어 큐에 하나도 들어가지 않음 |
+| 휴지통·복원 | 휴지통 → 요약 삭제, 복원 → 다시 요약 |
+| 프로젝트 삭제 | `ProjectDeleted` → 그 프로젝트의 요약·큐 모두 삭제 |
+
+**AI 챗**
+
+| 질문 | 결과 |
+|---|---|
+| 레나가 처음 각성한 곳과 곁에 있던 사람 | 7화 하나만 읽고 정답(무너진 성당 제단, 서윤). 2단계, 판정 2회, `SUPPORTED`, 6.3초. 두 번째 단계에서 캐시 7,592토큰 |
+| 유리 열쇠의 처음부터 끝까지(같은 세션) | 12·15·21·24화와 설정 문서를 읽고 순서대로 답함. 원고와 설정을 구분하고 원고가 밝히지 않은 부분도 말함. `SUPPORTED`, 11.4초 |
+| 원고에 없는 사실(카엘의 고향) | 충분도 판정이 두 번 거절(`missing` 기록), 최대 단계 뒤 "원고에서 확실한 답을 찾지 못했어"로 시작하는 답. `NOT_ENOUGH`, 28.2초 |
+| 드래그 인용 `explain`(15화) | 인용 장면을 12·21화와 설정 문서로 이어 설명. `SUPPORTED`, 22.9초 |
+| 7화를 고쳐 쓴 뒤 같은 세션에서 다시 질문 | 새로 읽은 문서 0개. 보유 문서를 현재 판으로 다시 받아 바뀐 장소로 답함("정정할게") |
+
+**DB 정합성.** 완료된 턴 5개 모두 `answer_id`가 있고 답마다 `grounding`이 저장됨. 근거 인용은 모두 원문 대조를 통과(`quote` null 없음). 보유 문서 고아 행 없음. 거절된 턴의 `reviews`에 이유가 남음. 두 프로세스 로그에 오류 없음.
+
+**구현 중 확인한 것.** `store=False`에서 `include=["reasoning.encrypted_content"]`로 받은 출력 항목을 다음 단계 입력에 그대로 넣는 방식이 `gpt-6-luna`에서 동작한다(§9의 확인 항목).

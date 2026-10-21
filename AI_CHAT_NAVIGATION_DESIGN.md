@@ -122,6 +122,7 @@ input
 | `number`, `episode` | 원고의 읽는 순서와 에피소드 |
 | `chars` | 읽어 오는 비용. 본문 + 텍스트 속성의 글자 수(코드 포인트) |
 | `rev` | 현재 revision |
+| `<property>` | 작가가 쓴 속성(별칭, 설명). 항상 최신이다 |
 | `<summary>`, `summary_rev` | 요약과 그 요약을 만든 판(§5). 무엇을 읽을지 고르는 데만 쓴다. 근거가 아니다. 메모에는 없다 |
 
 간선은 `<edge a="…" b="…">관계 설명</edge>`(content `document_relations`)다.
