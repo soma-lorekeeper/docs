@@ -2,6 +2,7 @@
 
 > 독자: AI 챗의 사용량 제한을 고치거나 운영하는 사람.
 > 관련: 탐색 구조는 [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md), 화면은 [frontend/ai-chat.md](frontend/ai-chat.md).
+> 한 턴 전체 흐름(사용량 게이트 → 에이전트 루프 → 판정 → 기록) 다이어그램: [diagrams/ai-chat-turn.drawio](diagrams/ai-chat-turn.drawio)
 
 작가 한 명이 하루에 쓸 수 있는 AI 챗 양(약 500원어치)을 정하고, 화면은 오늘 쓴 비율을 0에서 100%로 보여 준다. 100%가 되면 그날은 더 묻지 못하고 자정(한국 시간)에 0%로 돌아간다.
 
