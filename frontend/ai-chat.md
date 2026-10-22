@@ -52,7 +52,7 @@
 
 ## 3. 서비스 계약
 
-`ChatService`(`src/services/ports.ts`): `availability`, `sessions`, `search`, `createSession`, `renameSession`, `deleteSession`, `messages`, `send(sessionId, input, handlers, signal)`. `send` 의 핸들러는 `onPhase`(gathering·reading·writing), `onCitation(index, citation)`, `onDelta(text)` 이고, 근거는 그 표시보다 먼저 온다. 멈춤은 `AbortSignal`. 서버 API와 SSE 이벤트는 [AI_CHAT_REQUIREMENTS.md §4](../AI_CHAT_REQUIREMENTS.md#4-api-계약).
+`ChatService`(`src/services/ports.ts`): `availability`, `usage`, `sessions`, `search`, `createSession`, `renameSession`, `deleteSession`, `messages`, `send(sessionId, input, handlers, signal)`. `send` 의 핸들러는 `onPhase`(gathering·reading·writing), `onCitation(index, citation)`, `onDelta(text)` 이고, 근거는 그 표시보다 먼저 온다. 멈춤은 `AbortSignal`. 서버 API와 SSE 이벤트는 [AI_CHAT_REQUIREMENTS.md §4](../AI_CHAT_REQUIREMENTS.md#4-api-계약).
 
 실제 API 모드에서는 `services/api/chat.ts`가 gateway의 `/projects/{id}/chat/…`·`/chat/sessions/{id}/…`를 부른다. 허용 목록 밖 사용자는 403 `CHAT_NOT_ENABLED`를 받고, 이를 `unavailable`로 옮겨 창이 `PreparingState`("AI 챗은 아직 준비 중이에요")를 보인다. 드래그 막대는 뜨지 않는다. `services/api/unavailable.ts`는 마지막 포트였던 챗이 옮겨 가 지웠다.
 
@@ -62,6 +62,7 @@
 - 실제처럼 답하는 것: 추천 질문 세 개와 시드 대화, 12화 문장의 드래그 질문(의도별 답). 그 밖의 질문에는 예시 데이터라는 안내로 답한다.
 - 대기 시간은 모으기 0.9초, 읽기 2.6초로 고정이다.
 - 분량 초과 화면: 작업공간 주소에 `&chatLimit=1000` 을 붙인다.
+- 일일 사용량: `&chatUsage=0.28`(여유), `0.82`(80% 안내), `1`(다 씀). mock 질문 하나는 한도의 10%를 쓴다. 규칙은 [AI_CHAT_DAILY_USAGE.md](../AI_CHAT_DAILY_USAGE.md).
 - 실패: `&mock=chat.send:fail`.
 
 ## 5. 다른 화면에 반영한 것
