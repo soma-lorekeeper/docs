@@ -42,8 +42,7 @@ TurnRunner (turns.py, 기존)          턴의 수명: 취소 감시, 마감, 지
 
 | 호출 | 용도 | 출력 | 설정 | 스트리밍 |
 |---|---|---|---|---|
-| `step`(탐색) | 다음 행동 결정 | 도구 호출 1개 또는 답 초안 | 도구 `request_documents`, `tool_choice=auto`, 추론 강도 `CHAT_NAVIGATION_REASONING_EFFORT`(low) | 아니요 |
-| `step`(답) | 답 쓰기 | 답 본문 | `tool_choice=none`, 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS`. 탐색 단계가 답을 쓰기로 하면 그 초안은 버리고 이 호출로 다시 쓴다. 마지막 단계·마지막 답도 이 호출 | 아니요 |
+| `step` | 정렬하거나 답 쓰기 | 도구 호출 1개 또는 답 본문 | 도구 `request_documents`, `tool_choice=auto`(마지막 단계·마지막 답은 `none`), 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS` | 아니요 |
 | `sufficiency` | 충분도 판정 | `{sufficient, missing}` | 모델 `CHAT_JUDGE_MODEL`, `text.format=json_schema`, 추론 강도 `CHAT_JUDGE_REASONING_EFFORT`(low), 출력 상한 2,000 | 아니요 |
 | `check_answer` | 답 판정 | `{answer_ok, problems}` | 위와 같다 | 아니요 |
 | `summarize` | 요약 스케줄러 전용(§3) | 요약 본문 | 모델 `SUMMARY_MODEL`, low, 1,000 | 아니요 |
@@ -237,7 +236,6 @@ def deliver(outcome: Outcome, materials, channel) -> CitationStream:
 | `CHAT_HELD_MAX_CHARS` | 200,000 | 신규 |
 | `CHAT_HISTORY_MAX_CHARS` | 40,000 | 신규. 지금은 "한도 − 스냅샷 크기"로 계산하던 대화 예산 |
 | `CHAT_JUDGE_MODEL` / `CHAT_JUDGE_REASONING_EFFORT` | `OPENAI_MODEL` / `low` | 신규. medium은 거절만 늘고 느려서 low(평가 §5) |
-| `CHAT_NAVIGATION_REASONING_EFFORT` | `low` | 신규. 탐색 단계의 추론 강도(평가 §4-8) |
 | `CHAT_ANSWER_RESERVE_SECONDS` | 75 | 신규 |
 | `CHAT_CONTEXT_LIMIT`, `CHAT_RECENT_MANUSCRIPTS`, `CHAT_HISTORY_FLOOR` | — | **삭제**. gitops의 `CHAT_CONTEXT_LIMIT`도 지운다 |
 
