@@ -11,6 +11,7 @@
 | [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) | **AI 챗 백엔드 요구사항.** 세션·질문과 답·컨텍스트 스냅샷·분량 판정·근거 형식·SSE·검색·드래그 질의·API 계약·데이터 모델 |
 | [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md) | **AI 챗 탐색 설계.** 지도(노드·관계·요약)를 보고 모델이 정한 순서로 문서를 읽고, 판정 모델이 컨텍스트 충분도와 답의 합리성을 검토한 뒤에만 답한다. 요약 스케줄러, 프롬프트 |
 | [AI_CHAT_NAVIGATION_IMPLEMENTATION.md](AI_CHAT_NAVIGATION_IMPLEMENTATION.md) | **AI 챗 탐색 구현 설계.** 직접 짠 에이전트 루프(답 → 판정 → 전달), 시간 예산, Kafka로 도는 요약 스케줄러, ai-chat·content·gitops 변경, DB·설정값·테스트, 배포 순서와 PR 단위 |
+| [AI_CHAT_EVALUATION.md](AI_CHAT_EVALUATION.md) | **AI 챗 엔드투엔드 평가.** 정답이 정해진 이야기 세 편·질문 36개, 채점 방법, 기준선과 11회 개선의 결과, 찾은 문제와 고친 것, 운영 평가 |
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [OUTBOX_CDC_VS_POLLING.md](OUTBOX_CDC_VS_POLLING.md) | Outbox 행을 Kafka로 내보내는 방식 비교. 폴링 퍼블리셔와 CDC(Debezium)의 장단점과 선택 근거 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |

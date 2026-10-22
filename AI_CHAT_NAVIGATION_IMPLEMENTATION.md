@@ -1,6 +1,6 @@
 # AI 챗 탐색 구현 설계
 
-> 갱신일: 2026-10-21
+> 갱신일: 2026-10-22
 > 상태: **구현 완료, 로컬 검증 완료(§10).** [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md)(무엇을 하는가)를 지금 코드에 어떻게 넣는가를 정한다.
 > 독자: ai-chat·content를 구현하는 사람.
 > 기준 코드: `loresentry-ai-chat` `41ef19b`, `loresentry-content` `4aeec2e`, `loresentry-gateway` `12fe815`, `loresentry-frontend` `a3f4a86`, `loresentry-gitops` `bdb1cd3`
@@ -42,12 +42,13 @@ TurnRunner (turns.py, 기존)          턴의 수명: 취소 감시, 마감, 지
 
 | 호출 | 용도 | 출력 | 설정 | 스트리밍 |
 |---|---|---|---|---|
-| `step` | 다음 행동 또는 답 | 도구 호출 1개 **또는** 답 본문 | 도구 `request_documents`, `tool_choice=auto`(마지막 단계·마지막 답은 `none`), 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS` | 아니요 |
+| `step`(탐색) | 다음 행동 결정 | 도구 호출 1개 또는 답 초안 | 도구 `request_documents`, `tool_choice=auto`, 추론 강도 `CHAT_NAVIGATION_REASONING_EFFORT`(low) | 아니요 |
+| `step`(답) | 답 쓰기 | 답 본문 | `tool_choice=none`, 추론 강도 `OPENAI_REASONING_EFFORT`(medium), 출력 상한 `OPENAI_MAX_OUTPUT_TOKENS`. 탐색 단계가 답을 쓰기로 하면 그 초안은 버리고 이 호출로 다시 쓴다. 마지막 단계·마지막 답도 이 호출 | 아니요 |
 | `sufficiency` | 충분도 판정 | `{sufficient, missing}` | 모델 `CHAT_JUDGE_MODEL`, `text.format=json_schema`, 추론 강도 `CHAT_JUDGE_REASONING_EFFORT`(low), 출력 상한 2,000 | 아니요 |
 | `check_answer` | 답 판정 | `{answer_ok, problems}` | 위와 같다 | 아니요 |
 | `summarize` | 요약 스케줄러 전용(§3) | 요약 본문 | 모델 `SUMMARY_MODEL`, low, 1,000 | 아니요 |
 
-- 모든 호출이 `store=False`다. `step`은 `prompt_cache_key=project_id`(기존과 같다).
+- 모든 호출이 `store=False`이고, OpenAI 클라이언트는 일시 오류(5xx·429·연결)를 2회 재시도한다(`max_retries=2`). 턴당 호출이 여러 번이라 한 번의 오류가 턴을 깨지 않게 하려는 것이다. 호출마다 `model call` 로그(강도, 시간, 토큰)를 남긴다. `step`은 `prompt_cache_key=project_id`(기존과 같다).
 - `step`은 `include=["reasoning.encrypted_content"]`로 받고, 응답의 `output` 항목(추론 + `function_call` 또는 `message`)을 **그대로** 다음 입력에 덧붙인다. `store=False`에서 단계 사이에 추론을 이어 가는 방법이다.
 - 도구가 한 번이라도 쓰인 입력에는 `function_call` 항목이 있으므로, `tool_choice=none`인 호출에도 도구 정의는 함께 보낸다.
 - 두 판정은 응답 모델과 다른 지시·입력을 쓰므로 응답 모델과 캐시를 공유하지 않는다. 충분도 입력은 질문 + 이전 질문들 + 보유 문서, 답 판정 입력은 질문 + 대화 + 보유 문서 + 답이다. 보유 문서 블록을 입력 맨 앞에 두어 두 판정끼리는 앞부분이 같게 한다.
@@ -235,7 +236,8 @@ def deliver(outcome: Outcome, materials, channel) -> CitationStream:
 | `CHAT_MAX_STEPS` | 4 | 신규 |
 | `CHAT_HELD_MAX_CHARS` | 200,000 | 신규 |
 | `CHAT_HISTORY_MAX_CHARS` | 40,000 | 신규. 지금은 "한도 − 스냅샷 크기"로 계산하던 대화 예산 |
-| `CHAT_JUDGE_MODEL` / `CHAT_JUDGE_REASONING_EFFORT` | `OPENAI_MODEL` / `low` | 신규 |
+| `CHAT_JUDGE_MODEL` / `CHAT_JUDGE_REASONING_EFFORT` | `OPENAI_MODEL` / `low` | 신규. medium은 거절만 늘고 느려서 low(평가 §5) |
+| `CHAT_NAVIGATION_REASONING_EFFORT` | `low` | 신규. 탐색 단계의 추론 강도(평가 §4-8) |
 | `CHAT_ANSWER_RESERVE_SECONDS` | 75 | 신규 |
 | `CHAT_CONTEXT_LIMIT`, `CHAT_RECENT_MANUSCRIPTS`, `CHAT_HISTORY_FLOOR` | — | **삭제**. gitops의 `CHAT_CONTEXT_LIMIT`도 지운다 |
 
@@ -536,3 +538,7 @@ Docker의 Postgres 18 · Kafka 4.1(KRaft 단일 브로커) 위에 content(`bootR
 **DB 정합성.** 완료된 턴 5개 모두 `answer_id`가 있고 답마다 `grounding`이 저장됨. 근거 인용은 모두 원문 대조를 통과(`quote` null 없음). 보유 문서 고아 행 없음. 거절된 턴의 `reviews`에 이유가 남음. 두 프로세스 로그에 오류 없음.
 
 **구현 중 확인한 것.** `store=False`에서 `include=["reasoning.encrypted_content"]`로 받은 출력 항목을 다음 단계 입력에 그대로 넣는 방식이 `gpt-6-luna`에서 동작한다(§9의 확인 항목).
+
+## 11. 평가 후 바뀐 것 (2026-10-22)
+
+[AI_CHAT_EVALUATION.md](AI_CHAT_EVALUATION.md)의 세 데이터셋 평가로 고친 내용: 충분도 판정 규칙(모순, 정밀도, 드래그 질문, 시간순의 공백, 설정만으로는 부족), 답 판정의 인용 문구 규칙, 문서가 충분했을 때의 마지막 답, 탐색·답의 추론 강도 분리, 답 길이 기준, 일시 오류 재시도, 호출별 로그. 평가 도구는 `loresentry-ai-chat/evaluation/`.
