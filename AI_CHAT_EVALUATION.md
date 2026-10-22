@@ -3,7 +3,7 @@
 > 갱신일: 2026-10-22
 > 상태: **로컬 평가(기준선 + 11회 개선)와 운영 평가 완료.**
 > 독자: AI 챗을 고치거나 평가를 다시 돌리는 사람.
-> 관련: [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md), [AI_CHAT_NAVIGATION_IMPLEMENTATION.md](AI_CHAT_NAVIGATION_IMPLEMENTATION.md). 도구와 결과 원본은 `loresentry-ai-chat/evaluation/`.
+> 관련: [AI_CHAT_NAVIGATION_DESIGN.md](AI_CHAT_NAVIGATION_DESIGN.md), [AI_CHAT_NAVIGATION_IMPLEMENTATION.md](AI_CHAT_NAVIGATION_IMPLEMENTATION.md). 실행 과정과 회차별 숫자는 [AI_CHAT_VERIFICATION_LOG.md](AI_CHAT_VERIFICATION_LOG.md). 도구와 결과 원본은 `loresentry-ai-chat/evaluation/`.
 
 ## 0. 요약
 
