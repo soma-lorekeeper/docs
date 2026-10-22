@@ -57,7 +57,7 @@ URL 의 `?mock=` 로 실패·지연을 넣는다. 쉼표로 여러 규칙을 잇
 | 저장 충돌(409)은 현재 본문과 공통 조상을 함께 돌려준다 | DOCUMENT_EDITING_PROPOSAL §5 | `ports.ts` ConflictError |
 | 버전은 제목·본문·속성 전체 스냅샷이고, 복원 전에 PRE_RESTORE 를 남긴다 | DOCUMENT_EDITING_PROPOSAL §4.2, 요구사항 §6.2 | `domain/models.ts`, `ports.ts` |
 | 내보내기(PDF·DOCX·HWP)는 서버가 파일을 만들어 URL 을 준다. mock 은 MD·TXT 만 실제로 만든다 | 미확정 | `ports.ts`, `mock/documents.ts` |
-| 에디터 글꼴·크기·줄 간격·정렬은 문서가 아니라 기기별 사용자 설정이다 | DOCUMENT_EDITING_PROPOSAL §2.3 | `documents/editor-prefs.ts` |
+| 에디터 글꼴·크기·줄 간격은 문서마다 본문 JSON 의 `doc.attrs`(`font`·`fontSize`·`lineHeight`)에 담긴다. content 는 `doc` 노드의 속성을 검사하지 않고 그대로 저장한다. 정렬은 문단 노드의 `textAlign` 이다 | 2026-10-22 QA([qa-2026-10-22.md](qa-2026-10-22.md)) | `documents/document-format.ts`, `documents/editor/formatted-document.ts` |
 | 검색은 활성 원고·설정 문서의 제목·본문만, 관련도 순·동률이면 최근 수정 순 | 요구사항 §7.1 | `ports.ts` SearchService |
 | "최근에 연 파일"은 서버의 사용자별 열람 기록이다. mock 은 최근 수정 순으로 대신한다 | 미확정 | `workspace/views/new-tab-view.tsx` |
 | 그래프는 graph-rag 가 Neptune 투영본을 프로젝트 단위로 준다. 엣지는 관계 속성을 가진 문서 → 대상 문서 방향이다 | GRAPH_INBOX_PATTERN §3 | `domain/models.ts`, `ports.ts` |
