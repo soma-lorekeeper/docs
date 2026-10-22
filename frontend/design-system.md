@@ -55,4 +55,4 @@ pnpm tokens (scripts/generate-tokens.mjs)
 
 ## 폰트
 
-Geist(`next/font`, 가변 굵기)를 기본으로 하고 한글은 Apple SD Gothic Neo → Noto Sans KR 순으로 대체된다. 에디터 글꼴·크기·줄 간격은 사용자가 툴바에서 바꾸며 기기별로 저장한다.
+Geist(`next/font`, 가변 굵기)를 기본으로 하고 한글은 Apple SD Gothic Neo → Noto Sans KR 순으로 대체된다. 에디터 글꼴·크기·줄 간격은 사용자가 툴바에서 바꾸며 문서마다 본문(`doc` 노드 속성)에 저장한다([qa-2026-10-22.md](qa-2026-10-22.md#2-에디터--글꼴-서식이-모든-문서에-같이-적용됨)).
