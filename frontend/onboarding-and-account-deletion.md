@@ -63,7 +63,7 @@ Google 로그인 → (신규·재동의) 약관 동의 모달 → /projects
 | --- | --- |
 | 확인 | 계정 이메일을 똑같이 입력해야 버튼이 켜진다(앞뒤 공백·대소문자 무시). 서버도 같은 규칙으로 다시 대조한다 |
 | 요청 | `POST /auth/users/me/deletion` `{confirmation_email}`. 인증 전환(`withAuthTransition`) 안에서 부른다 |
-| 서버 순서 | gateway: 이메일 대조 → content `DELETE /users/me/data` → auth `DELETE /auth/users/me`(세션 폐기 후 계정·Google 연결·동의 기록 삭제) → 세션 쿠키 삭제 |
+| 서버 순서 | gateway: 이메일 대조 → ai-chat `DELETE /users/me/data` → auth `DELETE /auth/users/me`(세션 폐기 후 계정·Google 연결·동의 기록 삭제) → 세션 쿠키 삭제. content 작업 데이터는 auth가 발행하는 `auth.user.deleted.v1`을 content가 받아 지운다 |
 | 실패 | `ACCOUNT_CONFIRMATION_MISMATCH` 는 입력란 오류, 그 밖은 "계정과 작업은 그대로" 안내와 다시 시도. 어느 단계에서 실패해도 다시 시도해도 안전하다 |
 | 성공 | 쿼리 캐시를 비우고 `/goodbye/`. 같은 Google 계정으로 다시 로그인하면 새 계정·새 동의·새 온보딩으로 시작한다 |
 
