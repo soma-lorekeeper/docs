@@ -195,7 +195,7 @@
 | 세션 삭제 | 즉시 영구 삭제, 진행 중 생성 취소 |
 | 프로젝트 휴지통 이동 | 세션을 보이지 않게 한다(프로젝트 접근이 막히므로 자연히 404). 복원하면 다시 보인다 |
 | 프로젝트 영구 삭제 | 그 프로젝트의 세션·메시지 삭제. content의 Kafka 발행이 아직 없으므로 **gateway가 content 삭제(204) 뒤 ai-chat `DELETE /projects/{id}/chat/data`를 부른다**. ai-chat 실패는 기록만 하고 204를 돌려준다(content에서는 이미 지워졌다). Kafka가 생기면 `ProjectDeleted` 구독으로 바꾼다 |
-| 계정 삭제 | 그 사용자의 모든 세션·메시지 삭제. gateway의 탈퇴 순서에서 content `DELETE /users/me/data` 다음, auth 삭제 전에 ai-chat `DELETE /users/me/data`를 부른다. 실패하면 거기서 멈추고 브라우저 재시도로 이어 간다(기존 규칙) |
+| 계정 삭제 | 그 사용자의 모든 세션·메시지 삭제. gateway의 탈퇴 순서에서 이메일 대조 다음, auth 삭제 전에 ai-chat `DELETE /users/me/data`를 부른다(content 작업 데이터는 content가 `auth.user.deleted.v1`을 받아 지운다). 실패하면 거기서 멈추고 브라우저 재시도로 이어 간다(기존 규칙) |
 | 문서 삭제 | 과거 답의 근거는 남는다. 프론트는 열 수 없는 근거를 비활성 칩으로 보인다 |
 
 ### 3.11 비기능
