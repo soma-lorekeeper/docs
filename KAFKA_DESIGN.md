@@ -940,16 +940,23 @@ sequenceDiagram
 
   ```json
   {
-    "request_id": "…",
     "project_id": "…",
-    "files": [ { "file_id": "…", "revision_no": 42, "state": "ACTIVE" } ],
-    "location": { "bucket": "…", "key": "refresh/{project_id}/{request_id}/input.json" }
+    "request_id": "…",
+    "user_id": "…",
+    "input_fingerprint": "…",
+    "location": { "bucket": "…", "key": "refresh/{project_id}/{request_id}/input.json" },
+    "files": [ { "file_id": "…", "revision_no": 42 } ],
+    "required_events": [ "…" ]
   }
   ```
 
   - **request_id**: refresh_runs 행의 id. 결과 이벤트와 짝을 맞추는 키.
-  - **files**: 휴지통, 삭제된 파일도 포함. state는 ACTIVE, TRASHED, DELETED이고 본문(body_text)은 ACTIVE만 S3에 올림.
+  - **user_id**: 최신화를 요청한 사용자. graph-rag가 관계 문서를 더 가져갈 때 content에 이 사용자로 물음.
+  - **input_fingerprint**: S3 입력 바이트 전체의 sha256(소문자 16진수 64자). graph-rag가 읽은 바이트와 대조함.
+  - **location**: S3 입력(`refresh-input-v2`)의 위치.
+  - **files**: S3 입력에 실은 문서와 revision. 입력의 문서 목록과 정확히 같음. 휴지통·삭제 문서는 보내지 않으므로 모두 활성 문서.
   - **revision_no**: 본문 revision. FileChanged의 순번(ce_sequence)과 다른 번호.
+  - **required_events**: 프로젝트 문서마다 가장 최근 FileChanged 이벤트의 id. graph-rag는 이것을 모두 그래프에 반영한 뒤 처리함.
 - **GraphRefreshCompleted**
   - 최신화가 끝나면 graph-rag가 결과를 S3에 쓰고 발행. 실패도 같은 이벤트로 보냄.
 
