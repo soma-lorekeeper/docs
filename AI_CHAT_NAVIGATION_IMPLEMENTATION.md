@@ -444,10 +444,11 @@ order by (e.id is null), e.rank, e.id, d.rank, d.id
 
 ### 5.3 백필: `POST /internal/admin/file-events/replay`
 
-- 휴지통에 없는 모든 문서에 대해 `FileChanged(UPDATED)`를 outbox에 다시 쓴다. 프로젝트 하나를 트랜잭션 하나로 묶고, 지금 `ContentEvents`의 규칙대로 소유자 잠금(`lock(userId)`) 뒤에 쓴다.
+- 휴지통에 없는 모든 문서에 대해 `FileChanged(UPDATED)`를 outbox에 다시 쓴다. `changed_fields`는 전부다. 프로젝트 하나를 트랜잭션 하나로 묶고, 그 문서들을 `OutboxRepository.append` 한 번으로 쓴다. append가 문서마다 lock을 잡은 뒤 스냅샷을 읽는다.
 - 쿼리 파라미터 `after`(project id)와 `limit`(프로젝트 수)으로 나눠 돌린다. 응답은 처리한 마지막 project id다.
 - gateway에 노출하지 않는다(ClusterIP 내부 경로). 운영자가 `kubectl port-forward`로 한 번 부른다.
-- graph-rag도 이 이벤트를 받는다. 같은 revision은 revision 가드에서 무시하므로 결과는 바뀌지 않고, 처리 부하만 생긴다. 그래서 `limit`으로 나눠 돌린다.
+- graph-rag도 이 이벤트를 받는다. 전체 스냅샷이라 같은 상태를 다시 쓸 뿐 결과는 바뀌지 않고, 처리 부하만 생긴다. 그래서 `limit`으로 나눠 돌린다.
+- summarizer는 `ce_sequence`가 더 크므로 문서를 다시 큐에 넣는다. 본문 fingerprint가 거의 같으면 모델을 부르지 않고 끝낸다.
 
 ### 5.4 테스트
 
