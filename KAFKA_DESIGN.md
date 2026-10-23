@@ -943,7 +943,7 @@ sequenceDiagram
     "request_id": "…",
     "project_id": "…",
     "files": [ { "file_id": "…", "revision_no": 42, "state": "ACTIVE" } ],
-    "input": { "bucket": "…", "key": "refresh/{project_id}/{request_id}/input.json" }
+    "location": { "bucket": "…", "key": "refresh/{project_id}/{request_id}/input.json" }
   }
   ```
 
