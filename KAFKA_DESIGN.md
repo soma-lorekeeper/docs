@@ -881,8 +881,8 @@ sequenceDiagram
 
 | 이벤트 | 발행 → 구독 | 필요한 경우 |
 |---|---|---|
-| FileChanged | content → graph-rag, search | 파일 생성, 수정(본문·제목·폴더·관계), 휴지통 이동, 복원, 영구 삭제 |
-| ProjectDeleted | content → graph-rag, search | 프로젝트 영구 삭제. 유저 삭제로 그 유저의 프로젝트를 지울 때도 같음 |
+| FileChanged | content → graph-rag, search, ai-chat summarizer | 파일 생성, 수정(본문·제목·폴더·관계), 휴지통 이동, 복원, 영구 삭제 |
+| ProjectDeleted | content → graph-rag, search, ai-chat summarizer | 프로젝트 영구 삭제. 유저 삭제로 그 유저의 프로젝트를 지울 때도 같음 |
 | UserDeleted | auth → content | 유저 삭제(탈퇴) |
 | GraphRefreshRequested | content → graph-rag | 그래프 최신화 요청 |
 | GraphRefreshCompleted | graph-rag → content | 그래프 최신화 종료 (성공, 실패 모두) |
@@ -972,7 +972,7 @@ sequenceDiagram
 
 | topic | 이벤트 | 발행 → 구독 | key | partition |
 |---|---|---|---|---|
-| `content.project.changed.v1` | FileChanged, ProjectDeleted | content → graph-rag, search | project_id | 6 |
+| `content.project.changed.v1` | FileChanged, ProjectDeleted | content → graph-rag, search, ai-chat summarizer | project_id | 6 |
 | `content.graph-refresh.requested.v1` | GraphRefreshRequested | content → graph-rag | project_id | 3 |
 | `graph-rag.graph-refresh.completed.v1` | GraphRefreshCompleted | graph-rag → content | project_id | 3 |
 | `auth.user.deleted.v1` | UserDeleted | auth → content | user_id | 3 |
