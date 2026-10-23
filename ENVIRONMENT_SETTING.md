@@ -481,7 +481,7 @@ Nodes·`kube-system` 같은 클러스터 범위까지 Lens로 보려면 별도 �
 
 팀원 추가 시 수행하는 절차다. access entry는 GitOps 저장소가 아니라 AWS에 있으므로, 이 절차 자체가 재현 수단이다 (`INFRA_AND_CICD.md` §19-A).
 
-**IAM 그룹 (2026-10-23 기준).** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). `PowerUserAccess`는 IAM을 막으므로 IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)은 관리자가 SSO로 한다. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다.
+**IAM 그룹 (2026-10-23 기준).** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess` + `IAMFullAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)도 팀원이 직접 하도록 `lorekeeper-owner`에 `IAMFullAccess`를 더 붙였다. 그래서 이 그룹은 사실상 관리자 권한이다(IAM으로 자기 권한을 넓힐 수 있다). 되돌릴 때는 `aws iam detach-group-policy --group-name lorekeeper-owner --policy-arn arn:aws:iam::aws:policy/IAMFullAccess`. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다.
 
 ```bash
 export AWS_PROFILE=lorekeeper AWS_REGION=ap-northeast-2
