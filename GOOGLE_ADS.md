@@ -128,6 +128,35 @@ Lore Sentry는 웹소설 작가를 위한 웹 집필 에디터입니다. 작품�
 
 처음 계정에서 `/welcome/`을 넣었을 때 "The URL is already being tracked"가 떴다. 같은 계정에 이 URL을 쓰는 전환 액션이 이미 있다는 뜻이다. URL 끝의 `/`를 빼는 식으로 우회하면 같은 가입이 두 번 집계된다.
 
+### 계정별 유입 경로
+
+전환 수와 별개로, 가입한 계정마다 어디서 왔는지를 auth DB `user_acquisitions`에 남긴다(2026-10-27, [frontend/analytics.md](frontend/analytics.md) 7절). 광고 클릭이면 `click_id`(`gclid`)가, 아래 접미사를 넣으면 캠페인 ID와 **가입으로 이어진 키워드**(`utm_term`)가 들어간다.
+
+| 위치 | 값 |
+|---|---|
+| Admin → Account settings → Auto-tagging | 켠다. 광고 클릭 URL에 `gclid`가 붙는다 |
+| Campaign → Settings → Campaign URL options → Final URL suffix | `utm_source=google&utm_medium=cpc&utm_campaign={campaignid}&utm_term={keyword}` |
+
+GA로 보내는 주소에서도 이 파라미터들을 지우지 않도록 고쳤다([frontend/analytics.md](frontend/analytics.md) 2절). 전에는 모든 쿼리를 지워 광고 유입이 캠페인으로 잡히지 않았다.
+
+조회는 `authentication` DB에서 한다. 접속은 [ENVIRONMENT_SETTING.md](ENVIRONMENT_SETTING.md) 6절을 따른다.
+
+```sql
+SELECT o.email, u.display_name, u.created_at,
+       CASE WHEN a.user_id IS NULL THEN '기록 없음'
+            WHEN a.click_id IS NOT NULL OR a.utm_medium = 'cpc' THEN '광고'
+            WHEN a.utm_source IS NOT NULL THEN 'UTM ' || a.utm_source
+            WHEN a.referrer_host IS NOT NULL THEN 'referrer ' || a.referrer_host
+            ELSE '직접' END AS channel,
+       a.utm_campaign, a.utm_term, a.landing_path
+FROM users u
+LEFT JOIN oauth_identities o ON o.user_id = u.id
+LEFT JOIN user_acquisitions a ON a.user_id = u.id
+ORDER BY u.created_at;
+```
+
+`기록 없음`은 이 기능 이전 가입자이거나 프론트가 보내지 못한 경우다. 광고를 휴대폰에서 누르고 PC에서 가입하면 기기가 달라 `직접`으로 남는다.
+
 Google Ads 전환 추적은 광고 쿠키(`_gcl_*`)를 쓴다. 개인정보 처리방침 §5 업체 표와 §6에 Google Ads를 더해야 한다. 한국어판 `loresentry-frontend/public/policies/privacy.html`과 영어판 `public-en/`([frontend/i18n.md](frontend/i18n.md) 5절)을 함께 고친다. 지금은 Google 애널리틱스만 적혀 있고 광고 개인 최적화도 꺼 둔 상태다(`frontend/analytics.md` 3·4절).
 
 ## 7. 예상 성과 — ₩100,000 기준 가정치
@@ -150,7 +179,7 @@ Google Ads 전환 추적은 광고 쿠키(`_gcl_*`)를 쓴다. 개인정보 처�
 2. 새 계정 결제 단계에서 승인 금액을 충전한다. 영수증은 Billing → Documents에서 받는다.
 3. 게시 후 3절 설정값을 대조한다. 자동 생성 애셋을 끄고, 캠페인 이름을 `검색_KR_한국어`로 바꾼다.
 4. 4절 제외 키워드를 넣는다.
-5. 6절 전환 액션(카테고리 Sign-up, Primary)을 확인하고 Google 태그를 연결한다.
+5. 6절 전환 액션(카테고리 Sign-up, Primary)을 확인하고 Google 태그를 연결한다. 자동 태그 지정을 켜고 최종 URL 접미사를 넣는다(6절 계정별 유입 경로).
 6. 개인정보 처리방침(한국어판·영어판)에 Google Ads를 더한다.
 7. 처음 계정을 정리한다. 남은 초안을 폐기하고, 해지할지 정한다. 캠페인이 없으면 비용은 나가지 않는다.
 8. 일주일 뒤 키워드별 노출을 본다. 검색량이 부족하면 네이버 검색광고를 검토한다. 한국 웹소설 작가는 네이버 검색 비중이 높다.

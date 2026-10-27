@@ -42,6 +42,7 @@ Content 백엔드
 Authentication DB
   users
   auth_sessions
+  user_acquisitions
 
 Content DB
   projects
@@ -141,6 +142,34 @@ last_used_at       = 2026-09-18 15:06:21+09
 
 중요:
   Content와 AI Chat에는 email, Google token, refresh token을 복제하지 않는다.
+```
+
+## 3.3 `user_acquisitions`
+
+목적: 가입한 계정이 어디서 들어왔는지(광고·검색·직접)를 계정마다 한 번 남긴다. 2026-10-27 V10으로 추가했다. 정본은 `loresentry-authentication/docs/account/AUTH_ERD.md`다.
+
+```text
+컬럼                 타입              역할과 필요한 이유
+──────────────────────────────────────────────────────────────────────────
+user_id              UUID              PK이자 users.id FK. 계정 삭제 시 CASCADE로 함께 지워진다.
+utm_source           VARCHAR(100)      처음 들어온 주소의 utm_source. 없으면 NULL이다.
+utm_medium           VARCHAR(100)      검색 광고는 cpc다.
+utm_campaign         VARCHAR(100)      광고 캠페인 ID다.
+utm_term             VARCHAR(200)      검색 광고에서는 가입으로 이어진 키워드다.
+utm_content          VARCHAR(100)      광고 소재 구분용이다.
+click_id             VARCHAR(255)      Google Ads 클릭 ID(gclid 등)다.
+click_id_type        VARCHAR(10)       gclid / gbraid / wbraid. click_id와 함께 NULL이거나 함께 값이 있다.
+referrer_host        VARCHAR(255)      외부 referrer의 호스트만 저장한다.
+landing_path         VARCHAR(255)      처음 도착한 경로다. 쿼리는 저장하지 않는다.
+landed_at            TIMESTAMPTZ       브라우저가 기록한 첫 도착 시각이다.
+recorded_at          TIMESTAMPTZ       Auth가 행을 기록한 시각이다.
+```
+
+```text
+기록 규칙:
+  프론트가 신규 회원의 /welcome/ 첫 도착 때 PUT /auth/users/me/acquisition 으로 보낸다.
+  Auth는 onboarding_completed_at 이 NULL인 계정에만, 처음 한 번 INSERT 한다. 이후 요청은 무시하고 204다.
+  행이 없으면 기능 이전 가입자다. 행이 있고 출처 컬럼이 모두 NULL이면 직접 방문이다.
 ```
 
 ---

@@ -26,6 +26,7 @@ GA 의 자동 page_view 를 끄고(`send_page_view: false`) 라우트가 바뀔 
 |---|---|
 | `open` | `:` 앞만. `file:<fileId>` → `file`, `graph` → `graph` |
 | `topic` | 그대로(사용 가이드 주제) |
+| `utm_source`·`utm_medium`·`utm_campaign`·`utm_term`·`utm_content`, `gclid`·`gbraid`·`wbraid` | 그대로. 광고 클릭과 캠페인을 GA 가 알아보는 근거다. 2026-10-27 전에는 이것도 버려서 광고 유입이 캠페인으로 잡히지 않았다 |
 | 그 밖 전부 | 버린다 — `projectId`, `returnTo`, `result`, `auth`, `data`, `mock`, `replay`, 해시 |
 
 - 걸러 낸 주소는 `gtag("set", { page_location })` 으로 둔다. 같은 페이지에서 나는 스크롤·외부 링크 클릭 같은 향상된 측정 이벤트도 걸러 낸 주소를 쓴다.
@@ -63,3 +64,28 @@ GA 의 자동 page_view 를 끄고(`send_page_view: false`) 라우트가 바뀔 
 - 단위 테스트(`google-analytics.test.tsx`): 켜지는 조건, 쿼리 걸러 내기, gtag.js 한 번만 불러오기, 페이지별 page_view 한 번과 referrer, 측정 ID 형식.
 - 2026-10-06 운영 확인: 헤드리스 브라우저로 `/workspace/?projectId=…&open=file:…&mock=x` 에 접속해 `/g/collect` 요청을 잡았다. page_view 두 건(`/workspace/?open=file` → `/login/`, referrer 이어짐)과 scroll 한 건이 `G-FV1Y05NZQW` 로 나갔고, 식별자·테스트 쿼리는 없었다. 중복 page_view 도 없었다.
 - 배포 후: Tag Assistant 로 `loresentry.com` 연결 → GA DebugView 와 실시간 보고서에서 page_view 의 `page_location` 에 `projectId` 가 없는지, Google 로그인 뒤 세션 소스가 `accounts.google.com` 으로 바뀌지 않는지 확인한다.
+
+## 7. 가입 유입 경로 — 계정별 기록
+
+GA 는 몇 명이 어디서 왔는지만 알려 준다. 누가 어디서 왔는지는 auth DB 의 `user_acquisitions` 에 계정마다 한 행으로 남긴다(`loresentry-authentication/docs/account/AUTH_ERD.md`).
+
+| 단계 | 하는 일 | 코드 |
+|---|---|---|
+| 페이지 로드 | `<head>` 스크립트가 `{href, referrer, at}` 을 sessionStorage `loresentry.landing` 에 붙인다(최근 5개). React 보다 먼저 돌아 리다이렉트·검색어 제거 전의 주소를 잡는다 | `features/analytics/acquisition.ts` `createLandingScript` |
+| 앱 시작 | 쌓인 로드를 읽어 localStorage `loresentry.acquisition` 하나로 합치고 sessionStorage 를 비운다 | `settleLandings` (`app/providers.tsx`) |
+| 신규 회원 `/welcome/` 첫 도착 | 기록을 `PUT /auth/users/me/acquisition` 으로 보내고, 성공하면 지운다. 실패하면 남겨 두고 다음 도착 때 다시 보낸다 | `use-record-acquisition.ts` (`onboarding-page.tsx`) |
+
+합치는 규칙:
+
+- 캠페인 파라미터·광고 클릭 ID·외부 referrer 중 하나라도 있는 로드는 이전 기록을 덮어쓴다(마지막 비직접 유입).
+- 직접 방문은 기록이 없을 때만 남는다. 광고로 왔다가 나중에 주소를 쳐서 가입해도 광고로 남는다.
+- 30일이 지난 기록은 버린다.
+- `loresentry.com` 과 하위 도메인, `accounts.google.com` 은 외부 referrer 로 치지 않는다. Google 로그인 왕복이 유입을 덮어쓰지 않게 하려는 것이다.
+- 주소에서는 UTM 5개, `gclid`→`gbraid`→`wbraid` 중 처음 맞는 하나, 경로만 꺼낸다. `projectId` 같은 다른 쿼리와 referrer 의 경로·검색어는 저장하지 않는다. 길이는 서버 한도(UTM 100자, `utm_term` 200자)에 맞춰 자른다.
+
+다시 보기(`/welcome/?replay=1`)와 온보딩을 마친 계정은 보내지 않는다. 서버도 계정마다 처음 한 번, 온보딩 완료 전까지만 받는다. 이 기능 이전에 가입한 계정은 행이 없다.
+
+검증:
+
+- 단위 테스트: `acquisition.test.ts`(head 스크립트를 실제로 실행, 덮어쓰기·만료·정리 규칙), `onboarding-page.test.tsx`(한 번 보내고 성공 시 지움, 실패 시 유지, 다시 보기·완료 계정 제외), `api-services.test.ts`(요청 본문).
+- 2026-10-27 로컬 빌드(`out/`)를 헤드리스 브라우저로 열어 확인했다. `/?utm_source=google&utm_medium=cpc&utm_term=소설 에디터&gclid=…&projectId=secret` 로 들어가면 localStorage 에 UTM·`gclid`·경로 `/` 만 남고 `projectId` 는 없다. 이어서 `/login/?result=success` 로 들어가도 기록이 바뀌지 않는다.
