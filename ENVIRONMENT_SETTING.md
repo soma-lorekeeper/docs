@@ -4,24 +4,37 @@
 > 대상: Lore Sentry 팀원
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-k8s` / namespace `prod`
 
-이 문서는 팀원이 자기 노트북에서 운영 클러스터를 **조회**할 수 있게 만드는 절차다. 배포는 다루지 않는다 — 배포는 Argo CD가 GitOps 저장소를 보고 수행하며, 사람이 `kubectl`로 클러스터를 바꾸지 않는다 (`INFRA_AND_CICD.md` §21).
+이 문서는 팀원이 자기 노트북에서 운영 클러스터를 조회하고 운영 DB에 접속할 수 있게 만드는 절차다. 배포는 다루지 않는다 — 배포는 Argo CD가 GitOps 저장소를 보고 수행하며, 사람이 `kubectl`로 클러스터를 바꾸지 않는다 (`INFRA_AND_CICD.md` §21).
 
 ---
 
-## 0. 먼저 알아둘 것 — 조회만 가능하다
+## 0. 먼저 알아둘 것 — 경로마다 권한이 다르다
 
-**부여되는 권한은 `prod` 네임스페이스에 대한 읽기 전용이다.** 클러스터를 변경하는 모든 동작은 막혀 있고, 막히는 것이 정상이다.
+`kubectl`은 읽기 전용이지만 팀원이 운영을 바꿀 수 없는 것은 아니다. AWS·DB·Argo CD·GitOps 저장소에서는 바꿀 수 있다 (2026-10-29 확인).
+
+| 경로 | 팀원 권한 | 자세히 |
+|---|---|---|
+| `kubectl`·Lens·Telepresence | `prod` 읽기 전용 + Telepresence 연결 (`lore-viewers`) | 아래 표, §6, §10 |
+| AWS 콘솔·CLI | `lorekeeper-owner` — `PowerUserAccess` + `IAMFullAccess`. 사실상 계정 관리자 | 부록 |
+| RDS PostgreSQL | 마스터 계정 (`rds_superuser`) | §6 |
+| Argo CD | GitHub 조직 멤버 전원이 admin | §7 |
+| Grafana | 공용 admin 계정 하나 | §7 |
+| GitOps 저장소 | write. `main`에 보호 규칙이 없어 push가 곧 배포다 | §8 |
+
+바꿀 수 있다고 바꿔도 되는 것은 아니다. 클러스터 변경은 GitOps PR로 하고 (§8), AWS 리소스와 DB는 운영 중인 서비스의 것이다. IAM·EKS 권한이 있으니 자기 access entry에 정책을 붙여 클러스터 관리자가 될 수도 있지만 하지 않는다 — 클러스터 권한은 Git의 RBAC로 관리한다 (부록).
+
+### `kubectl` 권한
+
+**`kubectl`로 받는 권한은 `prod` 네임스페이스에 대한 읽기 전용이다.** 클러스터를 변경하는 모든 동작은 막혀 있고, 막히는 것이 정상이다.
 
 | 되는 것 | 안 되는 것 |
 |---|---|
 | Pod·Deployment·Service·Ingress 조회 | **Secret 조회** (`kubectl get secret`) |
 | ConfigMap·Event 조회 | `kubectl exec` (컨테이너 진입) |
 | `kubectl logs` | 생성·수정·삭제 일체 |
-| `kubectl describe` | `prod` 외 네임스페이스 (`kube-system`, `argocd`, `default`) |
+| `kubectl describe` | `prod` 외 네임스페이스 (`kube-system`, `argocd`, `monitoring`, `default`). `ambassador`는 Telepresence 연결에 필요한 Pod 조회·port-forward만 된다 |
 | `kubectl port-forward` (§6) | 노드·네임스페이스 등 클러스터 범위 리소스 |
-| Telepresence 연결·intercept (§6) | |
-
-AWS 쪽은 속한 IAM 그룹에 따라 다르다. `lorekeeper-member`에만 있으면 `ReadOnlyAccess`라 조회만 되고 Secrets Manager 값 읽기와 KMS 복호화도 막힌다. `lorekeeper-owner`에도 있으면 리소스를 만들 수 있고 Secrets Manager의 DB 마스터 비밀번호도 꺼낼 수 있다 (§6, 부록).
+| Telepresence 연결·intercept (§6) | Strimzi 리소스 (`kafkatopics` 등, §8) |
 
 `Forbidden` 오류를 보면 설정이 잘못된 것이 아니라 **의도된 경계에 닿은 것**이다. 권한이 더 필요하면 §8을 본다.
 
@@ -375,15 +388,27 @@ telepresence intercept content-api --port 8080:80 --env-file ./content.env
 
 ---
 
-## 7. Argo CD 대시보드
+## 7. 대시보드 — Argo CD · Grafana
+
+### Argo CD
 
 ```text
 https://argocd.loresentry.com
 ```
 
-GitHub 계정으로 로그인한다 (`soma-lorekeeper` 조직 멤버만 통과).
+GitHub 계정으로 로그인한다 (`soma-lorekeeper` 조직 멤버만 통과). 로그인하면 **누구나 Argo CD admin**이다 — 조직에 팀이 없어 `argocd-rbac-cm`의 `policy.default: role:admin`으로 기본 역할을 준다 (`INFRA_AND_CICD.md` GitHub SSO 절).
 
-> **주의:** Argo CD 계정 권한은 위의 `kubectl` 읽기 전용 권한과 **별개**다. 대시보드에서 Sync·Delete 같은 동작은 실제로 클러스터를 바꾼다. 조회 외에는 누르지 않는다.
+> **주의:** Argo CD 권한은 위의 `kubectl` 읽기 전용 권한과 **별개**다. Argo CD admin은 클러스터의 무엇이든 바꿀 수 있고, 대시보드의 Sync·Rollback·Delete는 실제로 클러스터를 바꾼다. 조회 외에는 누르지 않는다.
+
+### Grafana
+
+```text
+https://grafana.loresentry.com
+```
+
+Prometheus 메트릭과 Loki 로그를 본다. 스택은 `monitoring` 네임스페이스에 있다 (`loresentry-gitops` README의 Observability 절).
+
+로그인은 **공용 admin 계정 하나**뿐이다. 가입과 익명 접근은 꺼져 있다. 계정은 `monitoring`의 `grafana-admin` Secret(Git 밖)에 있고 팀원은 `kubectl`로 이 Secret을 읽을 수 없으므로 관리자에게 받는다. admin이라 대시보드·데이터 소스·알림 규칙을 바꿀 수 있다.
 
 ---
 
@@ -406,7 +431,7 @@ GitHub 계정으로 로그인한다 (`soma-lorekeeper` 조직 멤버만 통과).
 
 지금 권한으로 못 하는 일이 생기면 직접 우회하지 말고 관리자에게 요청한다. 클러스터 권한은 GitOps 저장소에서 관리되므로 변경 이력이 남는다.
 
-GitOps 저장소(`soma-lorekeeper/loresentry-gitops`)에는 **write 권한이 있다.** 다만 `main`은 보호되어 있으므로 브랜치를 만들어 PR로 올린다. 머지되면 Argo CD가 자동으로 클러스터에 반영한다.
+GitOps 저장소(`soma-lorekeeper/loresentry-gitops`, 공개 저장소)에는 조직 멤버 모두 **write 권한이 있다.** `main`에는 보호 규칙이 **없다** (2026-10-29 확인). 직접 push해도 막히지 않고 Argo CD가 곧바로 클러스터에 반영하므로, 브랜치를 만들어 PR로 올리는 것을 규칙으로 지킨다. 배포 Lambda가 `main`에 직접 커밋하므로 보호 규칙을 켜려면 그 경로를 예외로 둬야 한다 (`INFRA_AND_CICD.md` §12).
 
 ---
 
@@ -419,7 +444,7 @@ GitOps 저장소(`soma-lorekeeper/loresentry-gitops`)에는 **write 권한이 �
 - 노트북 분실·키 유출이 의심되면 **즉시** 관리자에게 알린다. 키 삭제가 유일한 차단 수단이다
 - 프로젝트를 떠날 때 관리자에게 키 삭제를 요청한다
 
-키 자체에는 `ReadOnlyAccess`만 있으므로 유출되어도 리소스가 파괴되지는 않는다. 다만 인프라 구성 정보 전체가 노출된다.
+키에는 그 사용자의 IAM 권한이 그대로 실린다. 지금 팀원은 모두 `lorekeeper-owner`(`PowerUserAccess` + `IAMFullAccess`)라 **유출되면 계정 전체가 위험하다** — RDS·S3 삭제부터 새 IAM 사용자와 키 생성까지 된다 (부록).
 
 ---
 
@@ -464,7 +489,7 @@ brew install --cask freelens
 | Pod 목록의 CPU·메모리 현재값 (metrics-server) | Nodes 화면, `prod` 외 네임스페이스 |
 | | Port Forward |
 
-**시계열 CPU·메모리 그래프는 나오지 않는다.** Lens 그래프는 Prometheus가 필요한데 클러스터에 없다. Lens가 metrics 설치를 제안해도 누르지 않는다 — 클러스터에 리소스를 만드는 동작이라 권한이 없고, 필요하면 GitOps 저장소로 추가해야 한다 (§8).
+**시계열 CPU·메모리 그래프는 나오지 않는다.** Lens 그래프는 Prometheus가 필요한데, Prometheus는 `monitoring` 네임스페이스에 있고 `lore-viewers`는 그 네임스페이스를 읽을 수 없다. 시계열은 Grafana(§7)에서 본다. Lens가 metrics 설치를 제안해도 누르지 않는다 — 클러스터에 리소스를 만드는 동작이라 권한이 없고, 필요하면 GitOps 저장소로 추가해야 한다 (§8).
 
 ### 문제 해결
 
@@ -505,7 +530,37 @@ Nodes·`kube-system` 같은 클러스터 범위까지 Lens로 보려면 별도 �
 
 팀원 추가 시 수행하는 절차다. access entry는 GitOps 저장소가 아니라 AWS에 있으므로, 이 절차 자체가 재현 수단이다 (`INFRA_AND_CICD.md` §19-A).
 
-**IAM 그룹 (2026-10-23 기준).** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess` + `IAMFullAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)도 팀원이 직접 하도록 `lorekeeper-owner`에 `IAMFullAccess`를 더 붙였다. 그래서 이 그룹은 사실상 관리자 권한이다(IAM으로 자기 권한을 넓힐 수 있다). 되돌릴 때는 `aws iam detach-group-policy --group-name lorekeeper-owner --policy-arn arn:aws:iam::aws:policy/IAMFullAccess`. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다. `lorekeeper-owner`는 Secrets Manager를 읽을 수 있어 DB 마스터 비밀번호를 각자 꺼내 쓴다 (§6). 그래서 팀원에게 DB 관리자 권한을 따로 줄 필요가 없고, 비밀번호를 메신저로 전달하지 않는다. 2026-10-29에 mem-jh·mem-jh-2·mem-sj의 `secretsmanager:GetSecretValue`(마스터 비밀)와 `kms:Decrypt`(`aws/secretsmanager`)가 `allowed`임을 시뮬레이터로 확인했다.
+**IAM 그룹.** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess` + `IAMFullAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)도 팀원이 직접 하도록 `lorekeeper-owner`에 `IAMFullAccess`를 더 붙였다. 그래서 이 그룹은 사실상 관리자 권한이다(IAM으로 자기 권한을 넓힐 수 있다). 되돌릴 때는 `aws iam detach-group-policy --group-name lorekeeper-owner --policy-arn arn:aws:iam::aws:policy/IAMFullAccess`. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다. `lorekeeper-owner`는 Secrets Manager를 읽을 수 있어 DB 마스터 비밀번호를 각자 꺼내 쓴다 (§6). 그래서 팀원에게 DB 관리자 권한을 따로 줄 필요가 없고, 비밀번호를 메신저로 전달하지 않는다. 2026-10-29에 mem-jh·mem-jh-2·mem-sj의 `secretsmanager:GetSecretValue`(마스터 비밀)와 `kms:Decrypt`(`aws/secretsmanager`)가 `allowed`임을 시뮬레이터로 확인했다.
+
+**지금 팀원별 권한 (2026-10-29 확인).**
+
+| 신원 | IAM 그룹 | 액세스 키 | 콘솔 암호 | 클러스터 (access entry) |
+|---|---|---|---|---|
+| mem-jh | member, owner | **없음** | 있음 | `lore-viewers` |
+| mem-jh-2 | member, owner | 1개 (2026-09-19 발급) | 있음 | `lore-viewers` |
+| mem-sj | member, owner | 1개 (2026-09-19 발급) | 있음 (로그인 기록 없음) | `lore-viewers` |
+| mem-sh | owner | 없음 | 있음 | **없음** |
+| SSO 역할 `AWSReservedSSO_myisb_IsbUsersPS_…` (관리자) | — | SSO | — | `AmazonEKSClusterAdminPolicy` + `lore-viewers` |
+
+- 액세스 키가 없으면 CLI를 쓸 수 없어 §2~§6(`kubectl`·Telepresence·DB 접속)을 하지 못한다. mem-jh는 아래 3번으로 키를 발급해야 한다. mem-sh는 access entry도 없어 키가 있어도 `kubectl`이 `Unauthorized`다 (2번).
+- `lorekeeper-member`의 세 사람은 모두 `lorekeeper-owner`에도 있어서, 지금 `ReadOnlyAccess`는 실질적인 제한이 아니다.
+- owner 그룹의 실제 범위를 시뮬레이터로 보면 `eks:AssociateAccessPolicy`·`eks:UpdateAccessEntry`·`iam:AttachUserPolicy`·`iam:CreateAccessKey`·`rds:DeleteDBInstance`·`s3:DeleteBucket`·`ec2:TerminateInstances`가 모두 `allowed`다. 조직 SCP가 막는 것은 `organizations:LeaveOrganization`·`signin:*`·Cost Explorer 조회 같은 일부뿐이다.
+- MFA 장치는 어느 사용자에게도 없다. 사용자마다 `IAMUserChangePassword`(콘솔 암호 변경)가 직접 붙어 있다.
+- GitHub `soma-lorekeeper` 조직 멤버는 5명(Gomdadi·Heimdall-ROI·ju1115·lifeandsong·ohsuhyeon0119, 마지막이 조직 owner)이다. 모두 gitops 저장소 write이고 Argo CD admin이다 (§7, §8).
+
+다시 확인할 때는 다음을 쓴다. 값을 꺼내지 않는 조회만 한다.
+
+```bash
+for U in $(aws iam list-users --query 'Users[].UserName' --output text); do
+  echo "$U: $(aws iam list-groups-for-user --user-name "$U" --query 'Groups[].GroupName' --output text)" \
+       "keys=$(aws iam list-access-keys --user-name "$U" --query 'length(AccessKeyMetadata)')"
+done
+aws eks list-access-entries --cluster-name lore-sentry-k8s
+gh api orgs/soma-lorekeeper/members --jq '.[].login'
+gh api repos/soma-lorekeeper/loresentry-gitops/branches/main/protection   # 404 면 보호 규칙 없음
+```
+
+**팀원 추가**
 
 ```bash
 export AWS_PROFILE=lorekeeper AWS_REGION=ap-northeast-2
@@ -539,7 +594,7 @@ aws iam simulate-principal-policy \
 # ["explicitDeny", false] — SCP 거부. IAM 정책으로는 풀 수 없다
 ```
 
-`associate-access-policy`는 쓰지 않는다. AWS 관리형 정책을 붙이면 권한이 AWS 쪽에 갇혀 Git으로 관리할 수 없다. 권한은 `workload/overlays/prod/rbac.yaml`의 RoleBinding이 결정한다.
+`associate-access-policy`는 쓰지 않는다. AWS 관리형 정책을 붙이면 권한이 AWS 쪽에 갇혀 Git으로 관리할 수 없다. 권한은 `workload/overlays/prod/rbac.yaml`의 RoleBinding이 결정한다. 예외는 관리자 SSO 역할의 `AmazonEKSClusterAdminPolicy` 하나다. owner 그룹 팀원도 이 명령을 실행할 수 있는 IAM 권한이 있으므로, 이 규칙은 권한이 아니라 약속으로 지켜진다.
 
 **팀원 입장에서 검증** — 키를 전달하기 전에 관리자 노트북에서 팀원 설정을 그대로 재현한다. `AWS_CONFIG_FILE`·`AWS_SHARED_CREDENTIALS_FILE`·`KUBECONFIG`를 임시 디렉터리로 돌리므로 관리자 자신의 `~/.aws`와 `~/.kube`는 건드리지 않는다. 이 셸을 닫으면 원상태다.
 

@@ -636,7 +636,7 @@ Repository access: All repositories
 Repository permission: Contents read/write
 ```
 
-GitOps `main`에 직접 commit할 수 있어야 한다. 보호 규칙이 이를 막으면 Lambda를 PR 생성 방식으로 바꿔야 한다.
+GitOps `main`에 직접 commit할 수 있어야 한다. 보호 규칙이 이를 막으면 Lambda를 PR 생성 방식으로 바꿔야 한다. 2026-10-29 기준 `main`에는 보호 규칙이 없다. 조직 멤버 누구나 `main`에 직접 push할 수 있다는 뜻이기도 하다 (`ENVIRONMENT_SETTING.md` §8).
 
 ### Lambda
 
