@@ -6,6 +6,7 @@
 |---|---|
 | [ENVIRONMENT_SETTING.md](ENVIRONMENT_SETTING.md) | **팀원 온보딩.** 경로별 팀원 권한, AWS 자격 증명, EKS 클러스터 조회, Telepresence·운영 DB 접속, Argo CD·Grafana, Lens GUI |
 | [INFRA_AND_CICD.md](INFRA_AND_CICD.md) | EKS · GitOps · CI/CD 구축 기록. 인프라 전반 |
+| [DEV_CLUSTER.md](DEV_CLUSTER.md) | **dev 클러스터.** 부하·가용성 테스트용으로 prod와 같은 방식으로 만든 두 번째 EKS. prod와 공유하는 것·다른 것과 이유, OpenAI mock, 확인한 것, 처음 만들 때 겪은 것 |
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |
 | [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) | **AI 챗 백엔드 요구사항.** 세션·질문과 답·컨텍스트 스냅샷·분량 판정·근거 형식·SSE·검색·드래그 질의·API 계약·데이터 모델 |
