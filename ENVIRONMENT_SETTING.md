@@ -1,6 +1,6 @@
 # 로컬 개발 환경 온보딩 — AWS · EKS 접근 설정
 
-> 최신화: 2026-09-26
+> 최신화: 2026-10-29
 > 대상: Lore Sentry 팀원
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-k8s` / namespace `prod`
 
@@ -21,11 +21,11 @@
 | `kubectl port-forward` (§6) | 노드·네임스페이스 등 클러스터 범위 리소스 |
 | Telepresence 연결·intercept (§6) | |
 
-AWS 쪽도 같은 원칙이다. `ReadOnlyAccess`가 부여되어 조회는 되지만 생성·삭제는 되지 않고, Secrets Manager 값 읽기와 KMS 복호화도 차단되어 있다.
+AWS 쪽은 속한 IAM 그룹에 따라 다르다. `lorekeeper-member`에만 있으면 `ReadOnlyAccess`라 조회만 되고 Secrets Manager 값 읽기와 KMS 복호화도 막힌다. `lorekeeper-owner`에도 있으면 리소스를 만들 수 있고 Secrets Manager의 DB 마스터 비밀번호도 꺼낼 수 있다 (§6, 부록).
 
 `Forbidden` 오류를 보면 설정이 잘못된 것이 아니라 **의도된 경계에 닿은 것**이다. 권한이 더 필요하면 §8을 본다.
 
-> **Secret은 API로 읽을 수 없지만 완전히 가려진 것은 아니다.** Telepresence intercept는 대상 워크로드의 환경 변수를 가져오고, 거기에는 Secret에서 주입된 DB 자격 증명이 들어 있다 (§6). 팀이 애플리케이션 DB 계정을 공유하기로 했으므로 의도된 결과다. 그만큼 이 자격 증명은 **운영 데이터에 쓰기가 가능**하다는 점을 기억한다.
+> **Secret은 API로 읽을 수 없지만 완전히 가려진 것은 아니다.** Telepresence intercept는 대상 워크로드의 환경 변수를 가져오고, 거기에는 Secret에서 주입된 서비스 DB 자격 증명이 들어 있다 (§6). 팀원은 DB에 마스터 계정으로 접속하므로(§6) 이 값은 쓸 일이 없지만, 어느 쪽이든 **운영 데이터에 쓰기가 가능**하다는 점을 기억한다.
 
 ---
 
@@ -36,6 +36,7 @@ AWS 쪽도 같은 원칙이다. `ReadOnlyAccess`가 부여되어 조회는 되�
 | AWS CLI | **v2** | `aws --version` |
 | kubectl | 1.35 ~ 1.37 | `kubectl version --client` |
 | Telepresence (§6에서만 필요) | **2.31.x** | `telepresence version` |
+| psql (§6 DB 접속, 선택) | 18 | `psql --version` |
 | Lens (§10, 선택) | 최신 | 앱 실행 |
 
 클러스터가 Kubernetes v1.36이다. kubectl은 클러스터와 ±1 마이너 버전까지만 보증되므로 범위를 벗어나면 예상 못 한 오류가 난다.
@@ -277,33 +278,56 @@ telepresence quit
 
 ### 데이터베이스 접속
 
-엔드포인트는 AWS CLI로 얻는다. 문서에 적어두지 않는 이유는 인스턴스를 다시 만들면 바뀌기 때문이다.
+팀원은 RDS **마스터 계정**으로 접속한다. 논리 DB 3개(`authentication`·`content`·`ai_chat`)에 모두 들어갈 수 있고, RDS에서 줄 수 있는 가장 높은 권한(`rds_superuser`)이다. 서비스 계정(`content_svc` 등)은 자기 DB에만 붙는 애플리케이션용이라 쓰지 않는다 (`INFRA_AND_CICD.md` §19-B).
+
+마스터 비밀번호는 RDS가 Secrets Manager(`rds!db-…`)에 두고 관리한다. **7일마다 자동으로 바뀌므로** 받아 적어 두지 말고 접속할 때마다 꺼낸다. 꺼내려면 `lorekeeper-owner` 그룹이어야 한다 (부록). 콘솔에서는 RDS → `lore-sentry-postgres` → 구성 → 마스터 자격 증명의 Secrets Manager 링크 → "보안 암호 값 검색"이다.
+
+psql이 없으면 설치한다. `libpq`는 keg-only라 PATH에 직접 넣는다.
+
+```bash
+brew install libpq
+export PATH="$(brew --prefix libpq)/bin:$PATH"
+```
+
+엔드포인트와 비밀번호는 AWS CLI로 얻는다. 엔드포인트를 문서에 적어두지 않는 이유는 인스턴스를 다시 만들면 바뀌기 때문이다.
 
 ```bash
 export AWS_PROFILE=lorekeeper AWS_REGION=ap-northeast-2
 
 RDS=$(aws rds describe-db-instances --db-instance-identifier lore-sentry-postgres \
       --query 'DBInstances[0].Endpoint.Address' --output text)
+SECRET=$(aws rds describe-db-instances --db-instance-identifier lore-sentry-postgres \
+         --query 'DBInstances[0].MasterUserSecret.SecretArn' --output text)
+CREDS=$(aws secretsmanager get-secret-value --secret-id "$SECRET" --query SecretString --output text)
+export PGUSER=$(jq -r .username <<<"$CREDS") PGPASSWORD=$(jq -r .password <<<"$CREDS")
 
 NEPTUNE=$(aws neptune describe-db-clusters --db-cluster-identifier lore-sentry-neptune \
           --query 'DBClusters[0].Endpoint' --output text)
 ```
 
-연결된 상태에서 접속한다.
+Telepresence가 연결된 상태에서 접속한다.
 
 ```bash
-psql -h $RDS -U <user> -d content        # 논리 DB: authentication | content | ai_chat
-curl https://$NEPTUNE:8182/status -k     # Neptune
+psql "host=$RDS dbname=content sslmode=require"   # 논리 DB: authentication | content | ai_chat
+curl https://$NEPTUNE:8182/status -k              # Neptune
 ```
 
-논리 DB는 3개이고 **서비스마다 자기 DB에만 접근할 수 있는 역할이 따로 있다.** 남의 DB에 붙으면 `permission denied for database`가 난다. 의도된 격리다 (`INFRA_AND_CICD.md` §19-B).
+TablePlus·DBeaver 같은 GUI도 연결된 동안에는 같은 값(호스트 `$RDS`, 포트 5432, SSL require, `$PGUSER`/`$PGPASSWORD`)으로 붙는다.
 
-자격 증명은 관리자에게 받는다. 이 계정들은 애플리케이션이 쓰는 것과 같으므로 **운영 데이터에 쓰기가 가능하다.** `UPDATE`·`DELETE`를 실행하면 그대로 반영된다. 조회 목적이라면 트랜잭션으로 감싸는 편이 안전하다.
+**운영 DB의 관리자 계정이다.** `UPDATE`·`DELETE`·`DROP`이 그대로 반영되고, 되돌릴 수단은 7일치 자동 백업뿐이다. 조회만 할 때도 트랜잭션으로 감싼다.
 
 ```sql
 BEGIN;
 -- 확인할 쿼리
 ROLLBACK;
+```
+
+테이블 같은 객체를 새로 만들어야 하면 먼저 그 DB의 서비스 역할로 바꾼다. 마스터로 만든 객체는 마스터 소유가 되어 서비스가 읽지 못하고, 이후 Flyway 마이그레이션이 그 객체를 고치다 실패한다. 스키마 변경은 원래 각 서비스의 마이그레이션으로 하는 것이 원칙이다.
+
+```sql
+SET ROLE content_svc;   -- authentication_svc | content_svc | ai_chat_svc
+-- CREATE ...
+RESET ROLE;
 ```
 
 ### 클러스터 내부 Service 호출
@@ -481,7 +505,7 @@ Nodes·`kube-system` 같은 클러스터 범위까지 Lens로 보려면 별도 �
 
 팀원 추가 시 수행하는 절차다. access entry는 GitOps 저장소가 아니라 AWS에 있으므로, 이 절차 자체가 재현 수단이다 (`INFRA_AND_CICD.md` §19-A).
 
-**IAM 그룹 (2026-10-23 기준).** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess` + `IAMFullAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)도 팀원이 직접 하도록 `lorekeeper-owner`에 `IAMFullAccess`를 더 붙였다. 그래서 이 그룹은 사실상 관리자 권한이다(IAM으로 자기 권한을 넓힐 수 있다). 되돌릴 때는 `aws iam detach-group-policy --group-name lorekeeper-owner --policy-arn arn:aws:iam::aws:policy/IAMFullAccess`. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다.
+**IAM 그룹 (2026-10-23 기준).** `lorekeeper-member`는 `ReadOnlyAccess`, `lorekeeper-owner`는 `PowerUserAccess` + `IAMFullAccess`다. 팀원도 S3·EC2·RDS·Lambda 같은 리소스를 만들어야 해서 mem-jh·mem-jh-2·mem-sj를 `lorekeeper-owner`에 넣었다(두 그룹에 모두 속한다). IAM 역할 생성·`iam:PassRole`이 필요한 작업(Lambda 실행 역할, 인스턴스 프로파일, Pod Identity)도 팀원이 직접 하도록 `lorekeeper-owner`에 `IAMFullAccess`를 더 붙였다. 그래서 이 그룹은 사실상 관리자 권한이다(IAM으로 자기 권한을 넓힐 수 있다). 되돌릴 때는 `aws iam detach-group-policy --group-name lorekeeper-owner --policy-arn arn:aws:iam::aws:policy/IAMFullAccess`. 리소스를 만들 팀원을 새로 추가할 때는 아래 1번 뒤에 `aws iam add-user-to-group --user-name $USER --group-name lorekeeper-owner`를 더한다. 클러스터 권한은 IAM 그룹과 무관하게 access entry의 `lore-viewers`(읽기 전용)로 정해진다. `lorekeeper-owner`는 Secrets Manager를 읽을 수 있어 DB 마스터 비밀번호를 각자 꺼내 쓴다 (§6). 그래서 팀원에게 DB 관리자 권한을 따로 줄 필요가 없고, 비밀번호를 메신저로 전달하지 않는다. 2026-10-29에 mem-jh·mem-jh-2·mem-sj의 `secretsmanager:GetSecretValue`(마스터 비밀)와 `kms:Decrypt`(`aws/secretsmanager`)가 `allowed`임을 시뮬레이터로 확인했다.
 
 ```bash
 export AWS_PROFILE=lorekeeper AWS_REGION=ap-northeast-2
