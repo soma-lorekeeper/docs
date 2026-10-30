@@ -1,6 +1,6 @@
 # dev 환경 — 인프라 구성
 
-> 최신화: 2026-10-31
+> 최신화: 2026-10-31 (prod 대비 점검 반영)
 > 대상 환경: AWS `ap-northeast-2` / EKS `lore-sentry-dev-k8s` / namespace `dev`
 > 상태: 구축·검증 완료. **남은 작업은 Google 콘솔 설정 하나다 (§9).**
 > 원본: 스크립트와 매니페스트는 `loresentry-gitops`의 `bootstrap/dev/`·`argocd-apps-dev/`·`platform-dev/`·
@@ -445,7 +445,44 @@ kubectl --context lore-sentry-dev -n monitoring get secret grafana-admin -o json
 | **gateway 파드가 새로 뜬 직후, 파드마다 첫 인증 요청이 503 `SESSION_UNAVAILABLE`** | 미확인. 세션 저장소 연결이나 검증 스크립트가 첫 요청 시점에 준비되지 않는 것으로 보인다. 오래 쉰 뒤에는 재현되지 않았다 | **미해결.** dev에서 3번 재현됐다. prod도 배포 직후 같을 가능성이 있다 |
 | `strimzi-kafka-operator` OutOfSync | prod와 같은 표시상 문제 | 그대로 둔다 |
 
-## 12. 비용과 정리
+## 12. prod 대비 점검 — 2026-10-31
+
+prod와 dev의 실제 상태를 계층별로 꺼내 비교했다(prod는 조회만). 환경 이름·버킷 이름처럼 당연히 다른 값은 맞춘 뒤 비교했다.
+
+| 계층 | 결과 |
+|---|---|
+| EKS·노드 그룹·애드온·Pod Identity·access entry | 같다. 플랫폼 버전만 dev `eks.17` / prod `eks.14` (AWS가 정하는 값, 고정 불가) |
+| 노드 | OS·커널·kubelet·containerd·allocatable·AZ 배치(2a 1 / 2b 2) 같다 |
+| kube-system, VPC CNI 설정 | 같다 |
+| Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application 9개 정의·상태 같다 |
+| 워크로드 | replica·리소스·probe·볼륨·보안 설정 같다. env 차이는 §5의 의도한 것뿐 |
+| Service·PDB·NetworkPolicy·PVC·StorageClass·ConfigMap·Secret 키·Kafka·토픽 | 같다. prod에만 쓰이지 않는 옛 `auth-valkey` Secret이 남아 있다 |
+| 모니터링 | PrometheusRule 33·ServiceMonitor 12·PodMonitor 2, 규칙 251개, 수집 대상 36/36 정상 — 같다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)도 같다 |
+| ALB | 속성·리스너·헬스체크·대상 그룹 설정 같다 |
+| RDS·Neptune | 엔진·사양·스토리지·암호화·AZ·파라미터 그룹 같다. 백업·점검 시간대는 **달랐다 → 맞췄다** |
+| S3·CloudFront·Lambda | 같다(CORS 주소·태그 제외) |
+| 앱 IAM | graph-rag·loki 같다. **content 미디어 정책은 prod가 저장소 템플릿보다 옛 버전**이다(아래) |
+| CI workflow | 6개 저장소 모두 `main`·`dev`의 파일이 같다 |
+
+### 고친 것
+
+- **dev 코드가 prod보다 뒤처져 있었다.** dev를 만든 뒤 `main`에 설정 오류 검사 기능이 들어갔다(gateway 4·content 2·ai-chat 6
+  커밋, ai-chat 마이그레이션 V6~V8). dev 프런트는 이미 그 화면을 갖고 있어 dev에서 그 기능이 실패하는 상태였다.
+  `main` → `dev`로 머지해 맞췄고, dev에서 설정 오류 검사가 끝까지 도는 것을 확인했다. **`main` → `dev` 머지는 주기적으로 해야
+  한다** (§7.4).
+- **DB 백업·점검 시간대.** dev 생성 때 무작위로 정해져 dev RDS 백업이 23:33 KST에 돌았다(prod 05:27). prod 값으로 맞췄고
+  `03-databases.sh`가 앞으로 prod 값을 복사한다.
+
+### 남은 것 — prod 쪽
+
+- **prod content 역할의 미디어 정책(`lore-sentry-content-media-policy`)이 v1 그대로다.** 저장소 템플릿
+  (`loresentry-content/docs/aws/iam-content-media-policy.json`)에는 없는 객체 확인용 `s3:ListBucket`이 있는데 prod에는 적용되지
+  않았다. dev는 템플릿대로라 이 권한이 있다. content가 403도 "없음"으로 처리하므로 동작 차이는 없지만, 맞추려면
+  `setup-media.sh`를 prod에 다시 실행한다.
+- prod에 쓰이지 않는 `auth-valkey` Secret이 남아 있다.
+- 배포된 prod Lambda 코드가 저장소와 주석 한 줄 다르다. 다음 `deploy.sh`에서 맞춰진다.
+
+## 13. 비용과 정리
 
 상시 가동 시 시간당 약 $0.8로 추정한다. EKS, 노드 3대, Neptune, RDS, ALB, EBS를 합한 값이고, NAT는 공유라 처리량 요금만
 더해진다. 계정 SCP가 비용·가격 API를 막으므로 정확한 금액은 ISB 포털에서 본다.
