@@ -694,6 +694,12 @@ Lambda 동작:
 
 임의 경로 접근을 막기 위해 `../`, 선행 `/`, 대문자 등은 거부한다. Manifest가 없거나 일치하는 이미지가 정확히 하나가 아니면 임의 생성/수정하지 않고 실패한다.
 
+### dev 함수 — 2026-10-30
+
+dev 클러스터(`DEV_CLUSTER.md`)용으로 같은 코드의 두 번째 함수 `loresentry-update-gitops-dev`가 있다. 다른 점은
+`GITOPS_ROOT=workload/overlays/dev` 하나다. 앱 저장소의 `dev` 브랜치 CI 가 이 함수를, `main` CI 가 기존 함수를
+부른다. 공용 CI 역할 정책 `lore-sentry-github-actions-common`(v2)이 두 함수 호출을 허용한다.
+
 ## 13. 이미지 버전 정책
 
 이미지 태그 형식:
