@@ -16,6 +16,7 @@ prod(`lore-sentry-k8s`)와 **같은 방식으로** 만든 두 번째 EKS 클러�
 | `https://argocd-dev.loresentry.com` | dev Argo CD (로컬 admin) |
 | `https://grafana-dev.loresentry.com` | dev Grafana (Prometheus·Loki) |
 | `https://media-dev.loresentry.com` | dev 사용자 이미지 CloudFront |
+| `https://dev.loresentry.com` | dev 프런트엔드 (S3 + CloudFront, prod 배포 설정 복사) |
 
 ## 2. prod와 같은 것
 
@@ -50,11 +51,12 @@ EIP 쿼터가 5개인데 prod가 4개를 쓴다(regional NAT 2개, ALB 2개). �
 | 호스트 `*-dev.loresentry.com` | 와일드카드 인증서가 한 단계만 덮는다. `api.dev.`가 아니라 `api-dev.` |
 | ConfigMap 4개(`postgres`·`neptune`·`media`·`refresh`)의 주소·버킷 | dev 리소스를 가리킨다. base는 그대로 두고 dev overlay에서 바꾼다 |
 | **OpenAI mock** (`OPENAI_BASE_URL=http://openai-mock/v1`) | 같은 OpenAI 조직의 rate limit을 prod와 나눠 쓰지 않고, 돈을 쓰지 않으려고 |
-| Google 로그인 불가 | gateway·auth가 `prod` 프로필에서 prod 도메인과 콜백 주소만 허용하도록 코드에 고정돼 있다. 앱을 바꾸지 않으려고 prod 프로필 그대로 두고, 부하 테스트 사용자는 DB·valkey에 직접 만든다 |
+| gateway·auth 는 `dev` 프로필 | 두 서비스는 프로필마다 허용하는 도메인을 코드에 고정한다. `dev` 프로필(2026-10-30, 각 저장소 `dev` 브랜치)은 프런트 `https://dev.loresentry.com`, API `https://api-dev.loresentry.com`, Google 콜백 `https://api-dev.loresentry.com/auth/oauth/google/callback` 만 받는다. 쿠키는 prod 와 같은 `__Host-` |
+| Google 로그인은 dev 전용 OAuth 클라이언트로 | Google 콘솔에서 만든 클라이언트를 `bootstrap/dev/set-google-oauth.sh`로 넣는다. 부하 테스트 사용자는 지금처럼 DB·valkey 에 직접 만든다 |
+| 프런트 GA 끔, `robots.txt` 수집 금지 | dev 방문이 운영 GA·Google Ads 전환에 섞이지 않게, 검색엔진에 잡히지 않게 |
 | Argo CD SSO 없음, 노드 SSH 없음 | 실험과 무관하고, SSH는 prod에서도 전 세계에 열려 있어 따라 하지 않는다 |
 
-gateway는 요청의 Host를 검사하지 않으므로 prod 프로필 그대로 `api-dev`에서 동작한다. CORS·CSRF는 Origin
-`https://loresentry.com` 기준이다.
+CORS·CSRF 는 Origin `https://dev.loresentry.com` 기준이다. prod 프런트(`loresentry.com`)에서 dev API 로의 요청은 거절된다.
 
 ### OpenAI mock이 하는 일
 
@@ -77,8 +79,8 @@ Responses API를 흉내 낸다. ai-chat에는 지도에서 노드 id를 골라 `
 - concurrency group 을 브랜치별로 나눠 dev push 가 진행 중인 prod 배포를 취소하지 않게 했다.
 - 공용 CI 역할의 Lambda 호출 권한에 dev 함수를 더했다. OIDC 신뢰 조건은 이미 모든 ref 를 허용한다.
 - workflow 변경은 `[skip ci]` 로 머지해 prod 를 같은 코드로 다시 배포하지 않았다.
-- 프론트엔드는 dev 배포가 없다. gateway 가 prod 프로필에서 프런트 Origin 을 `https://loresentry.com` 하나로 고정해
-  dev 도메인의 프런트는 CORS·CSRF 를 통과하지 못한다.
+- 프런트엔드도 `dev` 브랜치가 dev 버킷·CloudFront(`dev.loresentry.com`)에 배포한다. dev 빌드만 `apiBaseUrl` 을
+  `api-dev` 로, GA 측정 ID 를 빈 값으로 바꾸고 `robots.txt` 로 수집을 막는다.
 
 첫 실행에서 5개 모두 성공했고, gitops `main` 에 dev overlay 만 바꾼 커밋 5개가 생겼으며, dev 클러스터가 새 이미지로
 바뀌는 동안 prod overlay 와 prod 파드는 이전 태그 그대로였다.
