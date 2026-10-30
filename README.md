@@ -7,6 +7,7 @@
 | [ENVIRONMENT_SETTING.md](ENVIRONMENT_SETTING.md) | **팀원 온보딩.** 경로별 팀원 권한, AWS 자격 증명, EKS 클러스터 조회, Telepresence·운영 DB 접속, Argo CD·Grafana, Lens GUI |
 | [INFRA_AND_CICD.md](INFRA_AND_CICD.md) | EKS · GitOps · CI/CD 구축 기록. 인프라 전반 |
 | [DEV_CLUSTER.md](DEV_CLUSTER.md) | **dev 환경 인프라.** prod와 같은 방식의 dev(프런트·API·클러스터·DB). 분리된 것과 공유하는 것, prod와 같은 것·다른 것, 브랜치별 CI/CD, GitOps 구조, OpenAI mock, 남은 Google 콘솔 작업, 접속·정리 |
+| [LOAD_TEST.md](LOAD_TEST.md) | **부하 테스트 — 동시 사용자 수.** dev 대상, 같은 리전 EC2에서 k6로 가상 작가를 단계별로 늘려 기준을 지키는 최대 동시 사용자 수와 첫 병목을 찾는 방법. 행동 모델·합격 기준·EC2 준비·스크립트·볼 곳·결과 기록 |
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |
 | [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) | **AI 챗 백엔드 요구사항.** 세션·질문과 답·컨텍스트 스냅샷·분량 판정·근거 형식·SSE·검색·드래그 질의·API 계약·데이터 모델 |
