@@ -52,7 +52,6 @@ EIP 쿼터가 5개인데 prod가 4개를 쓴다(regional NAT 2개, ALB 2개). �
 | **OpenAI mock** (`OPENAI_BASE_URL=http://openai-mock/v1`) | 같은 OpenAI 조직의 rate limit을 prod와 나눠 쓰지 않고, 돈을 쓰지 않으려고 |
 | Google 로그인 불가 | gateway·auth가 `prod` 프로필에서 prod 도메인과 콜백 주소만 허용하도록 코드에 고정돼 있다. 앱을 바꾸지 않으려고 prod 프로필 그대로 두고, 부하 테스트 사용자는 DB·valkey에 직접 만든다 |
 | Argo CD SSO 없음, 노드 SSH 없음 | 실험과 무관하고, SSH는 prod에서도 전 세계에 열려 있어 따라 하지 않는다 |
-| 자동 배포 없음 | CI의 Lambda는 prod overlay만 고친다. 테스트 전 `sync-images.sh`로 prod 태그에 맞춘다 |
 
 gateway는 요청의 Host를 검사하지 않으므로 prod 프로필 그대로 `api-dev`에서 동작한다. CORS·CSRF는 Origin
 `https://loresentry.com` 기준이다.
@@ -64,7 +63,27 @@ Responses API를 흉내 낸다. ai-chat에는 지도에서 노드 id를 골라 `
 0.8–2초). graph-rag에는 스키마의 최소 응답(변경 제안 없음)을 준다. 실제 OpenAI가 필요하면 별도 OpenAI 프로젝트 키로
 바꾼다.
 
-## 5. 확인한 것 (2026-10-29)
+## 5. 배포 — 앱 저장소의 `dev` 브랜치 (2026-10-30)
+
+백엔드 5개 저장소에 `dev` 브랜치를 만들었다. workflow 는 `main` 과 같은 파일 하나이고, 브랜치에 따라 Lambda 만 다르다.
+
+| 브랜치 | Lambda | 고치는 overlay | 클러스터 |
+|---|---|---|---|
+| `main` | `loresentry-update-gitops` | `workload/overlays/prod` | prod |
+| `dev` | `loresentry-update-gitops-dev` | `workload/overlays/dev` | dev |
+
+- 두 Lambda 는 같은 코드에 `GITOPS_ROOT` 만 다르다. 그래서 dev push 가 prod overlay 를 고칠 경로가 없다.
+- 한 workflow 의 실행 번호를 두 브랜치가 나눠 쓰므로 ECR(immutable) 태그가 겹치지 않는다.
+- concurrency group 을 브랜치별로 나눠 dev push 가 진행 중인 prod 배포를 취소하지 않게 했다.
+- 공용 CI 역할의 Lambda 호출 권한에 dev 함수를 더했다. OIDC 신뢰 조건은 이미 모든 ref 를 허용한다.
+- workflow 변경은 `[skip ci]` 로 머지해 prod 를 같은 코드로 다시 배포하지 않았다.
+- 프론트엔드는 dev 배포가 없다. gateway 가 prod 프로필에서 프런트 Origin 을 `https://loresentry.com` 하나로 고정해
+  dev 도메인의 프런트는 CORS·CSRF 를 통과하지 못한다.
+
+첫 실행에서 5개 모두 성공했고, gitops `main` 에 dev overlay 만 바꾼 커밋 5개가 생겼으며, dev 클러스터가 새 이미지로
+바뀌는 동안 prod overlay 와 prod 파드는 이전 태그 그대로였다.
+
+## 6. 확인한 것 (2026-10-29)
 
 - Argo CD Application 9개 모두 Synced/Healthy. `strimzi-kafka-operator`의 OutOfSync는 prod와 같은 표시상 문제다
 - 서비스 4개가 각자 DB·Neptune에 연결(`/health/db`), Kafka 브로커 노드당 1대, 토픽 10개 Ready, summarizer가
@@ -74,7 +93,7 @@ Responses API를 흉내 낸다. ai-chat에는 지도에서 노드 id를 골라 `
 - k6 VU 5, 50초: 요청 855개, 실패 0.23%(클라이언트 측 2건), 읽기 p95 80ms
 - 작업 전후 prod Argo CD 상태·`api.loresentry.com`·ALB 타깃 상태가 같음
 
-## 6. 처음 만들 때 겪은 것
+## 7. 처음 만들 때 겪은 것
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
@@ -83,7 +102,7 @@ Responses API를 흉내 낸다. ai-chat에는 지도에서 노드 id를 골라 `
 | k6 요청이 첫 요청 뒤로 모두 401 | BFF가 `Set-Cookie`로 세션을 연장하면 k6가 jar에 넣고, 직접 넣은 Cookie 헤더와 함께 세션 쿠키를 **두 번** 보낸다. BFF는 이를 거절한다 | k6 `cookies` 옵션에 `replace: true` |
 | 애드온 waiter가 DEGRADED에서 실패 | 노드가 뜨기 전 잠깐 DEGRADED가 된다 | ACTIVE가 될 때까지 폴링 |
 
-## 7. 비용과 정리
+## 8. 비용과 정리
 
 상시 가동 시 시간당 약 $0.8로 추정한다(계정 SCP가 비용·가격 API를 막아 정확한 값은 ISB 포털에서 본다).
 테스트가 끝나면 `CONFIRM=lore-sentry-dev-k8s bootstrap/dev/teardown.sh`로 지운다. gp3가 `Retain`이라 EBS 볼륨이
