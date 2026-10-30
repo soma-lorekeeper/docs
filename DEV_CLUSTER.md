@@ -304,24 +304,118 @@ cd loresentry-gitops/bootstrap/dev
 | `access_denied` / 앱이 테스트 중이라는 안내 | 9.2의 테스트 사용자에 그 계정이 없다 |
 | 로그인 후 `/login?result=unavailable` | auth·세션 저장소 쪽 오류다. `kubectl --context lore-sentry-dev -n dev logs deploy/authentication-api` |
 
-## 10. 접속과 운영
+## 10. 팀원 접속 — kubectl 설정
+
+dev 클러스터 접속은 prod와 **같은 AWS 자격 증명**(`lorekeeper` 프로파일의 액세스 키)을 쓴다. 새 키는 필요 없고,
+kubeconfig에 dev 컨텍스트만 하나 더 만들면 된다. AWS CLI·kubectl·`lorekeeper` 프로파일 준비는
+`ENVIRONMENT_SETTING.md` §1~§2를 따른다.
+
+### 10.1 누가 접속할 수 있나
+
+EKS access entry는 **클러스터마다 따로** 등록한다. dev에는 prod와 같은 사람이 같은 그룹으로 등록돼 있다.
+
+| 신원 | dev 클러스터 | 비고 |
+|---|---|---|
+| `mem-jh` | `lore-viewers` | 액세스 키가 없으면 CLI를 쓸 수 없다 (`ENVIRONMENT_SETTING.md` 부록) |
+| `mem-jh-2` | `lore-viewers` | |
+| `mem-sj` | `lore-viewers` | |
+| `mem-sh` | **없음** | prod와 같다. 필요하면 관리자가 등록한다 (10.6) |
+| 관리자 SSO 역할 | `AmazonEKSClusterAdminPolicy` + `lore-viewers` | |
+
+### 10.2 kubeconfig에 dev 컨텍스트 만들기
 
 ```bash
-aws eks update-kubeconfig --name lore-sentry-dev-k8s --region ap-northeast-2 --profile lorekeeper --alias lore-sentry-dev
-kubectl --context lore-sentry-dev -n dev get pods
+aws eks update-kubeconfig \
+  --name lore-sentry-dev-k8s \
+  --region ap-northeast-2 \
+  --profile lorekeeper \
+  --alias lore-sentry-dev
 
+kubectl config set-context lore-sentry-dev --namespace=dev
+```
+
+prod 컨텍스트(`lore-sentry`, 기본 네임스페이스 `prod`)는 그대로 남는다. 이제 kubeconfig에 컨텍스트가 둘이다.
+
+```bash
+kubectl config get-contexts
+# CURRENT   NAME              CLUSTER                                         NAMESPACE
+#           lore-sentry       arn:aws:eks:...:cluster/lore-sentry-k8s         prod
+# *         lore-sentry-dev   arn:aws:eks:...:cluster/lore-sentry-dev-k8s     dev
+```
+
+`update-kubeconfig`는 방금 만든 컨텍스트를 현재 컨텍스트로 바꾼다. **prod를 보던 터미널도 이제 dev를 본다.**
+
+### 10.3 접속 확인
+
+```bash
+kubectl --context lore-sentry-dev auth whoami     # Groups 에 lore-viewers 가 있어야 한다
+kubectl --context lore-sentry-dev get pods        # dev 네임스페이스의 파드 목록
+```
+
+| 증상 | 원인 |
+|---|---|
+| `You must be logged in to the server (Unauthorized)` | AWS 인증은 됐지만 dev 클러스터에 access entry가 없다. 관리자에게 등록을 요청한다 (10.6) |
+| `context was not found ... lore-sentry-dev` | 10.2의 `--alias lore-sentry-dev`를 하지 않았다 |
+| `namespaces "prod" not found` | dev 컨텍스트에서 `-n prod`를 썼다. 컨텍스트를 확인한다 |
+| `Error from server (Forbidden)` | 권한 밖의 동작이다. 정상이다 (10.4) |
+
+### 10.4 권한 — prod와 같다
+
+`dev` 네임스페이스 **읽기 전용**이다. 아래 조회·차단 결과는 2026-10-31에 `kubectl auth can-i`로 dev와 prod가 같음을
+확인했다. Telepresence는 prod와 같은 설정(관리 네임스페이스만 `dev`)으로 배포했지만, 팀원 계정으로 직접 연결해 보지는 않았다.
+
+| 되는 것 | 안 되는 것 |
+|---|---|
+| Pod·Deployment·Service·Ingress·ConfigMap·Event 조회, `describe` | Secret 조회 |
+| `kubectl logs` | `kubectl exec` |
+| Telepresence 연결 (10.5) | 생성·수정·삭제·재시작 |
+| | `dev` 외 네임스페이스(`kube-system`·`argocd`·`monitoring`), 노드, Strimzi 리소스(`kafkatopics` 등) |
+
+Argo CD·Grafana의 dev admin 비밀번호는 `argocd`·`monitoring` 네임스페이스의 Secret이라 팀원이 직접 읽을 수 없다. 관리자에게
+받는다.
+
+### 10.5 prod와 dev를 같이 쓸 때
+
+- **명령마다 `--context`를 붙이는 것을 습관으로 한다.** 현재 컨텍스트를 믿고 치면 엉뚱한 클러스터를 본다.
+  ```bash
+  kubectl config current-context
+  kubectl config use-context lore-sentry       # prod 로 전환
+  kubectl config use-context lore-sentry-dev   # dev 로 전환
+  ```
+- 네임스페이스 이름이 다르다(`prod` / `dev`). 컨텍스트를 헷갈리면 네임스페이스가 없다는 오류로 바로 드러난다.
+- **Telepresence는 한 번에 한 클러스터만** 연결한다. 다른 쪽에 붙어 있으면 먼저 끊는다.
+  ```bash
+  telepresence quit -s
+  telepresence connect --context lore-sentry-dev --namespace dev   # 클라이언트 2.31.x
+  ```
+  연결되면 dev 서비스(`http://content-api.dev`)와 dev DB에 닿는다. DB 마스터 비밀번호는
+  `aws rds describe-db-instances --db-instance-identifier lore-sentry-dev-postgres`의 `MasterUserSecret`에서 꺼낸다
+  (`ENVIRONMENT_SETTING.md` §6과 같은 절차, 인스턴스 이름만 다르다).
+- Lens에서는 `lore-sentry-dev` 클러스터를 열고 Settings → Namespaces → Accessible Namespaces에 `dev`를 넣는다.
+
+### 10.6 관리자 — 팀원을 dev에 등록
+
+prod에 등록했다고 dev에 자동으로 들어가지 않는다. dev 클러스터에도 따로 만든다.
+
+```bash
+aws eks create-access-entry --profile lorekeeper --region ap-northeast-2 \
+  --cluster-name lore-sentry-dev-k8s \
+  --principal-arn arn:aws:iam::<AWS_ACCOUNT_ID>:user/<사용자> \
+  --kubernetes-groups lore-viewers \
+  --type STANDARD
+```
+
+권한은 `loresentry-gitops`의 `workload/overlays/dev/rbac.yaml`(RoleBinding `lore-viewers` → `view`)이 정한다. 팀원을 지울
+때는 `aws eks delete-access-entry`를 두 클러스터에 모두 한다.
+
+### 10.7 관리자 명령
+
+```bash
 # Argo CD admin 비밀번호
 kubectl --context lore-sentry-dev -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 # Grafana admin 비밀번호
 kubectl --context lore-sentry-dev -n monitoring get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d
-
-# dev DB 접속 (Telepresence 2.31.x)
-telepresence connect --context lore-sentry-dev --namespace dev
 ```
-
-팀원(`mem-jh`·`mem-jh-2`·`mem-sj`)은 prod와 같이 `dev` 네임스페이스 읽기 권한을 갖는다. DB 마스터 비밀번호는
-`aws rds describe-db-instances --db-instance-identifier lore-sentry-dev-postgres`의 `MasterUserSecret`에서 꺼낸다
-(`ENVIRONMENT_SETTING.md` §6과 같은 절차).
 
 부하 테스트 사용자는 Google 로그인 없이 `loadtest/seed-sessions.sh`로 만든다. k6 시나리오와 요청 규칙은
 `loresentry-gitops/loadtest/README.md`에 있다.
