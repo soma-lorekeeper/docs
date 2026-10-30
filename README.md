@@ -19,6 +19,7 @@
 | [GRAPH_INBOX_PATTERN.md](GRAPH_INBOX_PATTERN.md) | Content → Neptune 동기화 흐름. Outbox·Inbox가 각각 보장하는 것 |
 | [OUTBOX_CDC_VS_POLLING.md](OUTBOX_CDC_VS_POLLING.md) | Outbox 행을 Kafka로 내보내는 방식 비교. 폴링 퍼블리셔와 CDC(Debezium)의 장단점과 선택 근거 |
 | [IMAGE_UPLOAD_S3.md](IMAGE_UPLOAD_S3.md) | 이미지 업로드. S3 presigned PUT 직접 업로드, Pod Identity, CloudFront `media.loresentry.com` |
+| [MANUSCRIPT_ENCRYPTION.md](MANUSCRIPT_ENCRYPTION.md) | **원고 암호화.** KMS 마스터 키와 프로젝트 키의 봉투 암호화, 공통 암호문 형식, content·graph-rag·ai-chat 변경, Kafka v2·S3 최신화 객체, 키 정책, dev·prod 전환 기록과 검증 결과, 남은 것 |
 | [CONTENT_PROJECT_API.md](CONTENT_PROJECT_API.md) | **Content API 구현 현황.** 동작하는 엔드포인트 26개, 구현되지 않은 기능과 막는 것, gateway 중계, 남은 작업 |
 | [TABLE_AND_LOGIC.md](TABLE_AND_LOGIC.md) | Authentication·Content·AI Chat 테이블(Flyway로 운영 DB 반영됨)과 3-way 문서 최신화·diff·저장 흐름 |
 | [GOOGLE_ADS.md](GOOGLE_ADS.md) | **Google Ads 검색 광고 진행 상황.** 선불 계정, 캠페인 설정·키워드·광고 문구, 가입 전환 측정, 남은 일 |
