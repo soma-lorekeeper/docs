@@ -1,16 +1,19 @@
 # 원고 암호화 — 프로젝트 키 봉투 암호화
 
-> 최신화: 2026-10-31  
-> 대상: content · graph-rag · ai-chat이 저장하거나 서로 전달하는 원고 본문  
-> 상태: **설계. 구현 전.**
+> 최신화: 2026-10-31
+> 대상: content · graph-rag · ai-chat이 저장하거나 서로 전달하는 원고 본문과 그 사본
+> 상태: **구현·배포 완료.** dev 2026-10-31 01:46, prod 2026-10-31 02:29(KST)에 전환했고, 평문 칼럼·토픽·객체까지 지웠다(§8). 남은 것은 §10.
 
 ## 0. 요약
 
-- 원고는 **프로젝트마다 하나인 키**로 암호화한다. 서비스마다 키를 두지 않는다.
-- content가 원고를 처음 저장할 때 암호화하고, 그 암호문이 DB → outbox → Kafka → ai-chat으로 **그대로** 간다. S3 최신화 입력·결과는 같은 프로젝트 키로 객체 전체를 암호화한다. 원문이 필요한 서비스만 그 자리에서 푼다.
-- 키는 두 단계다. KMS 마스터 키 하나가 프로젝트 키를 감싸고, DB·이벤트에는 **감싼 프로젝트 키만** 둔다. 마스터 키는 KMS 밖으로 나오지 않는다.
-- 감싼 키를 풀 수 있는 것은 content · graph-rag · ai-chat의 Pod Identity 역할뿐이다. DB나 백업, Kafka 메시지, S3 객체가 유출되어도 원고를 읽을 수 없다.
-- 프로젝트 키는 바꾸지 않는다. 마스터 키는 KMS 자동 교체를 켠다.
+- 원고 **본문**을 **프로젝트마다 하나인 키**로 암호화한다. 서비스마다 키를 두지 않는다.
+- 범위는 본문과 그 사본이다. 문서 본문, 버전·작업본 스냅샷, 최신화 입력·중간 결과·결과, FileChanged 이벤트의 본문, ai-chat 요약 큐와 요약 테이블이 여기에 들어간다.
+- 제목, 속성, 관계, 메모, 채팅 메시지는 암호화하지 않는다(§10).
+- content가 본문을 처음 저장할 때 암호화한다. 같은 암호문이 DB → outbox → Kafka → ai-chat으로 **다시 암호화하지 않고 그대로** 간다.
+- S3 최신화 객체는 같은 프로젝트 키로 객체 전체를 암호화한다. 원문이 필요한 서비스만 그 자리에서 푼다.
+- 키는 두 단계다. KMS 마스터 키 하나가 프로젝트 키를 감싸고, DB와 이벤트에는 **감싼 프로젝트 키만** 둔다. 마스터 키는 KMS 밖으로 나오지 않는다.
+- 감싼 키를 풀 수 있는 것은 content · graph-rag · ai-chat의 Pod Identity 역할뿐이다. 키 관리자도 키를 쓸 수 없다.
+- 프로젝트 키는 바꾸지 않는다. 마스터 키는 KMS 자동 교체(365일)를 켰다.
 
 ```text
                      ┌──────── KMS: 마스터 키 (밖으로 나오지 않음) ────────┐
@@ -20,87 +23,44 @@
                                 │
 작가 ─저장─> content ─K로 암호화─> content DB (암호문 C, 감싼 키 W)
                 │
-                ├─ outbox → Kafka v2 { wrapped_key: W, body_text_enc: C } ─> graph-rag, ai-chat (W로 K를 받아 C를 푼다)
-                └─ S3 input.enc = K로 암호화한 입력 전체 ─> graph-rag ─ result.enc = K로 암호화 ─> content
+                ├─ outbox → Kafka v2 { wrapped_key: W, file.body_text_enc: C } ─> graph-rag, ai-chat
+                └─ S3 input.json = K로 암호화한 입력 전체 ─> graph-rag ─ context/batch/result도 K로 ─> content
 ```
 
 ---
 
-## 1. 지금 상태
+## 1. 전환 전 상태
 
-| 위치 | 원고가 들어 있는 곳 | 지금 보호 수준 |
+| 위치 | 원고가 있던 곳 | 전환 전 보호 수준 |
 |---|---|---|
-| content DB `document` | `body_json`, `body_text`, `body_md`(옛 행) | RDS 디스크 암호화(`alias/aws/rds`)뿐. SQL로 읽으면 평문 |
-| content DB `document_versions` | `snapshot` | 〃 |
-| content DB `refresh_document_drafts` | `left_snapshot`, `right_snapshot`, `origin_snapshot` | 〃 |
-| content DB `refresh_results` | `payload`(result 원본. 제안 본문, 근거 인용) | 〃 |
-| content DB `outbox_events` | `payload`의 `file.body_text` | 〃 (발행 3일 뒤 삭제) |
-| Kafka `content.project.changed.v1`과 DLQ | `file.body_text` | `tls: false`, EBS 암호화. 3일·7일 보존 |
-| S3 `refresh/{project}/{request}/input.json` | 최신화 대상 문서 본문 | SSE-S3. 3일 만료 |
-| S3 `refresh/{project}/{request}/result.json` | 제안 본문, 근거 인용 | 〃 |
-| ai-chat DB `summary_queue` | `body` (본문 전체 사본) | RDS 디스크 암호화뿐 |
-| ai-chat DB `document_summaries`, `chat_messages`, `chat_sessions` | 요약, 답변, 드래그 인용, 근거, 미리보기 | 〃 |
-| RDS 자동 백업 7일 | 위 DB 전부 | 디스크 암호화뿐 |
-
-디스크 암호화는 볼륨이나 스냅샷 파일이 유출됐을 때만 막아 준다. DB에 접속하면 평문이 보이고, 지금은 `lorekeeper-owner` 팀원 모두가 Secrets Manager에서 DB 마스터 비밀번호를 꺼낼 수 있다.
-
-Neptune에는 본문이 없다. 파일 id, 프로젝트 id, 관계 설명만 있다.
+| content `document` | `body_json`, `body_text`, `body_md`, `body_sha`(평문 해시) | RDS 디스크 암호화(`alias/aws/rds`)뿐. SQL로 읽으면 평문 |
+| content `document_versions` | `snapshot` | 〃 |
+| content `refresh_document_drafts` | `left_snapshot`, `right_snapshot`, `origin_snapshot` | 〃 |
+| content `refresh_results` | `payload` | 〃 |
+| content `outbox_events` | FileChanged `file.body_text` | 〃 |
+| Kafka `content.project.changed.v1`와 DLQ | `file.body_text` | `tls: false`, EBS 암호화 |
+| S3 `refresh/{project}/{request}/` | `input.json`, `context.json`, `batch-NNNN.json`, `result.json` | SSE-S3 |
+| ai-chat `summary_queue` | `body` | RDS 디스크 암호화뿐 |
+| ai-chat `document_summaries` | `summary`(500자 이하 본문은 원문을 그대로 복사) | 〃 |
 
 ---
 
 ## 2. 키
 
-### 2.1 두 종류
-
 | 이름 | 개수 | 어디에 있나 | 하는 일 |
 |---|---|---|---|
-| **마스터 키** (KMS 대칭 키) | 환경마다 1개. `alias/lore-sentry-manuscript`, dev는 `alias/lore-sentry-manuscript-dev` | KMS 안. 값을 꺼낼 수 없음 | 프로젝트 키를 감싸고 푼다 |
-| **프로젝트 키** K (AES-256, 32바이트) | 프로젝트마다 1개 | **서버 메모리에만.** DB·디스크·로그에 쓰지 않는다 | 원고를 암호화하고 푼다 |
-| **감싼 프로젝트 키** W (약 180바이트) | 프로젝트마다 1개 | content `project_keys`, Kafka 메시지, ai-chat `project_keys` | K를 마스터 키로 잠근 것. KMS만 풀 수 있다 |
+| **마스터 키** (KMS 대칭 키) | 환경마다 1개: `alias/lore-sentry-manuscript`, `alias/lore-sentry-manuscript-dev` | KMS 안 | 프로젝트 키를 감싸고 푼다 |
+| **프로젝트 키** K (AES-256) | 프로젝트마다 1개 | 각 서비스 **메모리 캐시에만**(10분, 1,000개) | 원고를 암호화하고 푼다 |
+| **감싼 프로젝트 키** W (약 180바이트) | 프로젝트마다 1개 | content `project_keys`, FileChanged·GraphRefreshRequested의 `wrapped_key`, ai-chat 행마다(`wrapped_key`) | KMS만 풀 수 있다 |
 
-원고를 마스터 키로 직접 암호화하지 않는 이유는 두 가지다. KMS는 한 번에 4KB까지만 암호화하고, 조회마다 KMS를 부르면 지연과 요청 비용이 생긴다. KMS는 32바이트짜리 프로젝트 키만 다룬다.
-
-### 2.2 만들기
-
-프로젝트를 만드는 트랜잭션에서 content가 만든다. 기존 프로젝트는 전환 때 배치로 만든다(§8).
-
-```text
-KMS GenerateDataKey(KeyId=alias/lore-sentry-manuscript, KeySpec=AES_256,
-                    EncryptionContext={"project_id": "<소문자 UUID>"})
-  → Plaintext K (메모리 캐시에 넣는다), CiphertextBlob W (project_keys에 저장한다)
-```
-
-```sql
-CREATE TABLE project_keys (
-    project_id  UUID        PRIMARY KEY REFERENCES projects (id) ON DELETE CASCADE,
-    wrapped_key BYTEA       NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
-encryption context는 비밀값이 아니다. W를 다른 프로젝트의 키로 속여 쓰지 못하게 묶고, CloudTrail에 어느 프로젝트의 키를 풀었는지 남기는 용도다.
-
-### 2.3 풀기
-
-```text
-메모리 캐시에 project_id → K가 있으면 그대로 쓴다
-없으면 KMS Decrypt(CiphertextBlob=W, EncryptionContext={"project_id": …}) → K를 캐시에 넣는다
-```
-
-- 캐시는 pod마다 둔다. 만료 10분, 항목 상한 1,000개로 시작한다.
-- KMS 호출은 캐시에 없을 때만 일어난다. 복호화 자체는 AES-GCM이라 100만 자 문서도 몇 ms다.
-- KMS 오류는 일시 장애로 다룬다. API는 503을 돌려주고, Kafka 소비자는 DLQ로 보내지 않고 재시도한다.
-
-### 2.4 교체
-
-- **프로젝트 키는 바꾸지 않는다.** DB 유출에는 교체가 효과가 없다(어차피 W를 못 푼다). 메모리에서 K가 샌 경우는 옛 암호문까지 전부 다시 써야 의미가 있는데, 사본이 DB 여러 테이블·Kafka·ai-chat에 퍼져 있어 비용에 비해 얻는 것이 적다.
-- **마스터 키는 KMS 자동 교체(365일)를 켠다.** KMS가 옛 키 버전을 보관하므로 이전에 감싼 W도 그대로 풀린다. 코드나 데이터는 바뀌지 않는다.
-
-### 2.5 삭제
-
-- 프로젝트를 영구 삭제하면 `project_keys` 행이 같이 지워진다(CASCADE).
-- W의 사본은 다른 곳에도 남는다. Kafka(3일), outbox(발행 3일 뒤 삭제), RDS 자동 백업(7일)에 있고, ai-chat 사본은 ProjectDeleted를 받으면 지운다.
-- 따라서 삭제한 프로젝트의 암호문은 **최대 7일 뒤** 어떤 경로로도 풀 수 없게 된다.
+- **만들기:** content가 프로젝트에 키가 없으면 처음 암호화할 때 만든다. 호출은 `GenerateDataKey(KeySpec=AES_256, EncryptionContext={"project_id": …})`이다.
+  - 만드는 일은 호출한 트랜잭션 안에서 일어난다.
+  - 키는 커밋된 뒤에만 캐시에 들어간다. 롤백되면 키 행과 데이터가 함께 사라지므로 어긋나지 않는다.
+- **풀기:** `Decrypt(KeyId=alias, EncryptionContext={"project_id": …})`. KMS 오류는 일시 장애로 다룬다.
+- **교체:** 프로젝트 키는 바꾸지 않는다. 마스터 키는 KMS가 옛 버전을 보관하므로 자동 교체해도 코드와 데이터가 바뀌지 않는다.
+- **삭제:** 프로젝트를 영구 삭제하면 `project_keys` 행이 CASCADE로 지워진다. ai-chat 사본은 ProjectDeleted를 받으면 지운다.
+  - RDS 자동 백업에는 W가 최대 7일 남는다.
+  - 그래서 삭제한 프로젝트의 암호문은 최대 7일 뒤부터 어떤 경로로도 풀 수 없다.
 
 ---
 
@@ -109,275 +69,189 @@ encryption context는 비밀값이 아니다. W를 다른 프로젝트의 키로
 세 서비스(Java 하나, Python 둘)가 같은 형식을 쓴다.
 
 ```text
-offset 0        1바이트    형식 = 0x01  (zlib 압축 + AES-256-GCM)
+offset 0        1바이트    형식 = 0x01  (zlib + AES-256-GCM)
 offset 1        12바이트   nonce (매번 랜덤)
 offset 13       n바이트    암호문
 offset 13 + n   16바이트   GCM 태그
 ```
 
-- **평문:** 원래 값의 UTF-8 바이트를 zlib(RFC 1950)로 압축한 것이다. Java는 `Deflater`·`Inflater`, Python은 `zlib`을 쓴다. 풀 때 출력 상한은 32MiB로 둬서 압축 폭탄을 막는다.
-- **AAD:** `lore-sentry:v1:{project_id}:{subject_id}:{purpose}`의 UTF-8 바이트다. UUID는 소문자로 쓴다. 암호문을 다른 프로젝트·문서·용도로 옮겨 붙이면 태그 검증에서 실패한다.
-- **저장:** DB에는 `BYTEA`로, JSON에는 표준 base64(패딩 포함)로 넣는다.
-- **압축하는 이유:** 암호문은 압축되지 않는다. 그래서 암호화하면 PostgreSQL TOAST 압축과 Kafka producer의 zstd 압축이 본문에는 더 이상 듣지 않는다. 앱에서 먼저 압축해야 크기가 지금과 비슷하게 유지된다.
-- **형식 바이트로 구분:** 첫 바이트 `0x01`은 JSON의 `{`(`0x7B`)와 겹치지 않는다. 전환 기간에 소비자는 첫 바이트를 보고 암호문인지 평문 JSON인지 가린다.
-- **라이브러리:** Java는 `Cipher.getInstance("AES/GCM/NoPadding")`과 `GCMParameterSpec(128, nonce)`, Python은 `cryptography`의 `AESGCM`이다. 둘 다 `암호문 ‖ 태그`를 이어서 돌려주므로 위 배치와 같다.
-- **언어 간 테스트 벡터:** 고정된 K·nonce·AAD·평문과 기대 바이트를 `docs/events/crypto/test-vectors.json`에 두고, content와 graph-rag·ai-chat 테스트가 모두 이것으로 검증한다.
-
-### 3.1 용도(purpose)와 subject
-
-같은 암호문이 여러 곳을 지나가도 AAD가 같아야 다시 암호화하지 않고 옮길 수 있다. 그래서 AAD에는 저장 위치(테이블·컬럼 이름)를 넣지 않고, 값의 의미만 넣는다.
+- **평문:** 값의 UTF-8 바이트를 zlib(RFC 1950)로 압축한 것이다. 풀 때 출력 상한은 32MiB다.
+- **AAD:** `lore-sentry:v1:{project_id}:{subject_id}:{purpose}`이고, UUID는 소문자로 쓴다. AAD에 저장 위치(테이블·칼럼)를 넣지 않는다. 그래서 같은 암호문을 다시 암호화하지 않고 DB, Kafka, ai-chat으로 옮길 수 있다.
+- **저장:** DB에는 `BYTEA`로, JSON에는 표준 base64로 넣는다.
+- **형식 구분:** 첫 바이트 `0x01`은 JSON의 `{`(`0x7B`)와 겹치지 않는다. 그래서 전환 기간에 평문 JSON과 암호문을 첫 바이트로 가렸다.
+- **언어 간 테스트 벡터:** `manuscript-envelope-vectors.json`을 세 저장소의 테스트에 같은 파일로 두었다. Java가 잠근 것을 Python이 푸는 것도 확인했다.
+- **본문 변경 감지:** `mac_key = HMAC-SHA256(K, "lore-sentry:mac:v1")`를 만들고 `body_text_mac = HMAC-SHA256(mac_key, body_text)`로 계산한다. content만 쓴다.
 
 | purpose | subject_id | 쓰이는 곳 |
 |---|---|---|
-| `body_json` | document id | content `document.body_json_enc` |
-| `body_text` | document id | content `document.body_text_enc`, outbox·Kafka `file.body_text_enc`, ai-chat `summary_queue.body_enc` |
-| `version_snapshot` | document id | content `document_versions.snapshot_enc` |
-| `draft_left` · `draft_right` · `draft_origin` | 작업본(`refresh_document_drafts`) id | content 작업본 스냅샷 |
-| `refresh_input` | request id (`refresh_runs.id`) | S3 `input.enc` |
-| `refresh_result` | request id | S3 `result.enc`, content `refresh_results.payload_enc` |
-| `summary` | document id | ai-chat `document_summaries.summary_enc` |
-| `chat_content` · `chat_quote` · `chat_citations` · `chat_grounding` | message id | ai-chat `chat_messages` |
-| `chat_preview` | session id | ai-chat `chat_sessions.preview_enc` |
+| `body_json` | 문서 id | content `document.body_json_enc` |
+| `body_md` | 문서 id | content `document.body_md_enc`(Markdown 레거시 행. 현재 dev·prod 모두 0건) |
+| `body_text` | 문서 id | content `document.body_text_enc`, FileChanged `file.body_text_enc`, ai-chat `summary_queue.body_enc` |
+| `version_snapshot` | 문서 id | content `document_versions.snapshot_enc` |
+| `draft_left` · `draft_right` · `draft_origin` | 작업본 id | content `refresh_document_drafts.*_snapshot_enc` |
+| `refresh_input` | 요청 id | S3 `input.json` |
+| `refresh_context` | 요청 id | S3 `context.json`(graph-rag) |
+| `refresh_batch` | 요청 id | S3 `batch-NNNN.json`(graph-rag 중간 결과) |
+| `refresh_result` | 요청 id | S3 `result.json`, content `refresh_results.payload_enc` |
+| `summary` | 문서 id | ai-chat `document_summaries.summary_enc` |
 
-`version_snapshot`의 subject를 버전 id가 아니라 문서 id로 둔 이유는, 버전 id를 DB가 `returning id`로 만들기 때문이다. 그래서 같은 문서의 다른 버전끼리 암호문을 바꿔치기하는 것은 막지 못한다. 이것은 DB 쓰기 권한을 가진 공격자를 가정한 경우라 범위 밖으로 둔다.
+S3 `request.json`은 id, 위치, 설정만 담고 본문이 없어서 평문 JSON으로 둔다.
 
 ---
 
-## 4. content DB
+## 4. content
 
-### 4.1 바뀌는 컬럼
+**마이그레이션**
 
-| 테이블 | 지금 | 바뀐 뒤 |
-|---|---|---|
-| `document` | `body_json JSONB`, `body_text TEXT` | `body_json_enc BYTEA`, `body_text_enc BYTEA` |
-| `document` | `body_md TEXT` (`body_json`이 NULL인 옛 행) | 전환 배치가 `body_json`으로 바꾼 뒤 삭제 |
-| `document` | `body_sha` (평문 SHA-256. 쓰기만 하고 읽는 곳이 없음) | 삭제 |
-| `document` | — | `body_text_mac BYTEA` (본문 변경 감지), `body_text_length INTEGER` (분량 계산) |
-| `document_versions` | `snapshot JSONB` | `snapshot_enc BYTEA` |
-| `refresh_document_drafts` | `left_snapshot`, `right_snapshot`, `origin_snapshot` JSONB | 각각 `*_enc BYTEA` |
-| `refresh_document_drafts` | `matched` (DB가 두 JSONB를 비교하는 생성 컬럼) | 앱이 계산해 넣는 일반 `BOOLEAN` |
-| `refresh_results` | `payload JSONB` | `payload_enc BYTEA` (S3 객체 바이트 그대로) |
-| `outbox_events` | `payload JSONB`, 안에 `file.body_text` | `payload JSONB` 그대로. 안의 본문만 `file.body_text_enc`, 맨 위에 `wrapped_key`(§5.1) |
-| — | — | `project_keys` (§2.2) |
+- **V18:** `project_keys`와 `*_enc` 칼럼, `body_text_mac`, `body_text_length`, `is_matched`를 추가한다.
+- **V19 (Java 마이그레이션):** 웹 서버가 뜨기 전에 기존 데이터를 암호화한다.
+  - 모든 프로젝트에 키를 만든다.
+  - 본문, 버전, 작업본, 결과, outbox FileChanged payload를 암호화한다.
+  - 행마다 "암호화 후 다시 풀어 원문과 같은지" 확인하고, 하나라도 다르면 전체를 되돌린다.
+  - 끝으로 NOT NULL 제약을 건다.
+- **V20:** 평문 칼럼(`body_json`, `body_text`, `body_md`, `body_sha`, `snapshot`, 작업본 스냅샷 3개, `payload`)과 생성 칼럼 `matched`를 지운다. 작업본 CHECK 제약은 암호문 칼럼 기준으로 다시 만든다.
 
-**암호화하지 않는 것:** 제목, `document_properties.text_value`, `document_relations.description`, `memo.body`, 에피소드 이름.
+**코드**
 
-- 제목은 목록 정렬과 제목 검색이 SQL에서 쓴다.
-- 나머지는 짧고 원고 본문이 아니다.
-- 다만 `document_versions`와 작업본 스냅샷에는 제목·속성·관계까지 통째로 들어 있으므로, 스냅샷 안에서는 함께 암호화된다.
-- 이 범위를 넓힐지는 후속으로 판단한다(§11).
+- Repository가 넣기 직전에 암호화하고, 꺼낸 직후에 푼다(`manuscript` 패키지의 `Manuscripts`, `ProjectKeys`, `Envelope`).
+- 문서와 작업본의 id는 `uuidv7()`로 먼저 받는다. AAD에 id가 들어가기 때문이다.
 
-### 4.2 MAC 키
+**DB가 평문을 읽던 SQL을 바꾼 곳**
 
-본문이 바뀌었는지 판단할 때 암호문끼리는 비교할 수 없다. nonce가 매번 달라 같은 평문도 다른 암호문이 되기 때문이다. 그래서 평문의 MAC을 따로 둔다.
+| 기능 | 바뀐 방식 |
+|---|---|
+| 본문 검색 | 프로젝트 문서를 풀어 앱에서 거른다. 순위는 같다 |
+| 챗 분량 | `body_text_length` 칼럼을 쓴다 |
+| 본문 변경 감지 | `body_text_mac`끼리 비교한다 |
+| 작업본 `matched` | 앱이 left·right JSON 트리를 비교해 `is_matched`에 넣는다 |
 
-```text
-mac_key        = HMAC-SHA256(key = K, msg = "lore-sentry:mac:v1")
-body_text_mac  = HMAC-SHA256(key = mac_key, msg = body_text의 UTF-8 바이트)
-```
+**파일 이벤트 재발행**
 
-키 없는 SHA-256을 쓰면 "이 문장이 들어 있나"를 추측해서 확인할 수 있다. HMAC은 K 없이는 계산할 수 없다. MAC은 content만 쓴다.
-
-### 4.3 고칠 SQL
-
-DB가 SQL 안에서 평문을 직접 읽는 곳이다.
-
-| 위치 | 지금 | 바꾼 뒤 |
-|---|---|---|
-| `search/SearchRepository.java:25-37` | `position(lower(:query) in lower(d.body_text))` | 제목 조건은 SQL에 남긴다. 본문은 프로젝트의 활성 문서에서 `body_text_enc`를 읽어 앱에서 풀고 거른다. 순위(제목 일치 0, 제목 포함 1, 본문 포함)와 정렬은 앱에서 같은 규칙으로 다시 만든다 |
-| `chat/ChatRepository.java:165`, `193`, `347` | `char_length(d.body_text)` | `body_text_length` |
-| `document/DocumentRepository.java:400` | `old.body_text is distinct from new.body_text` | `old.body_text_mac is distinct from new.body_text_mac` |
-| `document/DocumentRepository.java:393` | `body_sha = sha256(...)` | 삭제 |
-| `V16__refresh_run_files.sql:109` | `matched` 생성 컬럼 | 작업본을 저장하는 코드가 left·right 평문을 비교해 넣는다 |
-
-본문 검색 비용을 어림해 보면, 300화 × 5천 자 소설은 약 150만 자다. 압축한 암호문으로 2MB 남짓을 읽고 푸는 데 수십 ms다.
-
-### 4.4 코드 경계
-
-- `ProjectKeys`: W를 만들고 저장하고 풀며, K를 캐시한다. KMS를 부르는 유일한 곳이다.
-- `ManuscriptCipher`: `encrypt(projectId, subjectId, purpose, bytes)`와 `decrypt(...)`. §3의 형식을 구현한다.
-- Repository가 넣기 직전에 암호화하고, 꺼낸 직후에 푼다. 서비스와 컨트롤러는 평문만 다룬다.
-- 의존성: `software.amazon.awssdk:kms`. 캐시는 만료 시각을 두는 맵이나 Caffeine을 쓴다. HMAC과 AES-GCM은 JDK 21 표준 API로 된다.
+`POST /internal/admin/file-events/replay?include_trashed=true`는 휴지통 프로젝트의 문서까지 재발행한다. ai-chat 요약을 다시 암호화할 때 이 경로를 썼다(§6).
 
 ---
 
 ## 5. 서비스 사이 전달
 
-### 5.1 Kafka FileChanged → `content.project.changed.v2`
+### 5.1 Kafka
 
-content는 `document.body_text_enc`를 **풀지 않고** 그대로 싣는다. AAD가 같으므로(§3.1) 받는 쪽에서 그대로 풀린다.
+- FileChanged와 ProjectDeleted는 **`content.project.changed.v2`**(6 partition, `max.message.bytes` 6MiB)로만 나간다.
+  - v2 payload는 v1에서 `file.body_text`를 빼고, `file.body_text_enc`와 맨 위 `wrapped_key`(파일이 없으면 null)를 더한 것이다.
+- content는 DB의 `body_text_enc`를 풀지 않고 그대로 싣는다. 그래서 outbox에도 평문 본문이 남지 않는다.
+- graph-rag는 본문을 쓰지 않으므로 v2를 받아도 KMS를 부르지 않는다. ai-chat 요약기는 암호문을 그대로 큐에 넣는다.
+- DLQ는 `content.project.changed.v2.graph-rag.dlq` 하나다.
+- **v1 토픽과 DLQ 2개는 지웠다**(gitops #22, #24). 그 안의 평문 본문도 함께 사라졌다.
 
-```json
-{
-  "project_id": "…",
-  "file_id": "…",
-  "change_type": "UPDATED",
-  "changed_fields": ["BODY"],
-  "wrapped_key": "AQIDAHh…",
-  "file": { "title": "도깨비 학살", "folder_code": "EVENT", "body_text_enc": "AYx3…" },
-  "relations": [ { "relation_id": "…", "relation_key": "related_character", "other_file_id": "…" } ]
-}
-```
+### 5.2 S3 최신화 객체
 
-- **outbox도 해결된다.** outbox 행이 이 payload이므로 `outbox_events`에 평문 본문이 남지 않는다. relay는 payload를 파싱하지 않으므로 바뀌지 않는다.
-- **받는 쪽은 필요할 때만 푼다.** id, `change_type`, `changed_fields`는 평문이라 건너뛸지는 복호화 없이 판단한다. graph-rag와 ai-chat-summarizer는 본문이 필요할 때만 W로 K를 받아 푼다.
-- **DLQ도 암호문이다.** DLQ는 원본 메시지를 그대로 옮긴다.
-- **새 topic이 필요하다.** `body_text`를 없애고 `body_text_enc`를 넣는 것은 필드 삭제와 타입 변경이라, `KAFKA_DESIGN.md` Schema versioning 규칙에 따라 v2 topic으로 옮긴다. 절차는 거기 적힌 "새 버전 topic으로 옮기는 순서"를 따른다. v1에서는 발행을 멈출 때까지 평문이 나가고, 멈춘 뒤 보존 기간(3일)이 지나면 topic을 지운다.
-- **크기 한도를 올린다.** 100만 자 본문은 UTF-8로 약 3MB이고, zlib을 거치면 대개 그 절반 안팎, base64로 다시 1.33배가 된다. 그런데 압축이 거의 안 되는 최악의 경우에는 약 4MB가 되어 지금 한도(4MiB)에 걸린다. 그래서 v2 topic과 그 DLQ의 `max.message.bytes`, producer의 `max.request.size`를 6MiB(`6291456`)로 둔다. `retention.bytes`는 그대로라 broker 디스크 상한은 바뀌지 않는다.
-
-### 5.2 S3 최신화 입력과 결과
-
-입력과 결과는 객체 전체를 암호화한다. 결과 파일에는 본문이 여러 필드(제안, 사실, 근거 인용)에 흩어져 있어서, 필드 단위로 암호화하면 빠뜨리기 쉽기 때문이다.
-
-| | 지금 | 바뀐 뒤 |
-|---|---|---|
-| 입력 | `input.json` (refresh-input-v2 JSON) | `input.enc` = 같은 JSON을 K로 암호화(purpose `refresh_input`) |
-| 결과 | `result.json` (refresh-result-v3 JSON) | `result.enc` = 같은 JSON을 같은 K로 암호화(purpose `refresh_result`) |
-| GraphRefreshRequested | `location`, `input_fingerprint` 등 | 선택 필드 `wrapped_key` 추가. 선택 필드 추가라 v1 그대로 쓴다 |
-| `input_fingerprint` | 객체 바이트의 sha256 | 그대로. 객체 바이트(암호문)의 sha256 |
-| `refresh_results` | 결과 JSON | 객체 바이트 그대로(`payload_enc`)와 그 sha256 |
-
-- **content:** 문서 본문을 풀어서 지금처럼 입력 JSON을 만든 뒤, 통째로 암호화해 올린다.
-- **graph-rag:** 객체를 받아 첫 바이트가 `0x01`이면 풀고, 그 뒤는 지금 코드로 파싱한다. 결과는 같은 K로 암호화해 올린다. 바뀌는 곳은 S3 어댑터(`adapters/refresh_artifacts.py`)의 읽기·쓰기다.
-- **버킷:** SSE-S3 그대로 둔다. 본문은 이미 앱에서 암호화돼 있다.
-
-### 5.3 content 내부 HTTP
-
-graph-rag의 관계 문서 조회와 ai-chat의 `/internal/projects/{id}/chat-*`는 클러스터 안에서 평문으로 오간다. 저장이 아니라 전송 구간이라 이 설계의 범위 밖이다(§11). 다만 ai-chat이 자기 DB에 암호화해 저장하려면 K가 있어야 하므로, `chat-snapshot` 응답에 `wrapped_key`를 선택 필드로 더한다.
+- **content:** 문서를 풀어 입력 JSON을 만든 뒤 통째로 암호화해 올린다. GraphRefreshRequested에는 `wrapped_key`를 싣는다. `input_fingerprint`는 올린 객체 바이트(암호문)의 sha256이다.
+- **graph-rag:** 지문을 확인한 뒤 풀어서 읽는다. context·batch·result는 같은 키로 암호화해 쓴다. 저장해 둔 것과 새것이 같은지는 푼 내용으로 비교한다.
+- **content가 결과를 읽을 때:** 첫 바이트가 `0x01`이면 풀어서 파싱한다. DB에는 다시 암호화해 `payload_enc`로 남긴다.
+- **버킷:** SSE-S3 그대로다. 전환 전 평문 객체는 지웠다(§8).
 
 ---
 
 ## 6. ai-chat
 
-- **`project_keys` 사본을 둔다.** FileChanged v2와 `chat-snapshot` 응답에서 받은 W를 저장하고, ProjectDeleted를 받으면 지운다.
-- **암호화하는 값:**
-  - `summary_queue.body`: 받은 `body_text_enc`를 그대로 `body_enc BYTEA`에 저장하고, 요약할 때 푼다.
-  - `document_summaries.summary`
-  - `chat_messages`의 `content_md`, `quote`, `citations`, `grounding`
-  - `chat_sessions.preview`
-- **암호화하지 않는 값:** 채팅 세션 제목. content의 제목과 같은 이유다.
-- **KMS 권한:** ai-chat은 K로 암호화만 하고 새 키는 만들지 않으므로 `Decrypt` 권한만 있으면 된다.
-- **고칠 SQL:** `app/store.py:633-640`의 채팅 검색이 `content_md ilike`와 `quote->>'text' ilike`, `citations`의 `title ilike`를 쓴다. 세션 제목 조건만 SQL에 남기고, 나머지는 앱에서 풀어서 거른다.
+- **`summary_queue`:** 받은 `body_enc`와 `wrapped_key`를 그대로 저장하고, 요약 직전에만 푼다(V9). V11에서 평문 `body` 칼럼을 지웠다.
+- **`document_summaries`:** 모델 요약과 500자 이하 원문 복사를 모두 `summary_enc` + `wrapped_key`로 저장한다(V10). V11에서 평문 `summary` 칼럼을 지웠다.
+- **기존 요약 재암호화:** content 재발행(휴지통 포함)으로 문서마다 키가 실린 이벤트가 들어왔다. 본문이 그대로인 요약은 모델을 부르지 않고 그 키로 다시 암호화했다.
+  - dev는 252개, prod는 573개다.
+  - V11은 평문이 하나라도 남아 있으면 실행을 거부한다.
+- **chat API:** 지도를 만들 때 요약을 푼다. KMS 장애나 복호화 실패가 생기면 그 요약만 빼고 답변은 계속한다.
+- **구독:** 요약기는 v2만 구독한다. v2 계약을 따르지 않는 이벤트(암호문 본문이 없는 FileChanged)는 건너뛴다.
 
 ---
 
 ## 7. KMS와 IAM
 
-### 7.1 역할
+`loresentry-gitops/bootstrap/aws/manuscript-key.sh <dev|prod>`가 아래를 한 번에 만든다(여러 번 실행해도 결과가 같다). 키 정책 원본은 같은 폴더의 `manuscript-key-policy.json`이다.
 
-| 서비스 | ServiceAccount | IAM 역할 | KMS 권한 |
+| 서비스 | ServiceAccount | IAM 역할(prod / dev) | KMS 권한 |
 |---|---|---|---|
-| content | `content-api` | `lore-sentry-content-role` (있음) | `GenerateDataKey`, `Decrypt` |
-| graph-rag | `graph-rag-api` | `lore-sentry-graph-rag-role` (있음) | `Decrypt` |
-| ai-chat, ai-chat-summarizer | **새로 만든다** | `lore-sentry-ai-chat-role` (**새로 만든다**) | `Decrypt` |
-| 관리자 | — | `lore-sentry-kms-admin` (**새로 만든다**) | 키 관리만. `Decrypt` 없음 |
+| content | `content-api` | `lore-sentry-content-role` / `lore-sentry-dev-content-role` | `GenerateDataKey`, `Decrypt` |
+| graph-rag | `graph-rag-api` | `lore-sentry-graph-rag-role` / `lore-sentry-dev-graph-rag-role` | `Decrypt` |
+| ai-chat API, 요약기 | `ai-chat-api`, `ai-chat-summarizer` | `lore-sentry-ai-chat-role` / `lore-sentry-dev-ai-chat-role` | `Decrypt` |
 
-키 정책이 역할 ARN을 직접 지정하므로, 서비스 역할에 IAM 정책을 따로 붙이지 않아도 된다.
+- **모든 허용에 조건이 붙는다.** 요청에 `kms:EncryptionContext:project_id`가 있어야 한다.
+- **키 관리:** 계정 루트(`:root`)를 principal로 두되, `aws:PrincipalArn`이 SSO 역할 `AWSReservedSSO_myisb_IsbUsersPS_*`·`IsbAdminsPS_*`일 때만 관리 동작을 허용한다.
+  - 관리 권한에는 `Decrypt`·`GenerateDataKey`가 없다. 실제로 SSO 역할로 `GenerateDataKey`를 부르면 `AccessDenied`가 난다.
+  - `lorekeeper-owner`(PowerUser) IAM 사용자는 IAM 권한만으로는 이 키를 쓸 수 없다.
+- **설정:** `manuscript-key` ConfigMap(`key-id`, `region`)을 base에 두고, dev overlay는 별칭만 바꾼다. 네 Deployment가 `MANUSCRIPT_KEY_ID`·`MANUSCRIPT_KEY_REGION`을 받는다.
+- **감사 기록(CloudTrail, 전환 후):** 다른 주체의 호출은 없었다.
 
-### 7.2 키 정책
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ContentCreatesAndOpens",
-      "Effect": "Allow",
-      "Principal": { "AWS": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/lore-sentry-content-role" },
-      "Action": ["kms:GenerateDataKey", "kms:Decrypt"],
-      "Resource": "*",
-      "Condition": { "StringLike": { "kms:EncryptionContext:project_id": "*" } }
-    },
-    {
-      "Sid": "ConsumersOpenOnly",
-      "Effect": "Allow",
-      "Principal": { "AWS": [
-        "arn:aws:iam::<AWS_ACCOUNT_ID>:role/lore-sentry-graph-rag-role",
-        "arn:aws:iam::<AWS_ACCOUNT_ID>:role/lore-sentry-ai-chat-role"
-      ] },
-      "Action": "kms:Decrypt",
-      "Resource": "*",
-      "Condition": { "StringLike": { "kms:EncryptionContext:project_id": "*" } }
-    },
-    {
-      "Sid": "AdminManagesButCannotUse",
-      "Effect": "Allow",
-      "Principal": { "AWS": "arn:aws:iam::<AWS_ACCOUNT_ID>:role/lore-sentry-kms-admin" },
-      "Action": [
-        "kms:Describe*", "kms:Get*", "kms:List*",
-        "kms:PutKeyPolicy", "kms:EnableKeyRotation", "kms:DisableKeyRotation",
-        "kms:TagResource", "kms:UntagResource",
-        "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-- **계정 루트(`:root`)에 `kms:*`를 주는 기본 문구는 넣지 않는다.** 그 문구가 있으면 키 정책이 IAM에 권한을 위임하게 되어, `lorekeeper-owner`(PowerUser) 누구나 IAM 권한만으로 `Decrypt`를 부를 수 있다.
-- **관리 역할이 없어지면 키를 관리할 수 없게 된다.** 이 경우 AWS Support를 거쳐야 하므로, 관리 역할은 지우지 않고 두 사람 이상이 맡을 수 있게 둔다.
-- **남는 위험:** `IAMFullAccess`가 있으면 관리 역할의 신뢰 정책을 고쳐 그 역할을 맡은 뒤, 키 정책을 바꿔 자기에게 `Decrypt`를 줄 수 있다. 이 경로는 막히지 않고 기록으로만 남는다(§7.3).
-
-### 7.3 기록과 비용
-
-- **기록:** `Decrypt`와 `GenerateDataKey` 호출은 CloudTrail 이벤트 기록에 남는다. 호출 역할과 `project_id`가 함께 보인다. 세 역할이 아닌 주체의 `Decrypt`, `PutKeyPolicy`, 관리 역할의 신뢰 정책 변경에 알림을 거는 것은 trail 구성과 함께 정한다(§11).
-- **네트워크:** pod는 이미 NAT로 외부(OpenAI)에 나가므로 KMS에도 닿는다. KMS VPC 엔드포인트는 선택이다.
-- **비용:** 키 하나당 월 1달러에 교체분이 조금 더해진다. 요청은 1만 건당 0.03달러인데, 캐시가 있어 pod 재시작이나 캐시 만료 때만 호출하므로 무시할 수준이다.
+| 환경 | GenerateDataKey | Decrypt |
+|---|---|---|
+| dev | content 역할만 | ai-chat·graph-rag 역할만 |
+| prod | content 역할만(38회) | ai-chat 역할 |
 
 ---
 
-## 8. 전환 순서
+## 8. 전환 기록
 
-**모든 단계를 dev 클러스터에서 먼저 한다.**
+| 순서 | dev | prod |
+|---|---|---|
+| 1. 키·역할·Pod Identity | 스크립트 실행 | 스크립트 실행 |
+| 2. v2 토픽·설정·환경 변수 | gitops #20, #21(overlay) | gitops #23(base로 이동) |
+| 3. 소비자(v1+v2 구독) | graph-rag #8, ai-chat #19 #20 | graph-rag #10, ai-chat #23 |
+| 4. content 전환(V18·V19, `Recreate`) | content #30 #32 | content #33 |
+| 5. 검증 | §9 | §9 |
+| 6. 요약 재암호화(재발행) | 문서 274개 | 문서 588개(휴지통 포함) |
+| 7. 평문 제거 | content #31(V20), graph-rag #9(v2만), ai-chat #22(V11), v1 토픽 삭제(#22) | content #34, graph-rag #11, ai-chat #24, v1 토픽 삭제·Recreate 해제(#24) |
+| 8. `VACUUM FULL` | 본문 관련 테이블 7개 | 같은 7개 |
+| 9. S3 전환 전 객체 | 없음(수명 규칙으로 이미 만료) | 20개 삭제(버전 관리 꺼짐) |
 
-1. **인프라.** 마스터 키와 별칭을 만들고, 키 정책과 자동 교체를 설정한다. 관리 역할, ai-chat ServiceAccount·역할·Pod Identity 연결도 만든다.
-2. **content 확장.** Flyway로 `project_keys`, `*_enc`, `body_text_mac`, `body_text_length`를 추가한다(모두 NULL 허용). 새 프로젝트는 키를 만든다. 문서 저장은 평문과 암호문에 함께 쓴다.
-3. **content 배치.**
-   - 기존 프로젝트에 키를 만든다.
-   - `body_md`만 있는 옛 행을 `body_json`으로 바꾼다.
-   - 기존 `document`, `document_versions`, 작업본, `refresh_results` 행을 암호화해 채운다.
-4. **content 읽기 전환.** 읽기를 `*_enc`로 바꾸고, §4.3의 SQL을 고친다.
-5. **소비자 준비.** graph-rag와 ai-chat-summarizer가 v2 topic과 암호화된 S3 객체(`0x01`)를 둘 다 읽을 수 있게 배포한다. graph-rag는 이 시점부터 결과를 암호화해 올린다.
-6. **content 발행 전환.**
-   - S3 입력을 암호화해 올리고, GraphRefreshRequested에 `wrapped_key`를 싣는다.
-   - FileChanged를 v2로 옮긴다(`KAFKA_DESIGN.md`의 절차).
-   - v1 발행을 멈추고, 보존 기간이 지나면 v1 topic과 DLQ를 지운다.
-7. **content 정리.**
-   - 평문 쓰기를 멈추고 평문 컬럼과 `body_sha`, `body_md`를 지운다.
-   - 해당 테이블에 `VACUUM FULL`(또는 pg_repack)을 돌려 옛 튜플을 없앤다. `VACUUM FULL`은 테이블 잠금을 잡으므로 사용량이 적은 시간에 한다.
-   - 자동 백업은 7일 뒤 사라진다. 수동 스냅샷이 있으면 지운다.
-8. **ai-chat 저장 암호화.** §6을 적용하고, 2~7과 같은 순서로 확장·배치·전환·정리한다.
+- **V19 처리량:**
+  - dev: 프로젝트 12, 문서 252, 버전 252, outbox 504건, 3.4초
+  - prod: 프로젝트 36, 문서 592, 버전 632, 작업본 5, 결과 23, outbox 216건, 7.1초
+- **content 중단 시간:** `Recreate`로 배포했으므로 전환 배포와 V20 배포 때 각각 30~40초 내려갔다.
 
----
+## 9. 검증 결과
 
-## 9. 확인
+**전수 대조**
 
-- **DB:** `select body_text_enc from document limit 1`의 결과가 `\x01…`로 시작한다. 평문 컬럼은 없다.
-- **덤프:** 예시 프로젝트(`SampleProjectService`)의 본문 한 문장을 카나리아로 쓴다. `pg_dump --data-only` 결과에서 그 문장이 0건이어야 한다. 사용자 원고는 열어 보지 않는다.
-- **Kafka:** v2 메시지 하나를 읽었을 때 `body_text_enc`만 있다. DLQ도 확인한다.
-- **S3:** `input.enc`, `result.enc`의 첫 바이트가 `0x01`이다.
-- **KMS:** CloudTrail에서 `Decrypt`를 부른 주체가 세 역할뿐이다.
-- **형식:** content, graph-rag, ai-chat 테스트가 같은 테스트 벡터를 통과한다.
+평문 칼럼이 남아 있던 단계에서 문서마다 두 값을 비교했다.
+- API가 복호화해 돌려준 본문 JSON과 분석용 평문
+- DB에 남아 있던 원래 평문
 
----
+| 환경 | 문서 | 버전 | 불일치 |
+|---|---|---|---|
+| dev | 252 / 252 일치 | 252 / 252 일치 | 0 |
+| prod | 활성 문서 473 / 473 일치 | 628 / 628 일치 | 0 |
 
-## 10. 막는 것과 못 막는 것
+- prod 휴지통 문서 119개는 API로 읽을 수 없다.
+  - 대신 V19의 행별 검사(암호화 후 다시 풀어 원문과 비교)를 통과했다.
+  - 마이그레이션이 기록한 길이가 592개 모두 실제 평문과 일치했다.
 
-| 막는 것 | 못 막는 것 |
+**기능 검증**
+
+- **dev:** 실제 API로 한 바퀴 돌렸다. 샘플 프로젝트 생성, 저장·재조회, 본문 검색, 버전, 그래프 최신화, AI 챗이 모두 통과했다. 평문 칼럼을 지운 뒤에도 다시 통과했다.
+- **prod:** 가상 사용자로 테스트 프로젝트를 만들어 확인하고 지웠다. 저장·재조회, 검색, 버전, 분석용 평문, 챗 스냅샷이 통과했다. 이것도 평문 칼럼 삭제 전후에 각각 확인했다.
+
+**암호문만 남았는지**
+
+| 대상 | 결과 |
 |---|---|
-| DB 직접 접속(psql, Telepresence) | 실행 중인 서비스 pod 장악(메모리의 K, 역할 자격 증명) |
-| DB 덤프, RDS 백업·스냅샷 유출 | GitOps 쓰기나 Argo CD admin 권한으로 해당 ServiceAccount를 쓰는 코드를 배포하는 것 |
-| SQL injection으로 행을 읽는 것 | `IAMFullAccess`로 관리 역할을 거쳐 키 정책을 바꾸는 것(기록은 남음) |
-| Kafka 메시지, DLQ, broker 디스크 | OpenAI로 보내는 평문 |
-| S3 최신화 객체 | 클러스터 안 HTTP 구간의 평문 |
+| Kafka v2 | dev 44건, prod 전부 `body_text_enc`와 `wrapped_key`. 평문 본문 0건 |
+| outbox | FileChanged 평문 본문 0건 |
+| S3 | input·context·result 첫 바이트 `0x01` |
+| `refresh_results` | 암호문 |
+| DB 칼럼 | 원고 관련 테이블에 text·jsonb 칼럼은 S3 위치(`result_bucket`, `result_key`), 요약 큐의 `title`, 요약 `fingerprint`만 남음 |
 
----
+## 10. 남은 것과 범위 밖
 
-## 11. 범위 밖과 후속
-
-- **암호화 범위 확장:** 제목, 속성 값, 관계 설명, 메모, 에피소드 이름, 채팅 세션 제목. 넓히면 목록 정렬과 제목 검색도 앱으로 옮겨야 한다.
-- **전송 구간:** Kafka 리스너 TLS(`tls: false`), 클러스터 안 HTTP, RDS 접속 SSL.
-- **CloudTrail:** trail과 알림 규칙.
-- **로그:** 본문, 프롬프트, LLM 응답을 로그에 찍지 않는다는 규칙과 그 점검.
-- **프로젝트 키 교체:** 하지 않기로 했다(§2.4). 나중에 필요해지면 형식 바이트를 `0x02`로 올리고 키 버전을 넣는다.
+- **RDS 자동 백업:** 전환 전 평문이 최대 7일(prod 약 2026-11-07까지) 남는다. 바로 지우려면 보존 기간을 0으로 내렸다 올려야 하고, 그동안 특정 시점 복구를 쓸 수 없다. 아직 하지 않았다.
+- **암호화하지 않은 값:**
+  - content: 제목, 속성 값, 관계 설명, 메모, 에피소드 이름
+  - ai-chat: `chat_messages`(답변, 인용, 근거), `chat_sessions.preview`, `summary_queue.title`, 요약 `fingerprint`(문장별 SHA-1 앞부분)
+- **전송 구간:** Kafka 리스너 TLS(`tls: false`), 클러스터 안 HTTP(graph-rag·ai-chat이 content에서 본문을 받는 경로), OpenAI로 보내는 평문
+- **로그:** 본문이 로그(Loki)에 찍히는지는 점검하지 않았다.
+- **막지 못하는 것:**
+  - 실행 중인 pod 장악(메모리의 K, 역할 자격 증명)
+  - GitOps 쓰기·Argo CD admin으로 해당 ServiceAccount를 쓰는 코드를 배포하는 것
+  - IAM 권한으로 관리 역할의 신뢰 정책을 고쳐 키 정책을 바꾸는 것. 이 경우 CloudTrail에 남는다.
+- **KMS 장애:**
+  - content는 키가 캐시에 없는 프로젝트의 본문을 읽지 못한다.
+  - ai-chat 요약기는 그 행을 1분 뒤로 미룬다.
+  - chat API는 그 요약을 빼고 답한다. 단, 키가 캐시에 없으면 그 턴은 KMS 재시도 때문에 최대 약 21초 늦어진다.
+- **새 서비스가 본문을 읽어야 할 때:** 그 서비스의 역할을 키 정책의 Decrypt 목록에 넣고 `manuscript-key.sh`를 다시 실행한다.
