@@ -614,8 +614,21 @@ repo:<org>@<org-id>/<repo>@<repo-id>:ref:refs/heads/main
 
 공용 역할 권한:
 
-- 모든 ECR Repository에 push
+- 모든 ECR Repository에 push (`ecr:BatchGetImage` 포함)
 - `loresentry-update-gitops` Lambda 호출
+
+### push에 `ecr:BatchGetImage`가 필요해진 이유 — 2026-10-31
+
+`ubuntu-latest`가 `ubuntu-26.04`로 바뀐 뒤 ai-chat CI가 레이어를 다 올리고 나서 `docker push`에서 실패했다.
+
+```text
+unexpected status from HEAD request to .../v2/ai-chat/api/manifests/sha256:...: 403 Forbidden
+```
+
+새 러너의 Docker는 push 도중 manifest를 digest로 HEAD 조회한다. ECR은 이 조회를 `ecr:BatchGetImage`로 판정하는데,
+공용 정책 `lore-sentry-github-actions-common`에는 업로드 권한만 있었다. v3에서 `PushImagesToECR` 문에
+`ecr:BatchGetImage`를 더했다(대상은 그대로 `repository/*`). 러너를 `ubuntu-24.04`로 고정하지 않은 이유는 모든 서비스
+저장소가 같은 정책을 쓰기 때문이다. 정책 한 곳을 고치면 저장소마다 workflow를 바꾸지 않아도 된다. 되돌리려면 기본 버전을 v2로 바꾼다.
 
 GitHub 조직 Actions 변수:
 
@@ -1338,6 +1351,7 @@ SCP: o-<REDACTED>/.../p-<REDACTED>   (ce:GetCostAndUsage 명시적 거부)
 | 브라우저 CORS 오류 | gateway의 `loresentry.cors.allowed-origin-patterns`. 내부 서비스에는 CORS가 없다 |
 | Argo CD 리다이렉트 루프 | Ingress에 `backend-protocol: HTTPS`와 port 443이 설정됐는지 |
 | ECR push `AccessDenied` | 공용 역할의 ECR upload/PutImage 권한 |
+| ECR push 끝에 manifest HEAD `403 Forbidden` | 공용 역할의 `ecr:BatchGetImage` (§11) |
 | Lambda invoke `AccessDenied` | 공용 역할의 `lambda:InvokeFunction` |
 | Lambda GitHub `404` | GitOps repo 이름, `.yaml` 경로, PAT repository access |
 | Lambda GitHub `403` | PAT 조직 승인, Contents write, branch protection |
