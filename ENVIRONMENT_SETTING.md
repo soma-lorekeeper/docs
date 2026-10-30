@@ -139,6 +139,11 @@ kubectl config use-context lore-sentry
 kubectl config set-context --current --namespace=prod
 ```
 
+### dev 클러스터
+
+부하·가용성 테스트용 dev 클러스터 `lore-sentry-dev-k8s`(네임스페이스 `dev`)도 같은 자격 증명으로 접속한다. 컨텍스트를 하나
+더 만드는 절차와 권한은 `DEV_CLUSTER.md` §10에 있다.
+
 ### kubeconfig에는 비밀이 없다
 
 생성된 설정은 이런 모양이다.
