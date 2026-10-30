@@ -14,7 +14,7 @@
 | Argo CD (App-of-Apps) | 동작 중, `argocd.loresentry.com` 공개, GitHub SSO 연동 |
 | AWS Load Balancer Controller | 동작 중, ALB 1개를 IngressGroup `lore-sentry`로 공유 |
 | GitOps 저장소 | `soma-lorekeeper/loresentry-gitops`, **Kustomize base + overlay** |
-| 배포 대상 namespace | `prod` (dev는 디렉터리만 존재) |
+| 배포 대상 namespace | `prod`. 부하·가용성 테스트용 dev는 별도 클러스터 `lore-sentry-dev-k8s` (`DEV_CLUSTER.md`) |
 | 서비스 | gateway · ai-chat · authentication · content · graph-rag (5개, 전부 Running) |
 | 캐시 | `auth-valkey` (Valkey 9.0.6, 순수 캐시, 영속성 없음) |
 | 관계형 DB | RDS PostgreSQL 18.6 `lore-sentry-postgres` (`db.t4g.micro`, 인스턴스 1개 / 논리 DB 3개) |
@@ -636,7 +636,7 @@ Repository access: All repositories
 Repository permission: Contents read/write
 ```
 
-GitOps `main`에 직접 commit할 수 있어야 한다. 보호 규칙이 이를 막으면 Lambda를 PR 생성 방식으로 바꿔야 한다.
+GitOps `main`에 직접 commit할 수 있어야 한다. 보호 규칙이 이를 막으면 Lambda를 PR 생성 방식으로 바꿔야 한다. 2026-10-29 기준 `main`에는 보호 규칙이 없다. 조직 멤버 누구나 `main`에 직접 push할 수 있다는 뜻이기도 하다 (`ENVIRONMENT_SETTING.md` §8).
 
 ### Lambda
 
@@ -693,6 +693,12 @@ Lambda 동작:
 6. 동시 commit의 `409 Conflict`가 발생하면 최신 파일을 다시 읽고 재시도
 
 임의 경로 접근을 막기 위해 `../`, 선행 `/`, 대문자 등은 거부한다. Manifest가 없거나 일치하는 이미지가 정확히 하나가 아니면 임의 생성/수정하지 않고 실패한다.
+
+### dev 함수 — 2026-10-30
+
+dev 클러스터(`DEV_CLUSTER.md`)용으로 같은 코드의 두 번째 함수 `loresentry-update-gitops-dev`가 있다. 다른 점은
+`GITOPS_ROOT=workload/overlays/dev` 하나다. 앱 저장소의 `dev` 브랜치 CI 가 이 함수를, `main` CI 가 기존 함수를
+부른다. 공용 CI 역할 정책 `lore-sentry-github-actions-common`(v2)이 두 함수 호출을 허용한다.
 
 ## 13. 이미지 버전 정책
 
@@ -805,7 +811,7 @@ concurrency:
 - [ ] NetworkPolicy. vpc-cni의 `ENABLE_NETWORK_POLICY`가 꺼져 있어 **지금 NetworkPolicy를 써도 조용히 무시된다**
 - [ ] 시크릿 관리. `auth-valkey` 비밀번호는 `kubectl`로 직접 만든 Secret이고 Git 밖에 있다. External Secrets Operator + 기존 Secrets Manager로 옮기는 것이 다음 단계
 - [ ] 브로커 AZ 분산. 서브넷이 2개뿐이라 3 브로커가 `2b` 2 / `2a` 1로 나뉜다. `2b`가 통째로 죽으면 `min.insync.replicas=2`를 못 채워 쓰기가 멈춘다
-- [ ] `dev` overlay와 `workload-dev` Application
+- [x] dev 환경 — 같은 클러스터의 네임스페이스가 아니라 별도 클러스터 `lore-sentry-dev-k8s`로 만들었다 (`DEV_CLUSTER.md`)
 - [x] 사용자 이미지 S3 — 버킷·IAM·Pod Identity·CloudFront `media.loresentry.com`·DNS 구축 확인 (17-A절, `IMAGE_UPLOAD_S3.md`). 클러스터 배선과 content 스토리지 서비스는 PR 대기
 
 ---
