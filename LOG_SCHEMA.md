@@ -179,7 +179,7 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | 버리는 것 | 이유 |
 | --- | --- |
 | 응답이 2xx인 헬스체크(`GET /health`) 접근 로그 | kubelet probe가 파드마다 시간당 540줄을 남긴다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 실패(4xx·5xx·타임아웃)는 남긴다. 앱 로그 규약의 `url.path`·`http.response.status_code`로만 판단하므로 지금의 uvicorn 평문 줄은 버리지 않는다 |
-| EKS audit 중 시스템 계정(노드, 컨트롤러, Argo CD 등)의 `get`·`list`·`watch` | 양이 대부분이고 감사 가치가 낮다. 쓰기 요청과 사람 계정의 요청은 모두 남긴다 |
+| EKS audit 중 시스템 계정(`system:`·`eks:`로 시작: 노드, 컨트롤러, Argo CD 등)의 **성공한**(응답 400 미만) `get`·`list`·`watch` | 양이 대부분이고 감사 가치가 낮다. 쓰기 요청, 사람 계정의 요청, 실패한 요청(시스템 계정의 403 등 권한 설정 오류 신호)은 모두 남긴다 |
 | RDS `rdsadmin` 계정의 연결·해제 줄 | AWS 내부 관리 연결이다 |
 
 ## 5. 앱 로그 규약
@@ -261,7 +261,20 @@ Logstash는 이 순서로 dataset을 고른다.
 | EKS audit | `eks` | `aws.eks_audit` | `logs-aws.eks_audit-dev` |
 | EKS authenticator | `eks` | `aws.eks_authenticator` | `logs-aws.eks_authenticator-dev` |
 
-prod는 끝만 `-prod`로 바뀐다. 환경마다 16개다.
+prod는 끝만 `-prod`로 바뀐다. 환경마다 16개다. 출처를 알 수 없는 AWS 줄(설정 실수, 켜지 않은 EKS 로그 종류)은 버리지 않고
+`logs-aws.unknown-<env>`에 모은다. 여기에 쌓이면 규칙을 더한다.
+
+AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이름을 쓰고, 출처에만 있는 값은 출처 이름 아래에 둔다.
+
+| 출처 | ECS 필드 | 출처 필드 |
+| --- | --- | --- |
+| ALB | `http.request.method`, `url.original`·`url.path`·`url.query`·`url.domain`, `http.response.status_code`, `source.ip`, `destination.ip`, `user_agent.original`, `tls.version`, `event.duration`(처리 시간 합), `http.request.id`(`trace_id`) | `aws.alb.*` (대상 상태 코드, 오류 사유, 대상 그룹 등) |
+| CloudFront (v2 JSON) | 위와 같은 HTTP 필드, `http.request.referrer` | `aws.cloudfront.*` (엣지 위치, 결과 유형, 요청 ID 등). `cs(Cookie)`는 저장하지 않는다 |
+| EKS audit | `event.action`(verb), `http.response.status_code`, `source.ip`, `user_agent.original` | `kubernetes.audit.*` (Elastic Kubernetes audit 통합과 같은 이름: `user.username`, `objectRef.*`, `responseStatus.code` 등) |
+| EKS authenticator | | `aws.eks.authenticator.arn`·`username` |
+| Neptune | `event.duration`, `http.response.status_code`, `error.type`(`exceptionClass`) | `aws.neptune.*` (쿼리 fingerprint, 실행 통계) |
+
+EKS audit의 Kubernetes 사용자 이름은 `user.*`에 넣지 않는다. `user.*`는 앱 사용자(`users.id`)만 가리킨다.
 
 ## 7. trace
 
@@ -291,13 +304,15 @@ prod는 끝만 `-prod`로 바뀐다. 환경마다 16개다.
 | 접두어 | 필드 | 예 |
 | --- | --- | --- |
 | `%m` | `@timestamp` | |
-| `%r` | `source.address` | 클라이언트 주소 |
+| `%r` | `source.ip`, `source.port` | 클라이언트 주소. 백그라운드 프로세스는 비어 있다 |
 | `%u` | `postgresql.log.user` | `content_svc` (DB 역할로 서비스를 구분한다) |
 | `%d` | `postgresql.log.database` | `content` |
 | `%p` | `process.pid` | |
-| `%e` | `error.code` | SQLSTATE |
+| `%l` `%s` `%v` `%x` | `postgresql.log.session_line_num`, `session_start_time`, `virtual_transaction_id`, `transaction_id` | |
+| `%e` | `error.code` | SQLSTATE. `00000`(성공)이면 두지 않는다 |
 | `%c` | `postgresql.log.session_id` | |
-| 심각도 | `log.level` | [3절](#3-loglevel) |
+| `%a` | `postgresql.log.application_name` | `%q` 뒤라 백그라운드 프로세스 줄에는 없다 |
+| 심각도 | `log.level` | [3절](#3-loglevel). `DETAIL`·`HINT`·`STATEMENT` 같은 보조 줄은 `info` |
 | `duration:` | `event.duration` (ns) | 느린 쿼리 |
 
 ECS에는 DB 필드 묶음이 없어서 Elastic PostgreSQL integration과 같은 `postgresql.log.*`를 쓴다. `user.*`는 앱 사용자만
@@ -319,8 +334,18 @@ lost update(확인 없이 덮어쓰기)는 DB 입장에서 정상 UPDATE라 로�
 
 ### Neptune (`aws.neptune`)
 
-slowquery 로그의 쿼리 문자열, 소요 시간(`event.duration`), `statusCode`, `exceptionClass`를 남긴다. 쿼리 문자열에 원고에서
-나온 그래프 데이터가 들어갈 수 있어서 **S3 보관에서는 뺀다**(ES 30일만).
+slowquery 로그의 소요 시간(`event.duration`), 응답 코드, `exceptionClass`(`error.type`), 실행 통계(`aws.neptune.*`)와
+**값을 지운 쿼리**(`message`)를 남긴다. 쿼리 원문은 저장하지 않는다.
+
+- 쿼리를 보내는 곳은 graph-rag 하나이고, 모든 값을 작은따옴표 리터럴(`'...'`)로 쿼리에 넣는다(Gremlin, 바인딩 없음).
+  리터럴에는 문서 제목·설명처럼 원고에서 나온 내용이 들어간다.
+- 리터럴 가운데 **스키마 낱말 허용 목록**(라벨, 속성 키, 결과·오류 코드, consumer 이름, 폴더 코드), **UUID 식별자**
+  (`file:<uuid>`, `inbox:<consumer>:<uuid>:<uuid>` 처럼 소문자 접두어와 이은 것 포함), sha256, ISO 시각만 남기고 나머지는
+  `'[redacted]'`로 바꾼다. 쿼리 모양과 "어느 프로젝트·문서였나"는 남고 내용은 지워진다.
+- 허용 목록에 없는 낱말은 지워지기만 하므로 내용이 새지 않는다. graph-rag에 새 라벨·키·코드를 더하면 gitops
+  `logging/base/logstash/pipelines/aws-neptune.rb`의 목록에도 더한다.
+- 값을 지운 뒤라 ES와 **S3 보관 모두**에 남긴다. Neptune이 만드는 `queryFingerprint`(값을 자리표시자로 바꾼 쿼리)도
+  쿼리 모양별로 묶어 보는 용도로 함께 남긴다.
 
 ## 9. index template (`logs@custom`)
 
