@@ -74,7 +74,14 @@ Filebeat가 Kubernetes 파드를 읽을 때 붙이는 필드와, 클러스터를
 | 필드 | 타입 | 언제 |
 | --- | --- | --- |
 | `event.original` | keyword (색인 안 함) | 파싱한 로그. 마스킹된 원래 줄 |
-| `tags` | keyword | `truncated`(길이 상한), `_parse_failure`(파싱 실패) 등 |
+| `tags` | keyword | 문서가 거친 처리나 앱이 정한 분류. 아래 규칙을 따른다 |
+
+`tags`는 Logstash와 앱이 함께 쓰는 칸이라 이름으로 출처를 나눈다.
+
+| 시작 | 붙이는 쪽 | 값 |
+| --- | --- | --- |
+| `_`(밑줄) | 파이프라인 | `_truncated`(길이 상한). 파싱 실패는 Logstash 기본 태그를 그대로 쓴다: `_grokparsefailure`, `_dissectfailure`, `_jsonparsefailure`, `_dateparsefailure`, `_rubyexception`. 어느 단계에서 실패했는지가 이름에 드러난다 |
+| 그 밖 | 앱 | 로그 종류 분류. Spring은 SLF4J marker를 `tags`로 내보낸다. 이름은 앱 로그 작업에서 정한다 |
 
 ## 3. `log.level`
 
@@ -154,7 +161,7 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 ### 길이 상한
 
 - ES로 가는 쪽에서만, `message`·`error.stack_trace`·`event.original` 각각 **256KB**를 넘으면 앞부분만 남기고 `tags`에
-  `truncated`를 붙인다.
+  `_truncated`를 붙인다.
 - S3 보관본은 마스킹된 전문을 그대로 둔다.
 - 개인정보 대책이 아니라 ES 저장·검색 비용 대책이다. 평소 로그는 2KB 이하이고 긴 예외도 수십 KB라 영향이 없다.
   Kafka payload(최대 6MB)를 통째로 찍는 사고만 걸린다.
