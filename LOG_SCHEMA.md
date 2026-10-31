@@ -57,9 +57,9 @@ Filebeat가 Kubernetes 파드를 읽을 때 붙이는 필드와, 클러스터를
 | `kubernetes.pod.name` | keyword | 파드 이름 | Filebeat |
 | `kubernetes.node.name` | keyword | 노드 이름 | Filebeat |
 | `kubernetes.labels.*` | keyword | 파드 label (예: `kubernetes.labels.app_kubernetes_io/name`) | Filebeat |
-| `container.name` | keyword | 컨테이너 이름 | Filebeat |
+| `container.name` | keyword | 컨테이너 이름 | Logstash (Filebeat가 붙인 `kubernetes.container.name`을 복사) |
 | `container.id` | keyword | 컨테이너 ID | Filebeat |
-| `host.name` | keyword | 노드 호스트 이름 | Filebeat |
+| `host.name` | keyword | 노드 호스트 이름 | Logstash (`kubernetes.node.name`. Filebeat가 붙이는 값은 Filebeat 파드 이름이다) |
 | `orchestrator.type` | keyword | `kubernetes` | Logstash |
 | `orchestrator.cluster.name` | keyword | `lore-sentry-k8s` · `lore-sentry-dev-k8s` | Logstash |
 
@@ -102,9 +102,9 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 
 | 출처 | 원래 표현 | `log.level` |
 | --- | --- | --- |
-| Spring 3개 (ECS JSON, 평문 모두) | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` | 소문자로. Logback에는 `FATAL`이 없다 |
-| Python 앱 (logging, ai-chat JSON `level`) | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `WARNING`→`warn`, `CRITICAL`→`fatal`, 나머지 소문자 |
-| uvicorn 접근 로그 | 레벨 대신 응답 상태 | 5xx `error`, 4xx `warn`, 그 외 `info` |
+| Spring 3개 (ECS JSON `log.level`) | `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR` | 소문자로. Logback에는 `FATAL`이 없다 |
+| Python 앱 (ECS JSON `log.level`) | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `WARNING`→`warn`, `CRITICAL`→`fatal`, 나머지 소문자 |
+| 레벨 없이 응답 상태만 있는 접근 로그 | `http.response.status_code` | 5xx `error`, 4xx `warn`, 그 외 `info` |
 | graph-rag (로깅 설정 없음, 레벨 없이 메시지만 출력) | 없음 | `unknown`. 앱 로그 규약을 적용하면 사라진다 |
 | Kafka 브로커, Strimzi operator (log4j) | `TRACE` … `FATAL` | 소문자로 |
 | Valkey | `.` `-` `*` `#` | `debug`, `debug`, `info`, `warn` |
@@ -113,7 +113,14 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | ALB, CloudFront | 없음 | 응답 5xx `error`, 4xx `warn`, 그 외 `info` |
 | EKS audit | 없음 | 응답 5xx `error`, 401·403 `warn`, 그 외 `info` |
 | EKS authenticator | `level=` 값 | 소문자로 |
-| 그 밖의 파드 | 형식마다 다름 | 알아볼 수 있으면 위 규칙, 아니면 `unknown` |
+| 그 밖의 파드 | JSON의 `level`·`log.level` 값, logfmt `level=`, klog 첫 글자 `I`·`W`·`E`·`F`, Redis 형식 기호(argocd-redis), Go `panic:`, 줄 앞 40자 안의 대문자 레벨 단어 | 위 단어·기호 규칙에 더해 `notice`→`info`, `critical`→`fatal`, zap `dpanic`→`error`·`panic`→`fatal`. 못 찾으면 `unknown` |
+
+- 우리 서비스(6절의 `loresentry.*`)는 `"ecs":{...}`가 든 ECS JSON 줄만 파싱한다. 지금의 평문 줄(Spring 기본 형식, uvicorn)과
+  ECS가 아닌 JSON(summarizer)은 그대로 들어가고 `log.level`은 `unknown`이다. [앱 로그 규약](#5-앱-로그-규약)을 적용하면 사라진다.
+- 2026-11-01 dev의 Loki 표본(84개 컨테이너, 2559줄)으로 확인한 `unknown` 비율: `argocd` 1%, `kube-system` 5%,
+  `monitoring` 2%, `ambassador` 0%. 남은 것은 레벨이 없는 줄(시작 스크립트 출력, Go 기본 `log` 형식, Python traceback)이다.
+- 그 밖의 파드는 줄을 바꾸지 않고 레벨만 찾는다. JSON이어도 필드로 펼치지 않는다. 남의 JSON이 `service.name`·`event.dataset`
+  같은 필드를 덮어쓰거나 필드 수를 늘리지 않게 하기 위해서다.
 
 ## 4. 금지 항목과 마스킹
 
@@ -144,7 +151,7 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | OAuth | 쿼리 `code=`, `state=`의 값 | `[redacted]` |
 | 광고 클릭 ID | 쿼리 `gclid=`, `gbraid=`, `wbraid=`의 값 (이름과 `utm_*`는 남김) | `[redacted]` |
 | 세션·동의 쿠키 | `ls_session=`, `ls_consent=`의 값 (`__Host-` 접두어 포함) | `[redacted]` |
-| 인증 헤더 | `Cookie:`, `Set-Cookie:`, `Authorization:` 뒤의 값 | `[redacted]` |
+| 인증 헤더 | `Cookie:`, `Set-Cookie:`, `Authorization:` 뒤의 값 (줄 끝까지, JSON의 `"authorization": "..."` 포함) | `[redacted]` |
 | JWT | `eyJ`로 시작하고 점으로 나뉜 세 조각 | `[jwt]` |
 | 비밀번호 | `PASSWORD '...'` | `PASSWORD '[redacted]'` |
 | DB 키 값 | `Key (칼럼)=(값)` (고유 키·외래 키 위반의 `DETAIL`) | `Key (칼럼)=([redacted])` |
@@ -171,17 +178,23 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 
 | 버리는 것 | 이유 |
 | --- | --- |
-| 응답이 2xx인 헬스체크(`GET /health`) 접근 로그 | kubelet probe가 파드마다 시간당 540줄을 남긴다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 실패(4xx·5xx·타임아웃)는 남긴다 |
+| 응답이 2xx인 헬스체크(`GET /health`) 접근 로그 | kubelet probe가 파드마다 시간당 540줄을 남긴다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 실패(4xx·5xx·타임아웃)는 남긴다. 앱 로그 규약의 `url.path`·`http.response.status_code`로만 판단하므로 지금의 uvicorn 평문 줄은 버리지 않는다 |
 | EKS audit 중 시스템 계정(노드, 컨트롤러, Argo CD 등)의 `get`·`list`·`watch` | 양이 대부분이고 감사 가치가 낮다. 쓰기 요청과 사람 계정의 요청은 모두 남긴다 |
 | RDS `rdsadmin` 계정의 연결·해제 줄 | AWS 내부 관리 연결이다 |
 
 ## 5. 앱 로그 규약
 
-다음 작업에서 각 서비스가 맞출 규약이다. 그 전까지는 Logstash가 지금의 평문 형식에서 레벨과 서비스를 뽑는다.
+다음 작업에서 각 서비스가 맞출 규약이다. 그 전까지 우리 서비스의 평문 줄은 그대로 들어가고 `log.level`은 `unknown`이다.
+dataset과 `service.name`은 지금도 파드 label로 정한다.
 
 ### 형식
 
 - stdout에 **한 줄에 ECS JSON 하나**를 쓴다. 여러 줄 예외는 `error.stack_trace` 한 필드에 담는다.
+- JSON 객체는 **중첩**해서 쓴다(`{"log":{"level":"INFO"}}`). 점이 든 키(`{"log.level":"INFO"}`)는 Logstash가 `log.level`
+  필드로 읽지 못한다. Spring Boot 4의 ECS 출력은 MDC 값까지 중첩 형식이다.
+- 모든 줄에 `"ecs":{"version":"8.11"}`을 넣는다. Logstash는 이 표시가 있는 JSON 줄만 필드로 펼친다.
+- ECS 객체 이름(`host`, `service`, `event`, `log`, `error`, `http`, `url`, `user` 등)을 다른 뜻의 문자열 키로 쓰지 않는다.
+  예를 들어 `"host": "kafka:9092"`는 `host.name`과 부딪혀 공통 필드 채우기가 실패한다(`_mutate_error`).
 - 필드 이름은 ECS 이름을 쓰고, ECS에 없는 것은 `loresentry.*` 아래에 snake_case로 둔다.
 - Spring: `logging.structured.format.console=ecs`를 쓴다. `service.name`은 Kubernetes 이름으로 맞춘다
   (`logging.structured.ecs.service.name`). 지금 `spring.application.name`은 `gateway`·`authentication`·`content`라서 다르다.
@@ -222,8 +235,10 @@ Logstash는 이 순서로 dataset을 고른다.
 
 1. aws-logs Filebeat에서 온 로그 → 출처별 `aws.*`
 2. 파드 label `app.kubernetes.io/part-of: lore-sentry`이고 아래 우리 서비스 중 하나 → `loresentry.<이름>`
-3. Kafka 브로커(label `strimzi.io/kind: Kafka`) → `kafka.log`
-4. Strimzi operator → `strimzi.operator`
+3. Kafka 브로커(label `strimzi.io/component-type: kafka`) → `kafka.log`. entity-operator·kafka-exporter 파드에도
+   `strimzi.io/kind: Kafka`가 붙어 있어 kind로는 고르지 않는다
+4. Strimzi operator(label `strimzi.io/component-type: entity-operator` 또는 `strimzi.io/kind: cluster-operator`) →
+   `strimzi.operator`. topic-operator·user-operator·cluster-operator는 `container.name`으로 나뉜다
 5. `auth-valkey` → `valkey.log`
 6. 나머지 → `kubernetes.container`
 
@@ -317,11 +332,14 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 | 레플리카 | 0 | ES가 1노드다. 레플리카가 있으면 클러스터가 yellow가 된다 |
 | 보존 | 30일 (data stream lifecycle), `prefer_ilm: false` | 내장 template의 ILM 정책 `logs`는 삭제 단계가 없다 |
 | 필드 수 | 2000개, 넘는 새 필드는 저장만 하고 색인하지 않음 | 예상하지 못한 필드가 쏟아져 매핑이 끝없이 커지는 것을 막는다 |
-| keyword 명시 | `log.level`, `log.logger`, `service.*`, `trace.id`, `span.id`, `http.request.id`, `error.code`, `error.type`, `user.id`, `orchestrator.*`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
+| keyword 명시 | `log.logger`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
 | long 명시 | `http.response.status_code`, `event.duration`, `loresentry.kafka.partition`, `loresentry.kafka.offset` | 범위 검색과 정렬 |
 
-failure store는 ES 9.2부터 `logs-*-*`에 기본으로 켜져 있어서 따로 설정하지 않는다. 실제로 적용된 값은 dev에 처음 배포할 때
-`GET _index_template/logs`와 data stream 설정으로 확인한다.
+- `logs@custom`은 ES 내장 OTel template(`logs-otel@template`)에도 합쳐진다. 그쪽에서 field alias인 필드는 여기에 지정할 수
+  없다(ES가 template을 거부한다). 3·7절의 `log.level`, `trace.id`, `span.id`와 2절의 `service.environment`,
+  `orchestrator.cluster.name`이 여기에 해당하고, 내장 `ecs@mappings`가 문자열을 keyword로 만든다.
+- 로컬 ES 9.5.5에서 확인한 결과: 위 필드는 모두 keyword, long 필드는 long, data stream은 logsdb 모드, failure store 켜짐,
+  보존 30일, 레플리카 0. dev에 배포한 뒤 `GET _data_stream/logs-*`로 다시 확인한다.
 
 ## 바꾸는 절차
 
