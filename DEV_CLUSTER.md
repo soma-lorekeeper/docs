@@ -17,7 +17,8 @@ dev는 **prod와 같은 방식으로 만든 두 번째 환경**이다. 부하 �
 | `https://api-dev.loresentry.com` | dev API (gateway) |
 | `https://media-dev.loresentry.com` | dev 사용자 이미지 |
 | `https://argocd-dev.loresentry.com` | dev Argo CD (로컬 `admin`) |
-| `https://grafana-dev.loresentry.com` | dev Grafana (Prometheus·Loki) |
+| `https://grafana-dev.loresentry.com` | dev Grafana (Prometheus) |
+| `https://kibana-dev.loresentry.com` | dev Kibana (로그 검색, 지금은 관리자 `elastic` 계정만) |
 
 **사용자가 쓰는 서비스(프런트·백엔드·데이터)는 완전히 분리돼 있다.** dev 화면에서 로그인하고 글을 쓰고 AI 챗을 써도 prod
 서버와 prod DB에는 닿지 않는다. **기반 시설 일부(네트워크, 일부 IAM 역할, 이미지 저장소, GitOps 저장소, 계정)는 prod와 공유한다**
@@ -54,19 +55,20 @@ dev:   dev.loresentry.com  → api-dev.loresentry.com  → EKS lore-sentry-dev-k
 | 계층 | dev 전용 리소스 |
 |---|---|
 | 프런트엔드 | S3 `loresentry-web-dev-<AWS_ACCOUNT_ID>`, CloudFront(`dev.loresentry.com`), CloudFront Function `loresentry-web-dev-rewrite` |
-| 진입점 | ALB 1개 (IngressGroup `lore-sentry-dev`) — `api-dev`·`argocd-dev`·`grafana-dev`가 공유 |
-| 클러스터 | EKS `lore-sentry-dev-k8s`, 노드 그룹 `lore-sentry-dev-pool`, 애드온, Pod Identity 연결, access entry |
+| 진입점 | ALB 1개 (IngressGroup `lore-sentry-dev`) — `api-dev`·`argocd-dev`·`grafana-dev`·`kibana-dev`가 공유. 접근 로그는 S3 `loresentry-aws-logs-dev-<AWS_ACCOUNT_ID>/alb/` |
+| 클러스터 | EKS `lore-sentry-dev-k8s`, 노드 그룹 `lore-sentry-dev-pool`·`lore-sentry-dev-logging-pool`(로깅 전용 `r7i.large` 1대, 2b, taint `dedicated=logging:NoSchedule`), 애드온, Pod Identity 연결, access entry |
 | 워크로드 | gateway·authentication·content·ai-chat(+요약기)·graph-rag, auth-valkey, openai-mock |
-| 관계형 DB | RDS `lore-sentry-dev-postgres` — 논리 DB 3개, 서비스 역할 3개, 마스터 비밀번호(Secrets Manager) 모두 별도 |
-| 그래프 DB | Neptune `lore-sentry-dev-neptune` |
+| 관계형 DB | RDS `lore-sentry-dev-postgres` — 논리 DB 3개, 서비스 역할 3개, 마스터 비밀번호(Secrets Manager) 모두 별도. 로그용 파라미터 그룹 `lore-sentry-dev-postgres18` |
+| 그래프 DB | Neptune `lore-sentry-dev-neptune`. 로그용 파라미터 그룹 `lore-sentry-dev-neptune14`(slowquery 1초) |
 | 메시징 | Strimzi Kafka 브로커 3대와 토픽 10개 (클러스터 안) |
-| 디스크 | EBS 볼륨: Kafka 10Gi ×3, valkey 4Gi, Prometheus 20Gi, Loki 10Gi |
-| 파일 | S3 `loresentry-{media,refresh,logs}-dev-<AWS_ACCOUNT_ID>`, 이미지 CloudFront(`media-dev.loresentry.com`) |
+| 디스크 | EBS 볼륨: Kafka 10Gi ×3, valkey 4Gi, Prometheus 20Gi, Elasticsearch 20Gi, Logstash 5Gi, aws-logs Filebeat 1Gi |
+| 파일 | S3 `loresentry-{media,refresh}-dev-<AWS_ACCOUNT_ID>`, 이미지 CloudFront(`media-dev.loresentry.com`). 로그 버킷 `loresentry-log-archive-dev-<AWS_ACCOUNT_ID>`(가공본 1년)·`loresentry-aws-logs-dev-<AWS_ACCOUNT_ID>`(ALB·CloudFront 원천 30일) |
 | 네트워크 | private 서브넷 `10.20.13.0/24`(2a)·`10.20.14.0/24`(2b), 라우팅 테이블 `lore-sentry-dev-private` |
 | 보안 그룹 | 클러스터 SG, DB SG 2개(`lore-sentry-dev-postgres-sg`, `lore-sentry-dev-neptune-sg`), ALB SG |
-| IAM | 앱 역할 `lore-sentry-dev-{content,graph-rag,loki}-role` — dev 버킷에만 접근 |
+| IAM | 앱 역할 `lore-sentry-dev-{content,graph-rag,logstash,filebeat-aws}-role` — dev 버킷·로그 그룹에만 접근 |
 | Git 밖 Secret | JWT 키 쌍, DB 서비스 비밀번호, valkey ACL 비밀번호, Grafana admin, Google OAuth (모두 prod와 다른 값) |
-| 배포·관측 | Argo CD, kube-prometheus-stack, Loki, Alloy, Telepresence |
+| 배포·관측 | Argo CD, kube-prometheus-stack, ELK(ECK operator, Elasticsearch·Kibana·Logstash·Filebeat, 매니페스트는 gitops `logging/`), Telepresence |
+| AWS 관리형 로그 | CloudWatch 로그 그룹 3개(RDS `postgresql`, Neptune `slowquery`, EKS `authenticator`, 보존 30일), CloudFront 로그 전달 2개(us-east-1). 켜는 스크립트는 `bootstrap/dev/08-aws-logs.sh`, 로그 규약은 [LOG_SCHEMA.md](LOG_SCHEMA.md) |
 | 배포 Lambda | `loresentry-update-gitops-dev` |
 
 ## 3. 공유하는 것 — prod와 함께 쓴다
@@ -76,7 +78,7 @@ dev를 만들 때 EIP 쿼터(5개 중 4개 사용) 증설 없이 만들기 위�
 
 | 공유 리소스 | 영향 |
 |---|---|
-| VPC, IGW, **regional NAT**, public 서브넷 | dev의 외부 트래픽(이미지 pull, S3, Loki)도 prod와 같은 NAT를 지난다. VPC endpoint가 없어 S3 통신도 NAT를 거친다. NAT 장애는 두 환경에 같이 온다 |
+| VPC, IGW, **regional NAT**, public 서브넷 | dev의 외부 트래픽(이미지 pull, S3, CloudWatch Logs 조회)도 prod와 같은 NAT를 지난다. VPC endpoint가 없어 S3 통신도 NAT를 거친다. NAT 장애는 두 환경에 같이 온다 |
 | IAM 역할: 클러스터·노드·vpc-cni·ebs-csi·로드밸런서 컨트롤러 | 정책을 바꾸면 두 클러스터에 같이 적용된다 |
 | ECR `<service>/api` 5개 | dev 빌드와 prod 빌드가 같은 저장소에 쌓인다. 태그(`build-N-M`)는 겹치지 않지만 태그만 보고는 어느 브랜치 빌드인지 모른다 |
 | ACM 인증서 (`*.loresentry.com`, ALB용·CloudFront용) | 갱신 검증 레코드도 공유 |
@@ -106,9 +108,9 @@ dev를 만들 때 EIP 쿼터(5개 중 4개 사용) 증설 없이 만들기 위�
 | EKS | v1.36, 인증 모드 `API`, endpoint public+private, 서비스 CIDR `172.20.0.0/16` |
 | 노드 | `r7i.large` ×3 (min 2 / max 4), AL2023 `1.36.3-20260827`, 50GiB, node repair, **2a 1대 / 2b 2대** |
 | 애드온 | vpc-cni·coredns·kube-proxy·ebs-csi·pod-identity-agent·metrics-server·node-monitoring-agent, 같은 버전 |
-| RDS | PostgreSQL 18.6 `db.t4g.micro`, gp3 20GB, Single-AZ **2b**, 기본 파라미터 그룹, 백업 7일 |
-| Neptune | 1.4.8.0 `db.t4g.medium` writer 1대 **2b**, 기본 파라미터 그룹 |
-| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Loki·Alloy·Telepresence — 차트 버전과 values 동일 |
+| RDS | PostgreSQL 18.6 `db.t4g.micro`, gp3 20GB, Single-AZ **2b**, 백업 7일 |
+| Neptune | 1.4.8.0 `db.t4g.medium` writer 1대 **2b** |
+| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Telepresence — 차트 버전과 values 동일. Grafana datasource 설정에 dev만 Loki가 없다(§11) |
 | 워크로드 | `workload/base` 그대로. replica·CPU·메모리 request/limit 동일 |
 | 오토스케일 | 없음 (HPA·Cluster Autoscaler 모두 없음, prod와 같음) |
 
@@ -128,6 +130,8 @@ dev를 만들 때 EIP 쿼터(5개 중 4개 사용) 증설 없이 만들기 위�
 | Argo CD SSO 없음 (로컬 `admin`) | GitHub OAuth App이 하나 더 필요하다. 필요해지면 추가한다 |
 | 노드 SSH 없음 | prod는 22번 포트가 전 세계에 열려 있다. 따라 하지 않는다 |
 | dev 미디어 버킷 CORS는 `https://dev.loresentry.com` | dev 프런트에서 이미지를 직접 올리므로 |
+| 로그 수집이 ELK(`logging/`)이고 Loki·Alloy가 없다. 로깅 전용 노드 그룹 1대가 더 있다 | prod를 옮기기 전에 dev에서 먼저 세우고 검증했다. prod는 아직 Loki·Alloy다. ES·Logstash 디스크가 2b에 묶여 있어 로깅 노드는 2b 서브넷에만 둔다 |
+| RDS·Neptune 로그용 파라미터 그룹과 로그 내보내기, EKS `authenticator` 로그, ALB·CloudFront 접근 로그 | 위와 같다. 파라미터 그룹 교체 때 재부팅이 필요해 dev에서 리허설했다(RDS 약 20초, Neptune 약 9초 중단). EKS audit은 CloudWatch 수집이 하루 약 2.3GB라 켜지 않는다(prod도 같은 방침) |
 
 CORS·CSRF는 Origin `https://dev.loresentry.com` 기준이다. prod 프런트에서 dev API로의 요청은 거절된다.
 
@@ -136,7 +140,7 @@ CORS·CSRF는 Origin `https://dev.loresentry.com` 기준이다. prod 프런트�
 dev 클러스터의 네임스페이스는 `dev`다. 분리는 클러스터가 맡고, 이름이 다른 것은 **사람의 실수를 막는 장치**다.
 
 - 컨텍스트를 헷갈려 dev 클러스터에 `kubectl -n prod ...`를 치면 네임스페이스가 없어 바로 실패한다. 반대도 같다.
-- Grafana·Loki에서 `namespace="dev"`로 바로 구분된다.
+- Grafana에서는 `namespace="dev"`, Kibana에서는 `kubernetes.namespace: dev`로 바로 구분된다. ELK data stream 이름도 `logs-<dataset>-dev`로 끝난다.
 
 | 환경 | kube context | 네임스페이스 |
 |---|---|---|
@@ -224,8 +228,9 @@ loresentry-gitops (main)
 
 - **dev Application을 `argocd-apps/`에 넣지 않는다.** prod root가 그 디렉터리를 읽고, 거기 있는 Application은 prod 클러스터에
   배포된다.
-- `argocd-apps-dev/`는 prod Application의 복사본이다. 바뀐 값은 클러스터 이름·ALB 그룹·호스트·Loki 버킷·Strimzi와 Telepresence의
-  네임스페이스·Telepresence 서브넷뿐이다. prod Application을 고치면 dev 복사본도 같이 고친다.
+- `argocd-apps-dev/`는 prod Application의 복사본이다. 바뀐 값은 클러스터 이름·ALB 그룹·호스트·Strimzi와 Telepresence의
+  네임스페이스·Telepresence 서브넷, ALB 접근 로그 설정이다. prod Application을 고치면 dev 복사본도 같이 고친다.
+  ELK(`eck-operator.yaml`, `logging.yaml`)는 아직 dev에만 있고, Loki·Alloy는 prod에만 있다.
 - `workload/base/`를 고치면 머지 즉시 두 환경에 반영된다. 매니페스트 변경을 dev에서 먼저 시험하는 순서는 지금 구조로는 없다.
 
 ## 8. OpenAI mock
@@ -444,24 +449,27 @@ kubectl --context lore-sentry-dev -n monitoring get secret grafana-admin -o json
 | 로컬 `GOOGLE_CLIENT_*`가 dev Secret에 들어감 | 스크립트가 일반 이름의 환경 변수를 읽었다 | 되돌리고 `DEV_` 접두사로 바꿨다 |
 | **gateway 파드가 새로 뜬 직후, 파드마다 첫 인증 요청이 503 `SESSION_UNAVAILABLE`** | 미확인. 세션 저장소 연결이나 검증 스크립트가 첫 요청 시점에 준비되지 않는 것으로 보인다. 오래 쉰 뒤에는 재현되지 않았다 | **미해결.** dev에서 3번 재현됐다. prod도 배포 직후 같을 가능성이 있다 |
 | `strimzi-kafka-operator` OutOfSync | prod와 같은 표시상 문제 | 그대로 둔다 |
+| dev Grafana에서 Loki datasource를 고르면 연결 실패 | provisioning에서 빼도 Grafana는 DB에 넣어 둔 datasource를 지우지 않는다 | Grafana 알림 작업 때 `deleteDatasources`로 지운다 |
+| kube-system csi-snapshotter가 error를 계속 남긴다(하루 약 2만 줄) | 클러스터에 VolumeSnapshot CRD가 없다 | 그대로 둔다. Kibana에서 걸러 본다 |
 
 ## 12. prod 대비 점검 — 2026-10-31
 
 prod와 dev의 실제 상태를 계층별로 꺼내 비교했다(prod는 조회만). 환경 이름·버킷 이름처럼 당연히 다른 값은 맞춘 뒤 비교했다.
+dev 로깅 전환(2026-11-01) 뒤 달라진 행은 그 기준으로 고쳤다.
 
 | 계층 | 결과 |
 |---|---|
 | EKS·노드 그룹·애드온·Pod Identity·access entry | 같다. 플랫폼 버전만 dev `eks.17` / prod `eks.14` (AWS가 정하는 값, 고정 불가) |
 | 노드 | OS·커널·kubelet·containerd·allocatable·AZ 배치(2a 1 / 2b 2) 같다 |
 | kube-system, VPC CNI 설정 | 같다 |
-| Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application 9개 정의·상태 같다 |
+| Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application은 둘 다 9개이고, dev만 `eck-operator`·`logging`, prod만 `loki`·`alloy`가 있다. 나머지 7개는 정의·상태 같다 |
 | 워크로드 | replica·리소스·probe·볼륨·보안 설정 같다. env 차이는 §5의 의도한 것뿐 |
 | Service·PDB·NetworkPolicy·PVC·StorageClass·ConfigMap·Secret 키·Kafka·토픽 | 같다. prod에만 쓰이지 않는 옛 `auth-valkey` Secret이 남아 있다 |
-| 모니터링 | PrometheusRule 33·ServiceMonitor 12·PodMonitor 2, 규칙 251개, 수집 대상 36/36 정상 — 같다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)도 같다 |
-| ALB | 속성·리스너·헬스체크·대상 그룹 설정 같다 |
-| RDS·Neptune | 엔진·사양·스토리지·암호화·AZ·파라미터 그룹 같다. 백업·점검 시간대는 **달랐다 → 맞췄다** |
-| S3·CloudFront·Lambda | 같다(CORS 주소·태그 제외) |
-| 앱 IAM | graph-rag·loki 같다. **content 미디어 정책은 prod가 저장소 템플릿보다 옛 버전**이다(아래) |
+| 모니터링 | dev는 PrometheusRule 31·ServiceMonitor 10·PodMonitor 2, 규칙 228개, 수집 대상 36/36 정상. prod(33·12·2, 251개)와의 차이는 prod에만 있는 Loki·Alloy 차트의 것이다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)는 같다 |
+| ALB | 리스너·헬스체크·대상 그룹 설정 같다. 속성은 dev만 접근 로그가 켜져 있다 |
+| RDS·Neptune | 엔진·사양·스토리지·암호화·AZ 같다. 파라미터 그룹과 로그 내보내기는 dev만 켜져 있다(§5). 백업·점검 시간대는 **달랐다 → 맞췄다** |
+| S3·CloudFront·Lambda | 같다(CORS 주소·태그 제외). dev는 로그 버킷 2개와 CloudFront 로그 전달이 더 있다 |
+| 앱 IAM | graph-rag 같다. dev에는 loki 역할 대신 logstash·filebeat-aws 역할이 있다. **content 미디어 정책은 prod가 저장소 템플릿보다 옛 버전**이다(아래) |
 | CI workflow | 6개 저장소 모두 `main`·`dev`의 파일이 같다 |
 
 ### 고친 것
@@ -484,7 +492,7 @@ prod와 dev의 실제 상태를 계층별로 꺼내 비교했다(prod는 조회�
 
 ## 13. 비용과 정리
 
-상시 가동 시 시간당 약 $0.8로 추정한다. EKS, 노드 3대, Neptune, RDS, ALB, EBS를 합한 값이고, NAT는 공유라 처리량 요금만
+상시 가동 시 시간당 약 $1.0로 추정한다. EKS, 노드 4대(로깅 노드 포함), Neptune, RDS, ALB, EBS를 합한 값이고, NAT는 공유라 처리량 요금만
 더해진다. 계정 SCP가 비용·가격 API를 막으므로 정확한 금액은 ISB 포털에서 본다.
 
 ```bash
@@ -494,11 +502,12 @@ CONFIRM=lore-sentry-dev-k8s loresentry-gitops/bootstrap/dev/teardown.sh
 순서는 다음과 같다.
 
 1. ALB를 먼저 놓아 준다.
-2. 클러스터를 지운다.
+2. 클러스터를 지운다(로깅 노드 그룹 포함).
 3. `Retain`으로 남는 EBS 볼륨을 지운다.
-4. DB, CloudFront 2개와 함수, 버킷 4개, dev IAM을 지우고, 프런트 배포 권한에서 dev 항목을 뺀다.
+4. DB와 로그용 파라미터 그룹, CloudFront 로그 전달, CloudFront 2개와 함수, 버킷 5개, dev IAM을 지우고, 프런트 배포 권한에서 dev 항목을 뺀다.
 5. dev 서브넷을 지운다.
+6. CloudWatch 로그 그룹 3개를 지운다.
 
-공유 리소스는 건드리지 않는다. 지운 뒤 Cloudflare의 `dev`·`api-dev`·`media-dev`·`argocd-dev`·`grafana-dev` 레코드와 Google
+공유 리소스는 건드리지 않는다. 지운 뒤 Cloudflare의 `dev`·`api-dev`·`media-dev`·`argocd-dev`·`grafana-dev`·`kibana-dev` 레코드와 Google
 콘솔의 dev OAuth 클라이언트를 지운다. Lambda `loresentry-update-gitops-dev`와 각 저장소의 `dev` 브랜치는 남으니, dev를 다시
 만들지 않을 거라면 함께 정리한다.
