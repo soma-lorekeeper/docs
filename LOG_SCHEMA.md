@@ -1,6 +1,6 @@
 # 로그 스키마 — ECS 필드·레벨·마스킹·data stream 규약
 
-> 최신화: 2026-10-31
+> 최신화: 2026-11-01
 > 대상: 클러스터 안 모든 파드 로그와 AWS 관리형 리소스(ALB·CloudFront·RDS·Neptune·EKS) 로그
 > 상태: **규약 확정.** 로그 수집 스택(ECK)은 dev부터 배포 중이다. 앱이 이 규약대로 로그를 내는 작업은 다음 단계에서 한다.
 > 관련: 매니페스트와 index template은 `loresentry-gitops/logging/`(`base/elasticsearch/logs-custom.json`)
