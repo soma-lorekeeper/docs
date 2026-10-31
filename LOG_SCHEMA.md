@@ -111,7 +111,6 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | PostgreSQL | `DEBUG1-5`, `LOG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `FATAL`, `PANIC` | `debug`, `info`, `info`, `info`, `warn`, `error`, `fatal`, `fatal`. 느린 쿼리(`duration:`)와 잠금 대기(`still waiting for`)는 `warn`으로 올린다 |
 | Neptune slowquery | 없음 | `warn`. `exceptionClass`가 있으면 `error` |
 | ALB, CloudFront | 없음 | 응답 5xx `error`, 4xx `warn`, 그 외 `info` |
-| EKS audit | 없음 | 응답 5xx `error`, 401·403 `warn`, 그 외 `info` |
 | EKS authenticator | `level=` 값 | 소문자로 |
 | 그 밖의 파드 | JSON의 `level`·`log.level` 값, logfmt `level=`, klog 첫 글자 `I`·`W`·`E`·`F`, Redis 형식 기호(argocd-redis), Go `panic:`, 줄 앞 40자 안의 대문자 레벨 단어 | 위 단어·기호 규칙에 더해 `notice`→`info`, `critical`→`fatal`, zap `dpanic`→`error`·`panic`→`fatal`. 못 찾으면 `unknown` |
 
@@ -142,7 +141,8 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 규칙의 원칙:
 
 - 앱이 실수로 남긴 값을 막는 두 번째 방어선이다.
-- **파싱이 성공했는지와 상관없이** `message`, `event.original`, `url.query`, `error.message`, `error.stack_trace`에 적용한다.
+- **파싱이 성공했는지와 상관없이** `message`, `event.original`, `url.query`, `url.original`, `http.request.referrer`,
+  `error.message`, `error.stack_trace`에 적용한다.
 - ES나 S3로 갈라지기 전에 적용한다.
 
 | 대상 | 찾는 것 | 바꾼 값 |
@@ -150,6 +150,7 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | 이메일 | `로컬@도메인` 형태 | `[email]` |
 | OAuth | 쿼리 `code=`, `state=`의 값 | `[redacted]` |
 | 광고 클릭 ID | 쿼리 `gclid=`, `gbraid=`, `wbraid=`의 값 (이름과 `utm_*`는 남김) | `[redacted]` |
+| 서명 URL | 쿼리 `X-Amz-Signature=`, `X-Amz-Credential=`, `X-Amz-Security-Token=`, `Signature=`의 값 (대소문자 무시, `X-Amz-Expires` 등은 남김). S3 presigned URL, CloudFront 서명 URL | `[redacted]` |
 | 세션·동의 쿠키 | `ls_session=`, `ls_consent=`의 값 (`__Host-` 접두어 포함) | `[redacted]` |
 | 인증 헤더 | `Cookie:`, `Set-Cookie:`, `Authorization:` 뒤의 값 (줄 끝까지, JSON의 `"authorization": "..."` 포함) | `[redacted]` |
 | JWT | `eyJ`로 시작하고 점으로 나뉜 세 조각 | `[jwt]` |
@@ -179,7 +180,6 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | 버리는 것 | 이유 |
 | --- | --- |
 | 응답이 2xx인 헬스체크(`GET /health`) 접근 로그 | kubelet probe가 파드마다 시간당 540줄을 남긴다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 실패(4xx·5xx·타임아웃)는 남긴다. 앱 로그 규약의 `url.path`·`http.response.status_code`로만 판단하므로 지금의 uvicorn 평문 줄은 버리지 않는다 |
-| EKS audit 중 시스템 계정(`system:`·`eks:`로 시작: 노드, 컨트롤러, Argo CD 등)의 **성공한**(응답 400 미만) `get`·`list`·`watch` | 양이 대부분이고 감사 가치가 낮다. 쓰기 요청, 사람 계정의 요청, 실패한 요청(시스템 계정의 403 등 권한 설정 오류 신호)은 모두 남긴다 |
 | RDS `rdsadmin` 계정의 연결·해제 줄 | AWS 내부 관리 연결이다 |
 
 ## 5. 앱 로그 규약
@@ -258,10 +258,9 @@ Logstash는 이 순서로 dataset을 고른다.
 | CloudFront | `cloudfront` | `aws.cloudfront` | `logs-aws.cloudfront-dev` |
 | RDS PostgreSQL | `rds-postgresql` | `aws.rds` | `logs-aws.rds-dev` |
 | Neptune | `neptune` | `aws.neptune` | `logs-aws.neptune-dev` |
-| EKS audit | `eks` | `aws.eks_audit` | `logs-aws.eks_audit-dev` |
 | EKS authenticator | `eks` | `aws.eks_authenticator` | `logs-aws.eks_authenticator-dev` |
 
-prod는 끝만 `-prod`로 바뀐다. 환경마다 16개다. 출처를 알 수 없는 AWS 줄(설정 실수, 켜지 않은 EKS 로그 종류)은 버리지 않고
+prod는 끝만 `-prod`로 바뀐다. 환경마다 15개다. 출처를 알 수 없는 AWS 줄(설정 실수, 켜지 않은 EKS 로그 종류)은 버리지 않고
 `logs-aws.unknown-<env>`에 모은다. 여기에 쌓이면 규칙을 더한다.
 
 AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이름을 쓰고, 출처에만 있는 값은 출처 이름 아래에 둔다.
@@ -269,12 +268,9 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | 출처 | ECS 필드 | 출처 필드 |
 | --- | --- | --- |
 | ALB | `http.request.method`, `url.original`·`url.path`·`url.query`·`url.domain`, `http.response.status_code`, `source.ip`, `destination.ip`, `user_agent.original`, `tls.version`, `event.duration`(처리 시간 합), `http.request.id`(`trace_id`) | `aws.alb.*` (대상 상태 코드, 오류 사유, 대상 그룹 등) |
-| CloudFront (v2 JSON) | 위와 같은 HTTP 필드, `http.request.referrer` | `aws.cloudfront.*` (엣지 위치, 결과 유형, 요청 ID 등). `cs(Cookie)`는 저장하지 않는다 |
-| EKS audit | `event.action`(verb), `http.response.status_code`, `source.ip`, `user_agent.original` | `kubernetes.audit.*` (Elastic Kubernetes audit 통합과 같은 이름: `user.username`, `objectRef.*`, `responseStatus.code` 등) |
+| CloudFront (v2 JSON) | 위와 같은 HTTP 필드, `http.request.referrer`, `source.geo.country_iso_code`(`c-country`) | `aws.cloudfront.*` (엣지 위치, 결과 유형, 요청 ID, 캐시 동작 경로, 오리진 첫·마지막 바이트 지연 등). `cs(Cookie)`는 저장하지 않는다 |
 | EKS authenticator | | `aws.eks.authenticator.arn`·`username` |
 | Neptune | `event.duration`, `http.response.status_code`, `error.type`(`exceptionClass`) | `aws.neptune.*` (쿼리 fingerprint, 실행 통계) |
-
-EKS audit의 Kubernetes 사용자 이름은 `user.*`에 넣지 않는다. `user.*`는 앱 사용자(`users.id`)만 가리킨다.
 
 ## 7. trace
 
