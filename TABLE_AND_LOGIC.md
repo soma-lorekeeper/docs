@@ -430,7 +430,7 @@ d-yjh 에서 읽으면 → relation_key = related_manuscript, target = d-ch1
 id                   UUID              버전 ID다.
 document_id          UUID              어느 문서의 버전인가.
 source_revision_no   BIGINT            snapshot을 찍은 실제 revision 번호다.
-kind                 VARCHAR           AUTO, NAMED, AI_APPLY, RESTORE, REFRESH_BASE다.
+kind                 VARCHAR           AUTO, NAMED, AI_APPLY, RESTORE, REFRESH_BASE, SETTING_CHECK다.
 label                VARCHAR           NAMED 버전의 사용자 이름이다.
 snapshot             JSONB             제목, 본문, 속성, 관계를 포함한 문서 전체 상태다.
 expires_at           TIMESTAMPTZ       자동/내부 base 버전의 정리 시각. 영구 버전은 NULL이다.
@@ -461,6 +461,8 @@ snapshot =
 ```
 
 `REFRESH_BASE`는 사용자가 만든 버전이 아니라 내부 병합 기준이다. 일반 버전 목록에 표시하지 않으며, refresh run이 끝난 뒤 보관 기간 정책에 따라 정리한다.
+
+`SETTING_CHECK`는 설정 오류 점검이 읽은 판이다(V21). ai-chat `setting_check_runs.version_id`가 가리키고, 리포트는 이 버전의 본문을 보여 준다. 사용자 버전 목록에 "설정 오류 점검"으로 보이며 만료되지 않는다(`expires_at` NULL). 같은 판(`source_revision_no`)을 다시 점검하면 새로 만들지 않고 이 행을 다시 쓴다.
 
 ---
 
