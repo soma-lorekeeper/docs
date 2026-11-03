@@ -1037,9 +1037,10 @@ sequenceDiagram
 | `ce_time` | occurred_at. RFC 3339 | O |
 | `ce_sequence` | 발행 순번. 발행 서비스 outbox 행의 seq(정수)를 문자열로 적음 | `content.project.changed.v1`은 O, 그 외 선택 |
 | `content-type` | `application/json` | O |
-| `traceparent` | W3C Trace Context. 분산 추적을 붙일 때 | 선택 |
+| `traceparent` | W3C Trace Context. 이벤트를 만든 요청·이벤트의 값. outbox 행에 저장해 둔 값을 relay가 실음 | O (소비자는 없어도 거부하지 않음) |
 
 - 값은 UTF-8 문자열이고 같은 이름은 하나만 둠.
+- traceparent 규약은 [LOG_SCHEMA.md](LOG_SCHEMA.md) 7절. 소비자는 이 값을 이어받아 처리 로그와 span에 같은 trace를 남김. 헤더가 없거나 형식이 틀리면(옛 행, 추적을 붙이기 전의 발행자) 새 trace로 처리하고 메시지는 거부하지 않음.
 - ce_subject는 이벤트가 상태를 담고 있는 대상. FileChanged는 file_id, ProjectDeleted는 project_id, GraphRefreshRequested와 GraphRefreshCompleted는 request_id, UserDeleted는 user_id. payload에서 빼지 않고 header에 한 번 더 실음. 두 값이 같도록 발행자가 보장함.
 - ce_sequence는 CloudEvents의 sequence 확장 속성. 같은 ce_source 안에서만 비교하고, 1씩 오르지 않으므로 크기만 비교함. 필수가 아닌 topic에도 붙어 올 수 있고, 쓰지 않는 소비자는 무시함.
 - ce_type에는 표준이 권장하는 reverse-DNS 접두사를 붙이지 않음. 내부에서만 쓰는 이벤트라 Event 섹션 이름 그대로 씀.
@@ -1229,6 +1230,7 @@ CREATE TABLE outbox_event (
     event_type     VARCHAR(100) NOT NULL,                       -- 예: OrderPlaced
     event_key      VARCHAR(100) NOT NULL,                       -- Kafka key. 순서가 필요한 단위(보통 aggregate id)
     payload        JSONB        NOT NULL,
+    traceparent    VARCHAR(55),                                 -- 행을 쓴 요청의 W3C traceparent. relay가 헤더로 실음(LOG_SCHEMA.md 7절)
     created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
     published_at   TIMESTAMPTZ,                                 -- 발행 성공 시각. NULL이면 아직 안 보냄
     attempts       INT          NOT NULL DEFAULT 0,             -- 발행 실패 횟수

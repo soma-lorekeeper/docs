@@ -1,14 +1,14 @@
 # 로그 스키마 — ECS 필드·레벨·마스킹·data stream 규약
 
-> 최신화: 2026-11-01
-> 대상: 클러스터 안 모든 파드 로그와 AWS 관리형 리소스(ALB·CloudFront·RDS·Neptune·EKS) 로그
-> 상태: **규약 확정.** 로그 수집 스택(ECK)은 dev부터 배포 중이다. 앱이 이 규약대로 로그를 내는 작업은 다음 단계에서 한다.
+> 최신화: 2026-11-03
+> 대상: 클러스터 안 모든 파드 로그와 AWS 관리형 리소스(ALB·CloudFront·RDS·Neptune·EKS) 로그, 앱이 보내는 trace(span)
+> 상태: **규약 확정.** 로그 수집 스택(ECK)은 dev에 배포했다. 앱이 이 규약대로 로그·trace를 내는 작업은 dev부터 적용 중이다.
 > 관련: 매니페스트와 index template은 `loresentry-gitops/logging/`(`base/elasticsearch/logs-custom.json`)
 
 클러스터 안 모든 로그와 AWS 관리형 리소스 로그를 Elasticsearch에 넣을 때의 규약이다. 로그를 내보내는 앱, 가공하는
 Logstash, 저장하는 ES index template이 모두 이 문서를 따른다.
 
-- 기준: **ECS 8.11**. Spring Boot 4.1.1의 ECS 출력이 `ecs.version: 8.11`이고, 여기서 쓰는 ECS 필드는 8.11에 모두 있다.
+- 기준: **ECS 8.11**. 앱의 로그 formatter와 Logstash가 `ecs.version: 8.11`을 쓰고, 여기서 쓰는 ECS 필드는 8.11에 모두 있다.
 - ECS에 없는 우리 필드는 `loresentry.*` 아래에 둔다. ECS는 자체 필드를 회사 이름 아래에 두라고 권한다.
 - 이 문서를 바꿀 때는 gitops의 index template과 Logstash 설정도 같은 시점에 고친다. 맨 아래 [바꾸는 절차](#바꾸는-절차)를
   따른다.
@@ -22,14 +22,17 @@ AWS(ALB·CloudFront·RDS·Neptune·EKS) ─▶ S3·CloudWatch ─▶ Filebeat(aw
                               Logstash: 파싱 · 정규화 · 마스킹 · data stream 선택
                                      ├─▶ Elasticsearch (30일, 길이 상한 적용)
                                      └─▶ S3 보관 (1년, 마스킹된 전문)
+
+앱 span (OTLP) ─▶ EDOT Collector: APM 가공 · 마스킹 ─▶ Elasticsearch traces·metrics (30일) ─▶ Kibana APM
 ```
 
 | 단계 | 하는 일 | 하지 않는 일 |
 | --- | --- | --- |
-| 앱 | 아래 [앱 로그 규약](#5-앱-로그-규약)대로 ECS JSON 한 줄씩 stdout에 쓴다. 금지 항목을 찍지 않는다 | 마스킹을 Logstash에 기대지 않는다 |
+| 앱 | 아래 [앱 로그 규약](#5-앱-로그-규약)대로 로그 클래스로만 ECS JSON 한 줄씩 stdout에 쓴다. 금지 항목을 찍지 않는다. [7절](#7-trace)대로 span을 만들고 전파한다 | 마스킹을 Logstash·collector에 기대지 않는다 |
 | Filebeat | 줄 읽기, CRI 해제, 여러 줄 묶기, `kubernetes.*` 붙이기 | 파싱·가공 |
 | Logstash | 파싱, `log.level` 정규화, 필수 필드 채우기, 마스킹, 소음 제거, data stream 선택 | — |
-| ES | 필드 타입(`logs@custom`), 보존 기간, 거부된 문서 보관(failure store) | ingest pipeline을 두지 않는다 |
+| EDOT Collector | span 받기(OTLP), APM 화면용 지표 만들기, span 속성 마스킹 | 로그를 받지 않는다 |
+| ES | 필드 타입(`logs@custom`, traces·metrics `@custom`), 보존 기간, 거부된 문서 보관(failure store) | ingest pipeline을 두지 않는다 |
 
 ## 2. 공통 필드
 
@@ -134,7 +137,9 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | 비밀번호 (DB 역할, Valkey 계정) | 사용자 비밀번호는 없다(Google 로그인만). 인프라 비밀번호가 대상이다 |
 | 광고 클릭 ID 값(`gclid`, `gbraid`, `wbraid`) | 클릭 하나를 특정한다. 이미 `user_acquisitions`와 GA로 수집한다 |
 
-`user.id`(auth `users.id` UUID)는 남겨도 된다. UUID만으로는 사람을 특정할 수 없다.
+`user.id`(auth `users.id` UUID)와 도메인 ID(프로젝트·문서·세션 대화·설정 검사 등의 UUID, 문서 저장의 `X-Save-Id`)는 남겨도 된다.
+UUID만으로는 사람이나 내용을 특정할 수 없다. 다만 이름에 ID가 붙어도 인증에 쓰는 값(세션 ID인 `ls_session` 쿠키 값, 동의 요청 ID,
+OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이어 갈 수 있으므로 남기지 않는다.
 
 ### Logstash 마스킹 규칙
 
@@ -166,6 +171,15 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 이름, 본문처럼 패턴으로 잡을 수 없는 것은 앱이 찍지 않는 것으로만 막는다. 대신 정기적으로 반대 검색(이메일 패턴,
 `code=`, `PASSWORD` 등)을 돌려 ES와 S3에서 0건인지 확인한다.
 
+### trace(span) 마스킹
+
+로그는 Logstash가, trace는 EDOT Collector가 마스킹한다. span은 Logstash를 거치지 않고 collector에서 ES로 바로 가기 때문이다.
+
+- collector가 ES에 쓰기 전에 위 표의 규칙(이메일, OAuth, 광고 클릭 ID, 서명 URL, JWT, 비밀번호, DB 키 값)을 적용한다.
+- 대상 span 속성: `url.full`, `url.query`, `exception.message`, `exception.stacktrace`, `db.query.text`·`db.statement`
+- HTTP 헤더와 요청·응답 본문은 계측 라이브러리가 기본으로 담지 않는다. 그 설정을 켜지 않는다.
+- traces에도 같은 반대 검색을 돌린다.
+
 ### 길이 상한
 
 - ES로 가는 쪽에서만, `message`·`error.stack_trace`·`event.original` 각각 **256KB**를 넘으면 앞부분만 남기고 `tags`에
@@ -184,8 +198,36 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 
 ## 5. 앱 로그 규약
 
-다음 작업에서 각 서비스가 맞출 규약이다. 그 전까지 우리 서비스의 평문 줄은 그대로 들어가고 `log.level`은 `unknown`이다.
-dataset과 `service.name`은 지금도 파드 label로 정한다.
+각 서비스가 맞추는 규약이다. 이 규약을 적용하기 전의 평문 줄은 그대로 들어가고 `log.level`은 `unknown`이다.
+dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으면 파드 label)을 쓴다.
+
+### 로그 클래스
+
+- 서비스마다 로그 클래스 `AppLogger`를 하나 둔다.
+  - Java: `com.loresentry.<서비스>.logging.AppLogger`
+  - Python: `app/logs.py`의 `AppLogger`
+  - 서비스 코드는 이 객체의 메서드로만 로그를 찍는다. SLF4J·`logging`·`print`·`System.out`을 직접 쓰지 않는다. Java는 ArchUnit, Python은 ruff 테스트로 막는다.
+- 레벨은 `info`·`warn`·`error`만 쓴다. 프레임워크 로그는 원래 레벨 그대로 들어간다.
+- **만들기**: 요청·flow 시작점에서 그때 아는 값(`trace.id`, `span.id`, `user.id`)을 생성자 인자로 넘겨 만든다.
+  - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회다.
+  - 만든 객체는 요청 범위 저장소(Java ThreadLocal, Python contextvars)에 넣고, 아래 계층은 `AppLogger.current()`로 꺼낸다.
+  - 스레드를 옮기는 곳(비동기 실행기, 처리 스레드)은 객체를 함께 옮긴다.
+- **필드**: 정해 둔 필드만 받는다(Java `LogField` 팩토리, Python 허용 목록).
+  - 임의의 이름·값을 받지 않으므로 이메일·이름·본문을 필드로 넣을 자리가 없다.
+  - 새 필드는 아래 [필드](#필드) 표에 먼저 추가한다.
+- **자동으로 채우는 필드**: `log.logger`(호출한 클래스·모듈), `log.origin.function`(메서드·함수)
+- **무엇을 남기나**
+  - `info`: 정상 흐름을 자주 남긴다. 대상은 시작점(요청·레코드 받음, 스케줄 시작), 계층 진입(controller → service → client·repository·publisher), 상태 변화(저장, 발행, 상태 전이), 완료(결과·건수·걸린 시간)다. 지금 그 서버가 무엇을 하고 있는지 보이도록 도메인 ID를 함께 남긴다.
+  - `warn`: 처리했지만 예상 밖인 상황. 재시도, 충돌(409), 검증 실패, 건너뛴 이벤트, 느린 외부 호출이 해당한다.
+  - `error`: 예외로 작업 하나가 실패했을 때.
+- **문구**: 짧은 영어 문장으로 쓰고(`project update requested`), 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
+- **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `url.path`, `http.response.status_code`, `event.duration`이 들어간다.
+  - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다. 헬스체크는 완료 줄만 남기고, 2xx면 Logstash가 버린다.
+  - **실패의 결과는 이 한 줄이다.** 예외 처리기·보안 응답은 실패를 따로 찍지 않고 이유(`error.type` 우리 오류 코드, `error.code` 상대가 준 코드)를 로그 클래스에 맡긴다. 결과 줄이 그 필드를 붙인다. 그래서 `log.level: error` 건수가 실패 요청 수와 같다.
+  - 실패의 원인(어느 호출·단계에서 무엇이 잘못됐나)은 그 자리에서 `warn`으로 따로 남긴다. 예: `upstream call failed`, `account deletion stopped: …`
+  - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
+  - uvicorn 기본 접근 로그는 끈다.
+  - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`url.domain`).
 
 ### 형식
 
@@ -196,26 +238,31 @@ dataset과 `service.name`은 지금도 파드 label로 정한다.
 - ECS 객체 이름(`host`, `service`, `event`, `log`, `error`, `http`, `url`, `user` 등)을 다른 뜻의 문자열 키로 쓰지 않는다.
   예를 들어 `"host": "kafka:9092"`는 `host.name`과 부딪혀 공통 필드 채우기가 실패한다(`_mutate_error`).
 - 필드 이름은 ECS 이름을 쓰고, ECS에 없는 것은 `loresentry.*` 아래에 snake_case로 둔다.
-- Spring: `logging.structured.format.console=ecs`를 쓴다. `service.name`은 Kubernetes 이름으로 맞춘다
-  (`logging.structured.ecs.service.name`). 지금 `spring.application.name`은 `gateway`·`authentication`·`content`라서 다르다.
-- Python: 같은 필드를 내는 JSON formatter를 쓴다. ai-chat의 `time`·`level`·`logger`는 `@timestamp`·`log.level`·`log.logger`로
-  바꾼다.
+- Spring: 서비스의 ECS formatter 클래스(`logging.structured.format.console`에 클래스 이름)를 쓴다.
+  - Boot 내장 `ecs` 형식은 key-value·MDC 이름이 자기가 쓰는 객체(`log`, `error`)와 겹치면 그 줄을 통째로 버린다. 그래서 `log.origin.function`, `error.type`을 함께 낼 수 없다.
+  - formatter는 모든 값을 하나의 중첩 객체에 합치고, 먼저 들어간 필수 필드를 key-value가 바꾸지 못하게 한다.
+  - 프레임워크 로그(Spring, Tomcat, Kafka client, Flyway)도 같은 formatter를 거친다.
+  - `service.name`은 Kubernetes 이름으로 맞춘다(`logging.structured.ecs.service.name`). `spring.application.name`(`gateway`·`authentication`·`content`)은 Kafka client-id 등이 쓰므로 그대로 둔다.
+- Python: 같은 필드를 내는 formatter를 root·uvicorn 로거에 단다. ai-chat의 `time`·`level`·`logger`는 `@timestamp`·`log.level`·`log.logger`로 바꾼다.
+- `service.version`은 이미지 태그(`build-<run>-<attempt>`)다. CI가 `docker build --build-arg APP_VERSION=<태그>`로 넘기고, Dockerfile이 `ENV APP_VERSION`으로 둔다.
 
 ### 필드
 
 | 구분 | 필드 | 타입 | 언제 |
 | --- | --- | --- | --- |
 | 필수 | `@timestamp`, `log.level`, `log.logger`, `message`, `service.name`, `service.version`(이미지 태그), `ecs.version` | | 항상 |
+| 호출 위치 | `log.origin.function`, `process.thread.name` | keyword | 함수 이름은 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
 | 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
 | 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
-| HTTP | `http.request.method`, `url.path`, `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때 |
+| HTTP | `http.request.method`, `url.path`(쿼리 제외), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때 |
+| HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
 | Kafka | `loresentry.kafka.topic`, `loresentry.kafka.partition`(long), `loresentry.kafka.offset`(long), `loresentry.kafka.key` | keyword | 메시지를 보내거나 받을 때 |
 | CloudEvents | `loresentry.cloudevent.id`, `loresentry.cloudevent.type`, `loresentry.cloudevent.subject` | keyword | 이벤트를 다룰 때 |
-| 도메인 ID | `loresentry.project_id`, `loresentry.document_id`, `loresentry.file_id` | keyword | 해당 대상을 다룰 때 |
+| 도메인 ID | `loresentry.project_id`, `loresentry.document_id`, `loresentry.file_id`, `loresentry.episode_id`, `loresentry.memo_id`, `loresentry.version_id`(문서 버전), `loresentry.image_id`, `loresentry.save_id`(문서 저장의 `X-Save-Id`) | keyword | 해당 대상을 다룰 때 |
 | 채팅 | `loresentry.chat.session_id`, `loresentry.chat.turn_id` | keyword | ai-chat. 인증 세션과 헷갈리지 않게 `chat` 아래에 둔다 |
-| 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.run_id` | keyword | content, graph-rag |
-| 설정 검사 | `loresentry.setting_check.run_id` | keyword | ai-chat |
+| 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.run_id`, `loresentry.refresh.draft_id` | keyword | content, graph-rag, gateway |
+| 설정 검사 | `loresentry.setting_check.run_id`, `loresentry.setting_check.finding_id` | keyword | ai-chat, gateway |
 
 ECS 8.11에는 메시징 필드 묶음이 없어서 Kafka와 CloudEvents 값을 `loresentry.*` 아래에 둔다.
 `loresentry.*`의 문자열은 모두 keyword로 저장한다. 새 도메인 필드는 이 표에 먼저 추가한 뒤 쓴다.
@@ -274,21 +321,24 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 
 ## 7. trace
 
-요청이 서비스를 옮겨 가며 처리되는 흐름을 `trace.id` 하나로 이어 본다. 앱 쪽 구현은 다음 작업이다.
+요청이 서비스를 옮겨 가며 처리되는 흐름을 `trace.id` 하나로 이어 본다. 로그에서는 `trace.id`로 한 요청의 모든 줄을
+모으고, 호출 그림(누가 누구를 불렀나, 어디서 시간이 걸렸나)은 Kibana APM에서 본다. dev부터 적용 중이다.
 
 | 항목 | 규약 |
 | --- | --- |
 | 형식 | W3C Trace Context `traceparent: 00-<trace-id 32 hex>-<span-id 16 hex>-<flags>` |
-| 헤더 이름 | HTTP와 Kafka 모두 `traceparent` (소문자 정확히. Kafka 헤더는 대소문자를 구분한다). [KAFKA_DESIGN.md](KAFKA_DESIGN.md)의 선택 헤더와 같다. 자체 `traceId` 헤더는 쓰지 않는다 |
-| ID 생성 | 추적 라이브러리(Spring: Micrometer Tracing, Python: OpenTelemetry)가 만든다. 128비트 무작위라 번호 관리가 필요 없다 |
-| 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`는 믿지 않는다. 스케줄·폴링 작업은 1회마다 새로 시작한다 |
-| 서비스 간 HTTP | `traceparent`를 그대로 전파한다 |
-| outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다 |
-| Kafka 소비 | 헤더의 값을 이어받는다 |
-| span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 발행) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다 |
-| 로그 필드 | `trace.id`, `span.id` |
-| 응답 | 에러 응답 본문과 응답 헤더에 `trace_id`를 돌려준다. 문의 받은 값을 Kibana에서 바로 찾는다 |
-| ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
+| 헤더 이름 | HTTP와 Kafka 모두 `traceparent` (소문자 정확히. Kafka 헤더는 대소문자를 구분한다). [KAFKA_DESIGN.md](KAFKA_DESIGN.md)의 필수 헤더다. 자체 `traceId` 헤더는 쓰지 않는다. `tracestate`·`baggage`는 쓰지 않는다 |
+| ID 생성 | 추적 라이브러리가 만든다. 128비트 무작위라 번호 관리가 필요 없다. Spring은 `spring-boot-starter-opentelemetry`(Micrometer Tracing의 OpenTelemetry bridge), Python은 OpenTelemetry SDK다. W3C 형식만 읽고 쓴다 |
+| 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 추적 라이브러리가 읽기 전에 숨긴다. 스케줄·폴링 작업은 1회마다 새로 시작한다. 1초 relay처럼 자주 도는 폴링은 처리할 일이 있을 때만 시작해, 빈 순회는 span도 로그도 남기지 않는다 |
+| 서비스 간 HTTP | 계측 라이브러리(Spring RestClient observation, Python httpx 계측)가 `traceparent`를 붙인다. 라이브러리를 거치지 않는 호출(gateway의 채팅 SSE)은 코드가 직접 넣는다 |
+| outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다) |
+| 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
+| Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다 |
+| span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크(`/health`, `/health/db`)는 span을 만들지 않는다 |
+| 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값, 프레임워크 로그는 그때 열려 있는 span의 값이다 |
+| 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
+| ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
+| span 저장 | 앱이 OTLP로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 전송은 collector를 세운 뒤 환경 변수로 켜고, 그 전에도 trace ID는 만들어지고 전파된다. sampling은 dev 100%, prod는 실측 후 정한다. span의 OTLP 지표·로그 전송은 끈다(Prometheus·Filebeat가 수집) |
 
 ## 8. DB 로그
 
@@ -361,6 +411,18 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
   `orchestrator.cluster.name`이 여기에 해당하고, 내장 `ecs@mappings`가 문자열을 keyword로 만든다.
 - 로컬 ES 9.5.5에서 확인한 결과: 위 필드는 모두 keyword, long 필드는 long, data stream은 logsdb 모드, failure store 켜짐,
   보존 30일, 레플리카 0. dev에 배포한 뒤 `GET _data_stream/logs-*`로 다시 확인한다.
+- 새 `loresentry.*` 문자열 필드는 dynamic template(`loresentry_strings_as_keyword`)이 keyword로 만든다. 숫자 필드는 위 long
+  목록에 더한다.
+
+### traces·metrics (APM)
+
+EDOT Collector가 쓰는 traces·metrics data stream에도 같은 이유로 `@custom` component template을 둔다. gitops APM 단계에서
+첫 데이터보다 먼저 넣는다.
+
+| 설정 | 값 | 이유 |
+| --- | --- | --- |
+| 레플리카 | 0 | 1노드 ES |
+| 보존 | 30일 | 로그와 같은 기간. 호출 그림을 로그와 같은 기간 동안 본다 |
 
 ## 바꾸는 절차
 
