@@ -235,24 +235,33 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   | service·repository | `<대상> <동작>` | `chat usage get` |
   | client | `<상대> <대상> <동작> call` | `ai-chat usage get call` |
   | 결과 줄 | `<대상> <동작> completed` 또는 상태 이름 | `document save conflict` |
-- **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `url.path`, `http.response.status_code`, `event.duration`이 들어간다.
-  - 완료 줄에는 Spring이 고른 경로 템플릿 `http.route`(예: `/projects/{projectId}`)도 들어간다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 수 없다.
+- **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `http.response.status_code`, `event.duration`이 들어간다.
+  - 요청 하나의 **모든 줄**에 브라우저가 부른 실제 경로 `url.path`와 경로 템플릿 `http.route`(예: `/projects/{projectId}`)가 붙는다.
+    시작점이 요청을 받을 때 Spring이 고를 템플릿을 미리 찾아 로그 클래스에 넣기 때문에, 세션 확인처럼 컨트롤러 앞의 줄과 거절된 요청에도 붙는다.
+    맞는 경로가 없는 요청(404)에는 `http.route`가 없다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 때는 `http.route`를 쓴다.
   - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다.
   - 헬스체크도 다른 요청과 같은 줄을 남기고 span도 만든다. 모든 줄에 `tags: health`가 붙고, `info` 줄은 Logstash가 버린다.
   - **실패의 결과는 이 한 줄이다.** 예외 처리기·보안 응답은 실패를 따로 찍지 않고 이유(`error.type` 우리 오류 코드, `error.code` 상대가 준 코드)를 로그 클래스에 맡긴다. 결과 줄이 그 필드를 붙인다. 그래서 `log.level: error` 건수가 실패 요청 수와 같다.
   - 실패의 원인(어느 호출·단계에서 무엇이 잘못됐나)은 그 자리에서 `warn`으로 따로 남긴다. 예: `upstream call failed`, `account deletion stopped: …`
   - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
   - uvicorn 기본 접근 로그는 끈다.
-  - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`url.domain`).
+  - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`upstream call completed`). 대상 호스트는 `url.domain`, 대상 주소(쿼리 제외)는
+    `url.full`이다(ECS·OpenTelemetry HTTP client 이름). 이 줄의 `url.path`·`http.route`는 다른 줄과 같은 브라우저 요청의 값이라,
+    같은 줄의 `url.*`가 두 URL을 가리킨다. 내부 서비스 쪽 경로는 `url.full`로 본다.
 
 ### 레이어와 위치
 
 | 필드 | 값 | 정하는 방법 |
 | --- | --- | --- |
-| `log.logger` | 그 줄을 찍은 클래스(Python은 모듈) | 로그 클래스가 호출 위치에서 읽는다. 프레임워크 줄은 Logback logger 이름 |
-| `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다. 람다 안에서 찍은 줄은 람다를 감싼 메서드 이름이다(Java가 만든 `lambda$send$3`이 아니라 `send`) |
+| `log.logger` | 그 줄을 찍은 클래스(Python은 모듈) | 로그 클래스가 호출 위치에서 읽는다. 프레임워크 줄은 Logback logger 이름. 내부 서비스 호출 결과 줄은 실제로 HTTP를 보낸 HTTP client 클래스다(예: Spring `DefaultRestClient$DefaultResponseSpec`). 그 호출을 부른 우리 client 메서드는 바로 앞 진입 줄에 있다 |
+| `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다. 람다 안에서 찍은 줄은 람다를 감싼 메서드 이름이다(Java가 만든 `lambda$send$3`이 아니라 `send`). 내부 서비스 호출 결과 줄은 우리 코드가 부른 HTTP client 메서드다(예: `body`) |
 | `log.layer` | `controller`·`service`·`repository`·`client`·`consumer`·`publisher`·`filter`·`handler`·`interceptor`·`security`·`other` | 클래스 이름 끝으로 정한다(아래 표). 맞지 않는 클래스는 직접 지정한다(Java `@LogLayer("...")`) |
-| `log.package` | 그 줄을 찍은 클래스의 패키지(예: `com.loresentry.gateway.web.chat`) | 로그 클래스가 읽는다 |
+| `log.package` | `log.logger` 클래스의 패키지(예: `com.loresentry.gateway.web.chat`) | 로그 클래스가 읽는다 |
+
+- 위치는 우리 코드가 부른 곳이다. 접근 로그(`request received`·`request completed`)는 우리 코드가 아니라 웹 서버가 부르는 필터 줄이라
+  위치가 필터 그대로다(`log.layer: filter`).
+- 내부 서비스 호출 결과 줄의 `log.layer`는 `client`다. 로그 레벨 설정은 그 줄을 찍은 로그 클래스(우리 패키지) 기준이라, 프레임워크 패키지의
+  로그 레벨을 낮춰도 이 줄은 사라지지 않는다.
 
 | 클래스 이름 끝 | `log.layer` |
 | --- | --- |
@@ -344,8 +353,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 호출 위치 | `log.origin.function`, `log.layer`, `log.package`, `process.thread.name` | keyword | 함수·레이어·패키지는 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
 | 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
 | 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
-| HTTP | `http.request.method`, `url.path`(쿼리 제외, 실제 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `http.route`는 결과 줄 |
-| HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
+| HTTP | `http.request.method`, `url.path`(브라우저가 부른 실제 경로, 쿼리 제외), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`는 요청의 모든 줄 |
+| HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트), `url.full`(그 호출의 대상 주소, 쿼리 제외) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
 | Kafka | `loresentry.kafka.topic`, `loresentry.kafka.partition`(long), `loresentry.kafka.offset`(long), `loresentry.kafka.key` | keyword | 메시지를 보내거나 받을 때 |
 | CloudEvents | `loresentry.cloudevent.id`, `loresentry.cloudevent.type`, `loresentry.cloudevent.subject` | keyword | 이벤트를 다룰 때 |
@@ -495,7 +504,7 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 | 보존 | 30일 (data stream lifecycle), `prefer_ilm: false` | 내장 template의 ILM 정책 `logs`는 삭제 단계가 없다 |
 | 시각 | `@timestamp`는 date_nanos | 앱 줄과 CRI 시각은 나노초까지 있다. date(밀리초)로 색인하면 같은 밀리초에 찍힌 한 요청의 줄(service → client)이 정렬에서 섞인다 |
 | 필드 수 | 2000개, 넘는 새 필드는 저장만 하고 색인하지 않음 | 예상하지 못한 필드가 쏟아져 매핑이 끝없이 커지는 것을 막는다 |
-| keyword 명시 | `log.logger`, `log.layer`, `log.package`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `http.route`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
+| keyword 명시 | `log.logger`, `log.layer`, `log.package`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `http.route`, `url.full`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
 | long 명시 | `http.response.status_code`, `event.duration`, `loresentry.kafka.partition`, `loresentry.kafka.offset` | 범위 검색과 정렬 |
 
 - `logs@custom`은 ES 내장 OTel template(`logs-otel@template`)에도 합쳐진다. 그쪽에서 field alias인 필드는 여기에 지정할 수
