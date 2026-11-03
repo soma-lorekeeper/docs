@@ -84,7 +84,7 @@ Filebeat가 Kubernetes 파드를 읽을 때 붙이는 필드와, 클러스터를
 | 시작 | 붙이는 쪽 | 값 |
 | --- | --- | --- |
 | `_`(밑줄) | 파이프라인 | `_truncated`(길이 상한). 파싱 실패는 Logstash 기본 태그를 그대로 쓴다: `_grokparsefailure`, `_dissectfailure`, `_jsonparsefailure`, `_dateparsefailure`, `_rubyexception`. 어느 단계에서 실패했는지가 이름에 드러난다 |
-| 그 밖 | 앱 | 로그 종류 분류. Spring은 SLF4J marker를 `tags`로 내보낸다. 이름은 앱 로그 작업에서 정한다 |
+| 그 밖 | 앱 | 로그 종류 분류. 정해 둔 이름만 쓴다. `health`: 헬스체크 요청(`/health`, `/health/**`) 흐름의 모든 줄([4절 소음 제거](#소음-제거)). Java는 SLF4J marker로 내보낸다 |
 
 ## 3. `log.level`
 
@@ -145,9 +145,11 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 
 규칙의 원칙:
 
-- 앱이 실수로 남긴 값을 막는 두 번째 방어선이다.
+- 앱이 실수로 남긴 값을 막는 두 번째 방어선이다. 첫 번째 방어선은 로그 클래스다. `LogField`가 문자열 입력값·결과를
+  기본으로 가린다([5절 입력값과 결과](#입력값과-결과-param-result)).
 - **파싱이 성공했는지와 상관없이** `message`, `event.original`, `url.query`, `url.original`, `http.request.referrer`,
-  `error.message`, `error.stack_trace`에 적용한다.
+  `error.message`, `error.stack_trace`에 적용한다. 앱 필드 `loresentry` 아래의 모든 문자열(`loresentry.param.*`,
+  `loresentry.result.*` 포함, 배열 안 포함)에도 적용한다.
 - ES나 S3로 갈라지기 전에 적용한다.
 
 | 대상 | 찾는 것 | 바꾼 값 |
@@ -193,7 +195,7 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 
 | 버리는 것 | 이유 |
 | --- | --- |
-| 응답이 2xx인 헬스체크(`GET /health`) 접근 로그 | kubelet probe가 파드마다 시간당 540줄을 남긴다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 실패(4xx·5xx·타임아웃)는 남긴다. 앱 로그 규약의 `url.path`·`http.response.status_code`로만 판단하므로 지금의 uvicorn 평문 줄은 버리지 않는다 |
+| 헬스체크 흐름의 `info` 줄(`tags: health`) | kubelet probe가 파드마다 시간당 수백 번 부른다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 앱은 헬스체크 요청의 모든 줄(접근 로그, 계층 진입 로그, 내부 서비스 호출)에 `health` 태그를 붙인다. 실패한 헬스체크는 결과 줄과 원인 줄이 `warn`·`error`가 되므로 남는다. span은 버리지 않는다 |
 | RDS `rdsadmin` 계정의 연결·해제 줄 | AWS 내부 관리 연결이다 |
 
 ## 5. 앱 로그 규약
@@ -215,19 +217,103 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 - **필드**: 정해 둔 필드만 받는다(Java `LogField` 팩토리, Python 허용 목록).
   - 임의의 이름·값을 받지 않으므로 이메일·이름·본문을 필드로 넣을 자리가 없다.
   - 새 필드는 아래 [필드](#필드) 표에 먼저 추가한다.
-- **자동으로 채우는 필드**: `log.logger`(호출한 클래스·모듈), `log.origin.function`(메서드·함수)
+- **자동으로 채우는 필드**: 그 줄을 찍은 위치. `log.logger`(클래스·모듈), `log.origin.function`(메서드·함수),
+  `log.layer`(레이어), `log.package`(패키지). 아래 [레이어와 위치](#레이어와-위치)를 따른다.
 - **무엇을 남기나**
   - `info`: 정상 흐름을 자주 남긴다. 대상은 시작점(요청·레코드 받음, 스케줄 시작), 계층 진입(controller → service → client·repository·publisher), 상태 변화(저장, 발행, 상태 전이), 완료(결과·건수·걸린 시간)다. 지금 그 서버가 무엇을 하고 있는지 보이도록 도메인 ID를 함께 남긴다.
+  - **레이어 클래스의 모든 public 메서드**는 첫 줄에 진입 로그를 남긴다. 한 줄로 넘기기만 하는 메서드도 남긴다. 그래서 trace 하나를
+    시간 순으로 놓으면 controller → service → client·repository 흐름이 줄 단위로 보인다. 분기·대체·결과가 있는 곳에는 결과 줄을 더한다.
   - `warn`: 처리했지만 예상 밖인 상황. 재시도, 충돌(409), 검증 실패, 건너뛴 이벤트, 느린 외부 호출이 해당한다.
   - `error`: 예외로 작업 하나가 실패했을 때.
-- **문구**: 짧은 영어 문장으로 쓰고(`project update requested`), 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
+- **문구**: 짧은 영어 소문자 문장으로 쓰고, 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
+
+  | 레이어 | 문구 | 예 |
+  | --- | --- | --- |
+  | controller | `<대상> <동작> requested` | `project update requested` |
+  | service·repository | `<대상> <동작>` | `chat usage get` |
+  | client | `<상대> <대상> <동작> call` | `ai-chat usage get call` |
+  | 결과 줄 | `<대상> <동작> completed` 또는 상태 이름 | `document save conflict` |
 - **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `url.path`, `http.response.status_code`, `event.duration`이 들어간다.
-  - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다. 헬스체크는 완료 줄만 남기고, 2xx면 Logstash가 버린다.
+  - 완료 줄에는 Spring이 고른 경로 템플릿 `http.route`(예: `/projects/{projectId}`)도 들어간다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 수 없다.
+  - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다.
+  - 헬스체크도 다른 요청과 같은 줄을 남기고 span도 만든다. 모든 줄에 `tags: health`가 붙고, `info` 줄은 Logstash가 버린다.
   - **실패의 결과는 이 한 줄이다.** 예외 처리기·보안 응답은 실패를 따로 찍지 않고 이유(`error.type` 우리 오류 코드, `error.code` 상대가 준 코드)를 로그 클래스에 맡긴다. 결과 줄이 그 필드를 붙인다. 그래서 `log.level: error` 건수가 실패 요청 수와 같다.
   - 실패의 원인(어느 호출·단계에서 무엇이 잘못됐나)은 그 자리에서 `warn`으로 따로 남긴다. 예: `upstream call failed`, `account deletion stopped: …`
   - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
   - uvicorn 기본 접근 로그는 끈다.
   - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`url.domain`).
+
+### 레이어와 위치
+
+| 필드 | 값 | 정하는 방법 |
+| --- | --- | --- |
+| `log.logger` | 그 줄을 찍은 클래스(Python은 모듈) | 로그 클래스가 호출 위치에서 읽는다. 프레임워크 줄은 Logback logger 이름 |
+| `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다 |
+| `log.layer` | `controller`·`service`·`repository`·`client`·`consumer`·`publisher`·`filter`·`handler`·`interceptor`·`security`·`other` | 클래스 이름 끝으로 정한다(아래 표). 맞지 않는 클래스는 직접 지정한다(Java `@LogLayer("...")`) |
+| `log.package` | 그 줄을 찍은 클래스의 패키지(예: `com.loresentry.gateway.web.chat`) | 로그 클래스가 읽는다 |
+
+| 클래스 이름 끝 | `log.layer` |
+| --- | --- |
+| `Controller` | controller |
+| `Service` | service |
+| `Repository` | repository |
+| `Client` | client |
+| `Listener`, `Consumer` | consumer |
+| `Publisher` | publisher |
+| `Filter` | filter |
+| `Handler` | handler |
+| `Interceptor` | interceptor |
+| 그 밖 | other(직접 지정하지 않았을 때) |
+
+위치 정보(클래스·메서드·레이어·패키지)는 모두 ECS `log` 묶음 아래에 둔다. `service.*`는 서비스 자체(이름·버전·환경)를 뜻하므로 쓰지 않는다.
+
+### 입력값과 결과 (param, result)
+
+| 필드 | 무엇 |
+| --- | --- |
+| `loresentry.param.<이름>` | 메서드에 들어온 값과 처리 중의 중간값 |
+| `loresentry.result.<이름>` | 처리 결과 |
+
+값은 로그 클래스(`LogField.param`·`result`)가 종류별로 이렇게 바꾼다. 서비스 코드는 값을 넘기기만 하고 가리는 일은 빠뜨릴 수 없다.
+
+| 넘긴 값 | 남는 모양 | 예 |
+| --- | --- | --- |
+| 숫자·불리언·enum·UUID | 그대로 | `param.base_revision: 12`, `result.status: CONFLICT` |
+| 문자열 | 늘 `[redacted]`와 길이 | `param.title: "[redacted]"`, `param.title_length: 7` |
+| 허용 목록이 있는 코드 문자열(`LogField.code`) | 목록 안이면 그대로, 밖이면 `other` | `param.verdict: DISMISSED` |
+| 컬렉션·Map | 개수 | `param.drafts_count: 3` |
+| JSON 본문 | 바이트 수 | `param.body_bytes: 48213` |
+| 그 밖의 객체(DTO 등) | 받지 않는다(Java는 컴파일 오류) | 필요한 숫자·코드만 따로 넘긴다 |
+
+- 이름은 파라미터 이름을 snake_case로 쓴다.
+- 같은 이름은 늘 같은 타입으로 쓴다. ES는 처음 들어온 값으로 타입을 정하고, 서비스마다 타입이 다르면 Kibana에 충돌로 보인다.
+- 값으로 검색할 수 있다. 예: `loresentry.param.verdict : "DISMISSED"`, `loresentry.param.body_bytes > 100000`.
+  가린 값은 내용으로 찾을 수 없다.
+
+### ID를 나누는 기준
+
+한 줄의 ID는 "이 줄이 무엇에 대한 로그인가"로 나눈다.
+
+| 순서 | 질문 | 그렇다면 |
+| --- | --- | --- |
+| 1 | 이 줄이 다루는 **대상**인가(읽기·저장·삭제·생성하는 바로 그것) | 전용 필드 `loresentry.<종류>_id` |
+| 2 | 대상이 속한 **범위**인가(대상이 들어 있는 프로젝트, 메모가 붙은 문서) | 전용 필드 |
+| 3 | 처리하면서 **새로 만든** 대상인가 | 결과 줄에서 전용 필드 |
+| 4 | 대상이 아니라 **참조하는 다른 것**인가(이동할 위치, 복사 원본, 연결 상대, 보고 있던 문서) | `loresentry.param.<역할>_<종류>_id` (예: `param.target_folder_id`) |
+| 5 | 같은 종류가 한 줄에 둘 이상인가 | 대상 하나만 전용 필드, 나머지는 역할 이름을 붙여 param |
+
+- 같은 값을 두 곳에 넣지 않는다.
+- 전용 필드는 [필드](#필드) 표의 종류만 쓴다. `loresentry.project_id : X` 하나로 그 대상의 줄이 서비스·레이어와 관계없이 모인다.
+- `user.id`는 늘 ECS 필드다.
+
+| 요청·작업 | 전용 필드 | param |
+| --- | --- | --- |
+| 문서 내용 저장 `PUT /files/{fileId}/content` | `file_id`, `save_id` | |
+| 버전 복원 `/files/{fileId}/versions/{versionId}/restore` | `file_id`(범위), `version_id`(대상) | |
+| 파일 이동 | `file_id` | `target_folder_id` 또는 `target_folder_code` |
+| 채팅 메시지 보내기 | `chat.session_id` | `focus_file_id` |
+| 파일 만들기의 결과 줄 | `project_id`, `file_id`(새로 만든 것) | |
+| 문서 관계 저장(A와 B 연결) | `project_id`, `document_id`(A) | `related_document_id`(B) |
 
 ### 형식
 
@@ -237,7 +323,9 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 - 모든 줄에 `"ecs":{"version":"8.11"}`을 넣는다. Logstash는 이 표시가 있는 JSON 줄만 필드로 펼친다.
 - ECS 객체 이름(`host`, `service`, `event`, `log`, `error`, `http`, `url`, `user` 등)을 다른 뜻의 문자열 키로 쓰지 않는다.
   예를 들어 `"host": "kafka:9092"`는 `host.name`과 부딪혀 공통 필드 채우기가 실패한다(`_mutate_error`).
-- 필드 이름은 ECS 이름을 쓰고, ECS에 없는 것은 `loresentry.*` 아래에 snake_case로 둔다.
+- 필드 이름은 ECS 이름을 쓰고, ECS에 없는 것은 `loresentry.*` 아래에 snake_case로 둔다. 예외는 두 가지다.
+  - OpenTelemetry에 같은 뜻의 이름이 있으면 그 이름을 쓴다: `http.route`. APM span 속성과 이름이 같아진다.
+  - 로그를 찍은 위치를 설명하는 값은 ECS `log` 묶음 아래에 둔다: `log.layer`, `log.package`.
 - Spring: 서비스의 ECS formatter 클래스(`logging.structured.format.console`에 클래스 이름)를 쓴다.
   - Boot 내장 `ecs` 형식은 key-value·MDC 이름이 자기가 쓰는 객체(`log`, `error`)와 겹치면 그 줄을 통째로 버린다. 그래서 `log.origin.function`, `error.type`을 함께 낼 수 없다.
   - formatter는 모든 값을 하나의 중첩 객체에 합치고, 먼저 들어간 필수 필드를 key-value가 바꾸지 못하게 한다.
@@ -251,10 +339,10 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 구분 | 필드 | 타입 | 언제 |
 | --- | --- | --- | --- |
 | 필수 | `@timestamp`, `log.level`, `log.logger`, `message`, `service.name`, `service.version`(이미지 태그), `ecs.version` | | 항상 |
-| 호출 위치 | `log.origin.function`, `process.thread.name` | keyword | 함수 이름은 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
+| 호출 위치 | `log.origin.function`, `log.layer`, `log.package`, `process.thread.name` | keyword | 함수·레이어·패키지는 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
 | 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
 | 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
-| HTTP | `http.request.method`, `url.path`(쿼리 제외), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때 |
+| HTTP | `http.request.method`, `url.path`(쿼리 제외, 실제 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `http.route`는 결과 줄 |
 | HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
 | Kafka | `loresentry.kafka.topic`, `loresentry.kafka.partition`(long), `loresentry.kafka.offset`(long), `loresentry.kafka.key` | keyword | 메시지를 보내거나 받을 때 |
@@ -263,6 +351,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 채팅 | `loresentry.chat.session_id`, `loresentry.chat.turn_id` | keyword | ai-chat. 인증 세션과 헷갈리지 않게 `chat` 아래에 둔다 |
 | 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.run_id`, `loresentry.refresh.draft_id` | keyword | content, graph-rag, gateway |
 | 설정 검사 | `loresentry.setting_check.run_id`, `loresentry.setting_check.finding_id` | keyword | ai-chat, gateway |
+| 입력값·결과 | `loresentry.param.*`, `loresentry.result.*` | 문자열 keyword, 숫자 long·double | [입력값과 결과](#입력값과-결과-param-result) 규칙대로 |
 
 ECS 8.11에는 메시징 필드 묶음이 없어서 Kafka와 CloudEvents 값을 `loresentry.*` 아래에 둔다.
 `loresentry.*`의 문자열은 모두 keyword로 저장한다. 새 도메인 필드는 이 표에 먼저 추가한 뒤 쓴다.
@@ -334,7 +423,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다) |
 | 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
 | Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다 |
-| span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크(`/health`, `/health/db`)는 span을 만들지 않는다 |
+| span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크도 span을 만든다(로그는 Logstash가 `info` 줄을 버린다) |
 | 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값, 프레임워크 로그는 그때 열려 있는 span의 값이다 |
 | 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
@@ -403,7 +492,7 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 | 레플리카 | 0 | ES가 1노드다. 레플리카가 있으면 클러스터가 yellow가 된다 |
 | 보존 | 30일 (data stream lifecycle), `prefer_ilm: false` | 내장 template의 ILM 정책 `logs`는 삭제 단계가 없다 |
 | 필드 수 | 2000개, 넘는 새 필드는 저장만 하고 색인하지 않음 | 예상하지 못한 필드가 쏟아져 매핑이 끝없이 커지는 것을 막는다 |
-| keyword 명시 | `log.logger`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
+| keyword 명시 | `log.logger`, `log.layer`, `log.package`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `http.route`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
 | long 명시 | `http.response.status_code`, `event.duration`, `loresentry.kafka.partition`, `loresentry.kafka.offset` | 범위 검색과 정렬 |
 
 - `logs@custom`은 ES 내장 OTel template(`logs-otel@template`)에도 합쳐진다. 그쪽에서 field alias인 필드는 여기에 지정할 수
@@ -413,6 +502,8 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
   보존 30일, 레플리카 0. dev에 배포한 뒤 `GET _data_stream/logs-*`로 다시 확인한다.
 - 새 `loresentry.*` 문자열 필드는 dynamic template(`loresentry_strings_as_keyword`)이 keyword로 만든다. 숫자 필드는 위 long
   목록에 더한다.
+- `loresentry.param.*`·`result.*`의 숫자는 처음 들어온 값으로 타입이 정해진다(정수 long, 소수 double). 같은 이름에 정수와 소수를
+  섞지 않는다.
 
 ### traces·metrics (APM)
 
