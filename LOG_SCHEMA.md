@@ -223,6 +223,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - `info`: 정상 흐름을 자주 남긴다. 대상은 시작점(요청·레코드 받음, 스케줄 시작), 계층 진입(controller → service → client·repository·publisher), 상태 변화(저장, 발행, 상태 전이), 완료(결과·건수·걸린 시간)다. 지금 그 서버가 무엇을 하고 있는지 보이도록 도메인 ID를 함께 남긴다.
   - **레이어 클래스의 모든 public 메서드**는 첫 줄에 진입 로그를 남긴다. 한 줄로 넘기기만 하는 메서드도 남긴다. 그래서 trace 하나를
     시간 순으로 놓으면 controller → service → client·repository 흐름이 줄 단위로 보인다. 분기·대체·결과가 있는 곳에는 결과 줄을 더한다.
+  - 예외는 값을 돌려주기만 하면서 한 요청 안에서 여러 번 불리는 getter뿐이다. 이유를 적어 표시한다(Java `@SkipEntryLog("...")`).
+    줄을 남겨도 흐름에 새 정보가 없고 같은 줄만 쌓이기 때문이다.
   - `warn`: 처리했지만 예상 밖인 상황. 재시도, 충돌(409), 검증 실패, 건너뛴 이벤트, 느린 외부 호출이 해당한다.
   - `error`: 예외로 작업 하나가 실패했을 때.
 - **문구**: 짧은 영어 소문자 문장으로 쓰고, 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
@@ -248,7 +250,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 필드 | 값 | 정하는 방법 |
 | --- | --- | --- |
 | `log.logger` | 그 줄을 찍은 클래스(Python은 모듈) | 로그 클래스가 호출 위치에서 읽는다. 프레임워크 줄은 Logback logger 이름 |
-| `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다 |
+| `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다. 람다 안에서 찍은 줄은 람다를 감싼 메서드 이름이다(Java가 만든 `lambda$send$3`이 아니라 `send`) |
 | `log.layer` | `controller`·`service`·`repository`·`client`·`consumer`·`publisher`·`filter`·`handler`·`interceptor`·`security`·`other` | 클래스 이름 끝으로 정한다(아래 표). 맞지 않는 클래스는 직접 지정한다(Java `@LogLayer("...")`) |
 | `log.package` | 그 줄을 찍은 클래스의 패키지(예: `com.loresentry.gateway.web.chat`) | 로그 클래스가 읽는다 |
 
