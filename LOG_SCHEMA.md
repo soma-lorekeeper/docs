@@ -42,7 +42,7 @@ AWS(ALB·CloudFront·RDS·Neptune·EKS) ─▶ S3·CloudWatch ─▶ Filebeat(aw
 
 | 필드 | 타입 | 값 | 비어 있을 때 Logstash가 채우는 값 |
 | --- | --- | --- | --- |
-| `@timestamp` | date | 이벤트 시각(UTC) | 컨테이너 런타임이 줄마다 붙인 시각(CRI, 나노초). AWS 로그는 원본 시각 |
+| `@timestamp` | date_nanos | 이벤트 시각(UTC, 나노초까지) | 컨테이너 런타임이 줄마다 붙인 시각(CRI, 나노초). AWS 로그는 원본 시각 |
 | `message` | match_only_text | 사람이 읽는 본문 | 원래 줄 |
 | `log.level` | keyword | [3절](#3-loglevel) 7개 값 중 하나 | `unknown` |
 | `service.name` | keyword | Kubernetes 이름(`gateway-api` 등, [6절](#6-data-stream)) | 파드 label `app.kubernetes.io/name`. 없으면 컨테이너 이름. AWS 로그는 출처 이름(`alb` 등) |
@@ -493,6 +493,7 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 | --- | --- | --- |
 | 레플리카 | 0 | ES가 1노드다. 레플리카가 있으면 클러스터가 yellow가 된다 |
 | 보존 | 30일 (data stream lifecycle), `prefer_ilm: false` | 내장 template의 ILM 정책 `logs`는 삭제 단계가 없다 |
+| 시각 | `@timestamp`는 date_nanos | 앱 줄과 CRI 시각은 나노초까지 있다. date(밀리초)로 색인하면 같은 밀리초에 찍힌 한 요청의 줄(service → client)이 정렬에서 섞인다 |
 | 필드 수 | 2000개, 넘는 새 필드는 저장만 하고 색인하지 않음 | 예상하지 못한 필드가 쏟아져 매핑이 끝없이 커지는 것을 막는다 |
 | keyword 명시 | `log.logger`, `log.layer`, `log.package`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `http.route`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
 | long 명시 | `http.response.status_code`, `event.duration`, `loresentry.kafka.partition`, `loresentry.kafka.offset` | 범위 검색과 정렬 |
