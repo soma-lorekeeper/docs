@@ -209,6 +209,10 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - Java: `com.loresentry.<서비스>.logging.AppLogger`
   - Python: `app/logs.py`의 `AppLogger`
   - 서비스 코드는 이 객체의 메서드로만 로그를 찍는다. SLF4J·`logging`·`print`·`System.out`을 직접 쓰지 않는다. Java는 ArchUnit, Python은 ruff 테스트로 막는다.
+  - 헥사고날 구조라 core(업무 규칙)가 라이브러리에 의존하지 못하는 저장소(authentication)는 `logging` 패키지를 순수 Java로 둔다.
+    `AppLogger`는 위치·필드를 모은 한 줄을 `LogSink` interface에 넘기고, SLF4J로 실제로 출력하는 구현(`Slf4jLogSink`)은 adapter에 둔다.
+    앱이 시작할 때 설정(config)이 그 구현을 bean으로 만들며 `AppLogger.install(...)`로 꽂는다. Spring 없이 만드는 단위 테스트는 테스트 확장이 같은 구현을 꽂는다.
+    서비스 코드에서 부르는 모양(`AppLogger.current().info(...)`)은 다른 저장소와 같다.
 - 레벨은 `info`·`warn`·`error`만 쓴다. 프레임워크 로그는 원래 레벨 그대로 들어간다.
 - **만들기**: 요청·flow 시작점에서 그때 아는 값(`trace.id`, `span.id`, `user.id`)을 생성자 인자로 넘겨 만든다.
   - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회다.
@@ -221,10 +225,12 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   `log.layer`(레이어), `log.package`(패키지). 아래 [레이어와 위치](#레이어와-위치)를 따른다.
 - **무엇을 남기나**
   - `info`: 정상 흐름을 자주 남긴다. 대상은 시작점(요청·레코드 받음, 스케줄 시작), 계층 진입(controller → service → client·repository·publisher), 상태 변화(저장, 발행, 상태 전이), 완료(결과·건수·걸린 시간)다. 지금 그 서버가 무엇을 하고 있는지 보이도록 도메인 ID를 함께 남긴다.
-  - **레이어 클래스의 모든 public 메서드**는 첫 줄에 진입 로그를 남긴다. 한 줄로 넘기기만 하는 메서드도 남긴다. 그래서 trace 하나를
+  - **레이어 클래스의 private이 아닌 모든 메서드**(public·protected·package-private, static 메서드 제외)는 첫 줄에 진입 로그를 남긴다.
+    같은 패키지 안에서만 부르는 repository·listener 메서드(package-private)도 포함한다. 한 줄로 넘기기만 하는 메서드도 남긴다. 그래서 trace 하나를
     시간 순으로 놓으면 controller → service → client·repository 흐름이 줄 단위로 보인다. 분기·대체·결과가 있는 곳에는 결과 줄을 더한다.
-  - 예외는 값을 돌려주기만 하면서 한 요청 안에서 여러 번 불리는 getter뿐이다. 이유를 적어 표시한다(Java `@SkipEntryLog("...")`).
-    줄을 남겨도 흐름에 새 정보가 없고 같은 줄만 쌓이기 때문이다.
+  - 예외는 두 가지다. 이유를 로그 문구처럼 영어로 적어 표시한다(Java `@SkipEntryLog("...")`).
+    - 값을 돌려주기만 하면서 한 요청 안에서 여러 번 불리는 getter. 줄을 남겨도 흐름에 새 정보가 없고 같은 줄만 쌓인다.
+    - 짧은 주기로 도는 폴링의 실행 메서드(1초 outbox relay 등). 처리할 일이 있을 때만 시작·결과 줄을 남긴다([7절](#7-trace) 시작점).
   - `warn`: 처리했지만 예상 밖인 상황. 재시도, 충돌(409), 검증 실패, 건너뛴 이벤트, 느린 외부 호출이 해당한다.
   - `error`: 예외로 작업 하나가 실패했을 때.
 - **문구**: 짧은 영어 소문자 문장으로 쓰고, 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
@@ -236,7 +242,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   | client | `<상대> <대상> <동작> call` | `ai-chat usage get call` |
   | 결과 줄 | `<대상> <동작> completed` 또는 상태 이름 | `document save conflict` |
 - **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `http.response.status_code`, `event.duration`이 들어간다.
-  - 요청 하나의 **모든 줄**에 브라우저가 부른 실제 경로 `url.path`와 경로 템플릿 `http.route`(예: `/projects/{projectId}`)가 붙는다.
+  - 요청 하나의 **모든 줄**에 그 서비스가 받은 요청의 실제 경로 `url.path`와 경로 템플릿 `http.route`(예: `/projects/{projectId}`)가 붙는다.
+    gateway에서는 브라우저가 부른 경로이고, 내부 서비스에서는 gateway가 부른 경로다(gateway 호출 결과 줄의 `url.full`과 같은 경로).
     시작점이 요청을 받을 때 Spring이 고를 템플릿을 미리 찾아 로그 클래스에 넣기 때문에, 세션 확인처럼 컨트롤러 앞의 줄과 거절된 요청에도 붙는다.
     맞는 경로가 없는 요청(404)에는 `http.route`가 없다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 때는 `http.route`를 쓴다.
   - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다.
@@ -246,8 +253,20 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
   - uvicorn 기본 접근 로그는 끈다.
   - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`upstream call completed`). 대상 호스트는 `url.domain`, 대상 주소(쿼리 제외)는
-    `url.full`이다(ECS·OpenTelemetry HTTP client 이름). 이 줄의 `url.path`·`http.route`는 다른 줄과 같은 브라우저 요청의 값이라,
+    `url.full`이다(ECS·OpenTelemetry HTTP client 이름). 이 줄의 `url.path`·`http.route`는 다른 줄과 같은 받은 요청(gateway는 브라우저 요청)의 값이라,
     같은 줄의 `url.*`가 두 URL을 가리킨다. 내부 서비스 쪽 경로는 `url.full`로 본다.
+- **Kafka 레코드·스케줄 작업의 시작·종료 줄**: HTTP의 `request received`·`request completed`처럼 흐름 하나에 시작 줄과 종료 줄을 반드시 남긴다.
+  그 사이의 줄(계층 진입·분기 결과)은 HTTP와 같은 규칙이다.
+  - **줄마다 붙는 값**(HTTP의 `url.path`·`http.route` 자리): Kafka 레코드는 `loresentry.kafka.topic`·`partition`·`offset`과
+    `loresentry.cloudevent.id`, 스케줄 작업은 작업 이름 `loresentry.schedule.name`(예: `outbox-relay`, `outbox-purge`,
+    `inbox-purge`, `graph-refresh-timeout`). 시작점이 로그 객체에 붙여, 그 흐름이 부른 repository 줄까지 모든 줄에 남는다.
+  - **시작 줄**: 시작할 때 아는 값을 [입력값과 결과](#입력값과-결과-param-result) 규칙대로 함께 남긴다(예: 보존 기간, 이번 회차의 행 수).
+    진행 중에 알게 된 값은 그 값을 다룬 줄과 종료 줄에 남긴다. 붙일 값이 없으면 남기지 않아도 된다.
+  - **종료 줄**: 걸린 시간(`event.duration`)과 결과를 남긴다. Kafka 레코드는 `loresentry.result.outcome`
+    (`PROCESSED` 처리함, `DUPLICATE` 이미 처리한 이벤트, `SKIPPED` 처리하지 않는 종류, `FAILED` 예외)과 진행 중에 알게 된 대상 ID를
+    붙이고, 실패면 `warn`에 `error.type`을 붙인다(원인 줄은 재시도·DLQ 처리기가 남긴다). 스케줄 작업은 처리 건수(`loresentry.result.*`)를 붙인다.
+  - 짧은 주기로 도는 폴링(1초 outbox relay, 1분 graph refresh timeout)은 처리할 일이 있는 회차에만 시작·종료 줄을 남긴다.
+    하루 한 번 도는 작업은 할 일이 없어도 남긴다(줄이 없으면 "할 일이 없었다"와 "돌지 않았다"를 가릴 수 없다).
 
 ### 레이어와 위치
 
@@ -255,7 +274,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | --- | --- | --- |
 | `log.logger` | 그 줄을 찍은 클래스(Python은 모듈) | 로그 클래스가 호출 위치에서 읽는다. 프레임워크 줄은 Logback logger 이름. 내부 서비스 호출 결과 줄은 실제로 HTTP를 보낸 HTTP client 클래스다(예: Spring `DefaultRestClient$DefaultResponseSpec`). 그 호출을 부른 우리 client 메서드는 바로 앞 진입 줄에 있다 |
 | `log.origin.function` | 그 줄을 찍은 메서드·함수 | 로그 클래스가 호출 위치에서 읽는다. 람다 안에서 찍은 줄은 람다를 감싼 메서드 이름이다(Java가 만든 `lambda$send$3`이 아니라 `send`). 내부 서비스 호출 결과 줄은 우리 코드가 부른 HTTP client 메서드다(예: `body`) |
-| `log.layer` | `controller`·`service`·`repository`·`client`·`consumer`·`publisher`·`filter`·`handler`·`interceptor`·`security`·`other` | 클래스 이름 끝으로 정한다(아래 표). 맞지 않는 클래스는 직접 지정한다(Java `@LogLayer("...")`) |
+| `log.layer` | `controller`·`service`·`repository`·`client`·`consumer`·`publisher`·`scheduler`·`filter`·`handler`·`interceptor`·`security`·`other` | 클래스 이름 끝으로 정한다(아래 표). 맞지 않는 클래스는 직접 지정한다(Java `@LogLayer("...")`) |
 | `log.package` | `log.logger` 클래스의 패키지(예: `com.loresentry.gateway.web.chat`) | 로그 클래스가 읽는다 |
 
 - 위치는 우리 코드가 부른 곳이다. 접근 로그(`request received`·`request completed`)는 우리 코드가 아니라 웹 서버가 부르는 필터 줄이라
@@ -267,7 +286,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | --- | --- |
 | `Controller` | controller |
 | `Service` | service |
-| `Repository` | repository |
+| `Repository`, `Store` | repository |
 | `Client` | client |
 | `Listener`, `Consumer` | consumer |
 | `Publisher` | publisher |
@@ -275,6 +294,10 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | `Handler` | handler |
 | `Interceptor` | interceptor |
 | 그 밖 | other(직접 지정하지 않았을 때) |
+
+- 이름 끝으로 정할 수 없는 클래스는 직접 지정한다. 예: 스케줄 작업(`@Scheduled` 메서드를 가진 `OutboxRelay`·`OutboxPurge`·`InboxPurge` 등)은
+  `@LogLayer("scheduler")`, 세션 저장소를 읽는 gateway `OpaqueSessionReader`는 `@LogLayer("repository")`.
+- 지정한 클래스도 레이어 클래스다. 진입 로그 규칙이 똑같이 적용된다.
 
 위치 정보(클래스·메서드·레이어·패키지)는 모두 ECS `log` 묶음 아래에 둔다. `service.*`는 서비스 자체(이름·버전·환경)를 뜻하므로 쓰지 않는다.
 
@@ -353,14 +376,15 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 호출 위치 | `log.origin.function`, `log.layer`, `log.package`, `process.thread.name` | keyword | 함수·레이어·패키지는 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
 | 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
 | 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
-| HTTP | `http.request.method`, `url.path`(브라우저가 부른 실제 경로, 쿼리 제외), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`는 요청의 모든 줄 |
+| HTTP | `http.request.method`, `url.path`(그 서비스가 받은 요청의 실제 경로, 쿼리 제외. gateway는 브라우저가 부른 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`는 요청의 모든 줄 |
 | HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트), `url.full`(그 호출의 대상 주소, 쿼리 제외) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
 | Kafka | `loresentry.kafka.topic`, `loresentry.kafka.partition`(long), `loresentry.kafka.offset`(long), `loresentry.kafka.key` | keyword | 메시지를 보내거나 받을 때 |
 | CloudEvents | `loresentry.cloudevent.id`, `loresentry.cloudevent.type`, `loresentry.cloudevent.subject` | keyword | 이벤트를 다룰 때 |
 | 도메인 ID | `loresentry.project_id`, `loresentry.document_id`, `loresentry.file_id`, `loresentry.episode_id`, `loresentry.memo_id`, `loresentry.version_id`(문서 버전), `loresentry.image_id`, `loresentry.save_id`(문서 저장의 `X-Save-Id`) | keyword | 해당 대상을 다룰 때 |
 | 채팅 | `loresentry.chat.session_id`, `loresentry.chat.turn_id` | keyword | ai-chat. 인증 세션과 헷갈리지 않게 `chat` 아래에 둔다 |
-| 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.run_id`, `loresentry.refresh.draft_id` | keyword | content, graph-rag, gateway |
+| 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.draft_id` | keyword | content, graph-rag, gateway. content의 run(`refresh_runs.id`)도 `request_id`와 같은 값이라 이 필드 하나로 남긴다 |
+| 스케줄 | `loresentry.schedule.name` | keyword | 스케줄 작업 1회의 모든 줄. 작업 이름 |
 | 설정 검사 | `loresentry.setting_check.run_id`, `loresentry.setting_check.finding_id` | keyword | ai-chat, gateway |
 | 입력값·결과 | `loresentry.param.*`, `loresentry.result.*` | 문자열 keyword, 숫자 long·double | [입력값과 결과](#입력값과-결과-param-result) 규칙대로 |
 
@@ -431,9 +455,9 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | ID 생성 | 추적 라이브러리가 만든다. 128비트 무작위라 번호 관리가 필요 없다. Spring은 `spring-boot-starter-opentelemetry`(Micrometer Tracing의 OpenTelemetry bridge), Python은 OpenTelemetry SDK다. W3C 형식만 읽고 쓴다 |
 | 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 추적 라이브러리가 읽기 전에 숨긴다. 스케줄·폴링 작업은 1회마다 새로 시작한다. 1초 relay처럼 자주 도는 폴링은 처리할 일이 있을 때만 시작해, 빈 순회는 span도 로그도 남기지 않는다 |
 | 서비스 간 HTTP | 계측 라이브러리(Spring RestClient observation, Python httpx 계측)가 `traceparent`를 붙인다. 라이브러리를 거치지 않는 호출(gateway의 채팅 SSE)은 코드가 직접 넣는다 |
-| outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다) |
+| outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다). relay가 행마다 남기는 발행 줄도 그 행에 저장된 trace로 남겨, 요청의 흐름 끝에 발행이 보인다 |
 | 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
-| Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다 |
+| Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다. 레코드 하나를 처리하는 동안의 모든 줄(재시도·DLQ 같은 에러 처리기 줄 포함)이 그 trace로 남는다 |
 | span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크도 span을 만든다(로그는 Logstash가 `info` 줄을 버린다) |
 | 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값, 프레임워크 로그는 그때 열려 있는 span의 값이다 |
 | 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
