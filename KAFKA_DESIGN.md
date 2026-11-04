@@ -1117,6 +1117,11 @@ sequenceDiagram
   - 재시도를 다 써도 실패한 메시지(Consumer 실행 모델 4번 재시도 계단).
   - 재시도해도 소용없는 실패는 바로 보냄: 역직렬화 실패, 스키마에 안 맞는 payload, 알고 있는 이벤트의 모르는 enum 값.
   - 처리하지 않는 ce_type은 DLQ로 보내지 않고 건너뜀(Message format).
+- **최신화 요청을 DLQ로 보낼 때의 완료 이벤트**(graph-rag, 2026-11-04)
+  - 레코드를 읽어 request·project ID를 알고, 충돌(같은 request ID에 다른 내용)이 아닌 실패면 DLQ로 보내기 전에 FAILED 완료를 inbox(`InboxEvent`, outbox 대기)에 남긴다. relay가 `GraphRefreshCompleted`(outcome FAILED, 고정 오류 코드·문구)로 보낸다.
+  - 그래서 content는 시간 제한을 기다리지 않고 그 최신화를 실패로 끝낸다.
+  - 읽을 수 없는 레코드와 충돌은 완료할 대상을 알 수 없거나 원래 요청을 끝내면 안 되어서 DLQ로만 보낸다. 이때는 content의 시간 제한(`graph-refresh-timeout`)이 안전망이다.
+  - 완료를 남기지 못하면 DLQ로는 그대로 보내고 warn을 남긴다.
 - **설정**
   - partition 3, replica 3. key는 원본 그대로이고, 보낼 때 partition을 -1로 두어 key로 정해지게 함(원본 6개, DLQ 3개).
   - 보존 기간: `content.project.changed.v1`의 DLQ는 7일(본문 포함, `segment.ms` 1일), 나머지는 30일.
