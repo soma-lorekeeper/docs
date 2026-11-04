@@ -358,7 +358,7 @@ alerting/
 | Argo CD Application | 경보와 관련된 것 | 바뀌면 |
 |---|---|---|
 | `kube-prometheus-stack` (`argocd-apps-dev/kube-prometheus-stack.yaml`의 Helm values) | Alertmanager 설정(경로·받는 곳·억제·메시지 템플릿), Slack Secret 마운트. Grafana 설정(ES 데이터 소스 3개, 규칙 sidecar, ES 비밀번호 환경 변수·CA 마운트) | Alertmanager 설정은 재시작 없이 다시 읽는다. Secret 마운트를 처음 넣을 때는 Alertmanager 파드가 한 번 재시작한다. Grafana의 환경 변수·마운트·sidecar를 바꾸면 Grafana 파드가 재시작한다(DB가 emptyDir이지만 설정은 모두 provisioning이라 그대로 돌아온다) |
-| `alerting` (`alerting/overlays/ENV`, wave -2) | PrometheusRule `loresentry-infra`, Grafana 규칙과 contact point·policy ConfigMap(label `grafana_alert`). 앱 지표 때 `loresentry-app`·앱 ServiceMonitor가 더해진다 | 재시작 없음. Prometheus Operator가 규칙·수집 대상을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
+| `alerting` (`alerting/overlays/ENV`, wave -2) | PrometheusRule `loresentry-infra`, Grafana 규칙과 contact point·policy ConfigMap(label `grafana_alert`), Grafana 대시보드 ConfigMap(label `grafana_dashboard`). 앱 지표 때 `loresentry-app`·앱 ServiceMonitor가 더해진다 | 재시작 없음. Prometheus Operator가 규칙·수집 대상을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
 | `logging` (`logging/overlays/ENV`) | ES 역할 `grafana_reader`와 file realm 사용자, ES·Kibana·Logstash·Filebeat CR의 `spec.monitoring`(Metricbeat sidecar) | 역할·사용자는 재시작 없음(1~2분 안에 반영). **`spec.monitoring`을 처음 켜면 sidecar가 붙으면서 ES·Kibana·Logstash·Filebeat 파드가 모두 재시작한다.** ES가 1노드라 1~3분 동안 색인·검색이 멈추고, 그동안 로그는 Logstash 큐에 쌓였다가 이어서 들어간다 |
 | `workload-ENV` (`workload/overlays/ENV`) | 앱 Deployment·Service의 `metrics` 포트(9464), 앱 이미지 태그, Kafka PrometheusRule | 앱 파드가 롤링 업데이트된다. 서비스 중단은 없다 |
 
@@ -410,6 +410,7 @@ flowchart LR
 | Grafana가 Alertmanager로 넘기는 설정(contact point·policy) | `alerting/base/grafana/notifications.yaml` |
 | 지표 규칙 | `alerting/base/prometheus/` |
 | 로그·로그 스택 규칙 | `alerting/base/grafana/` |
+| Grafana 대시보드(경보 현황·ArgoCD) | `alerting/base/grafana/dashboards/`의 JSON. 폴더는 kps values의 `grafana.sidecar.dashboards.folderAnnotation` |
 | 수집 대상 (앱 지표 때) | `alerting/base/prometheus/servicemonitor.yaml`, 앱 Service의 `metrics` 포트 |
 | Grafana가 읽는 ES 범위 | `logging/base/elasticsearch/`의 역할 정의 |
 | 로그 스택 모니터링 sidecar | `logging/base/`의 Elasticsearch·Kibana·Logstash·Beat CR `spec.monitoring` |
