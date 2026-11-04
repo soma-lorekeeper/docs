@@ -207,8 +207,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 
 - 서비스마다 로그 클래스 `AppLogger`를 하나 둔다.
   - Java: `com.loresentry.<서비스>.logging.AppLogger`
-  - Python: `app/logs.py`의 `AppLogger`
-  - 서비스 코드는 이 객체의 메서드로만 로그를 찍는다. SLF4J·`logging`·`print`·`System.out`을 직접 쓰지 않는다. Java는 ArchUnit, Python은 ruff 테스트로 막는다.
+  - Python: `app/logs` 패키지의 `AppLogger`. 서비스 코드는 `app.logs`의 공개 이름만 import하고, `_`로 시작하는 내부 모듈(바인딩, 객체 생성, 시간 재기)은 쓰지 않는다
+  - 서비스 코드는 이 객체의 메서드로만 로그를 찍는다. SLF4J·`logging`·`print`·`System.out`을 직접 쓰지 않는다. Java는 ArchUnit, Python은 ruff로 막는다(`TID` banned-api로 `logging` 모듈과 `app.logs._*`, `T20`으로 `print`).
   - 헥사고날 구조라 core(업무 규칙)가 라이브러리에 의존하지 못하는 저장소(authentication)는 `logging` 패키지를 순수 Java로 둔다.
     `AppLogger`는 위치·필드를 모은 한 줄을 `LogSink` interface에 넘기고, SLF4J로 실제로 출력하는 구현(`Slf4jLogSink`)은 adapter에 둔다.
     앱이 시작할 때 설정(config)이 그 구현을 bean으로 만들며 `AppLogger.install(...)`로 꽂는다. Spring 없이 만드는 단위 테스트는 테스트 확장이 같은 구현을 꽂는다.
@@ -239,7 +239,14 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 
   - 흐름의 시작·종료 줄 위치(`log.logger`·`log.origin.function`·`log.layer`)는 로깅 팩토리가 아니라 그 흐름을 연 서비스 메서드다. 예를 들어 `OutboxPurge.run`의 `scheduler` 레이어다.
   - 흐름은 람다로 받는다. 할 일이 예외로 끝나도 종료 줄이 남는다. 실패 줄에는 예외 메시지를 싣지 않고, 클래스 이름(`error.type`)과 메시지 없는 스택만 남긴다.
-- **필드**: 정해 둔 필드만 받는다(Java `LogField` 팩토리, Python 허용 목록).
+  - **Python**(ai-chat, graph-rag): 같은 API를 snake_case로 둔다.
+    - 이름: `identify`, `add_to_outcome`, `trace_id`, `traceparent()`, `LogFlow.schedule/polling/kafka_record/call/task`, `LogScope.stored/outbox_event`, `kafka_client_logger()`(librdkafka 로그를 우리 formatter로 보낼 logger)
+    - 흐름은 람다 대신 context manager로 받는다(`with LogFlow.call("openai") as call:`). `__exit__`가 예외를 보므로 예외가 나도 종료 줄이 남는다.
+    - 흐름 객체의 `with`는 Python 예약어라 `add`다.
+    - async 함수 안에서도 같은 방식으로 쓴다.
+    - 로그 객체는 contextvars에 둔다. `asyncio.create_task`·`asyncio.to_thread`는 문맥을 이어 받는다. 문맥을 넘기지 않는 스레드 풀(graph-rag 처리 스레드)은 레코드마다 처리 스레드에서 새로 바인딩한다.
+    - 진입 줄 규칙의 레이어는 모듈 상수 `LOG_LAYER`가 정한다. 없으면 모듈 이름 끝(`routes`→controller, `store`→repository 등)으로 정한다. pytest AST 테스트가 레이어 모듈의 public 함수·메서드가 진입 줄(또는 `LogFlow.schedule/kafka_record/task`)을 남기는지 본다. 예외는 `@skip_entry_log("...")`로 표시한다.
+- **필드**: 정해 둔 필드만 받는다(Java·Python 모두 `LogField` 팩토리. 이름과 가림 규칙이 같다).
   - 임의의 이름·값을 받지 않으므로 이메일·이름·본문을 필드로 넣을 자리가 없다.
   - 새 필드는 아래 [필드](#필드) 표에 먼저 추가한다.
 - **자동으로 채우는 필드**: 그 줄을 찍은 위치. `log.logger`(클래스·모듈), `log.origin.function`(메서드·함수),
@@ -289,7 +296,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     - Kafka 레코드: `<event> event received`, `<event> event processed`(예: `user deleted event processed`)
   - **줄마다 붙는 값**(HTTP의 `url.path`·`http.route` 자리). 시작점이 로그 객체에 붙여, 그 흐름이 부른 repository 줄까지 모든 줄에 남는다.
     - Kafka 레코드: `loresentry.kafka.topic`·`partition`·`offset`과 `loresentry.cloudevent.id`·`type`·`subject`
-    - 스케줄 작업: 작업 이름 `loresentry.schedule.name`(예: `outbox-relay`, `outbox-purge`, `inbox-purge`, `graph-refresh-timeout`)
+    - 스케줄 작업: 작업 이름 `loresentry.schedule.name`(예: `outbox-relay`, `outbox-purge`, `inbox-purge`, `graph-refresh-timeout`, ai-chat summarizer `summary-tick`, graph-rag `refresh-outbox-relay`)
     - outbox 행: 행의 trace, relay 작업 이름, `loresentry.cloudevent.id`·`type`·`subject`, 이벤트 key인 도메인 ID(content는 `loresentry.project_id`)
     - 받는 서비스의 Kafka 레코드 줄과 보낸 서비스의 outbox 행 줄은 같은 `cloudevent.*` 필드를 가진다. 그래서 이벤트 ID 하나로 보낸 줄과 받은 줄을 함께 찾는다.
     - 받은 레코드의 `ce_type`은 보낸 쪽 값 그대로라, 그 서비스가 처리하는 종류만 그대로 남기고 나머지는 `other`로 남긴다. `ce_id`·`ce_subject`는 표준 표기 UUID일 때만 남긴다.
@@ -362,6 +369,10 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | authentication | `login session store call failed`, `oauth state store call failed`, `consent request store call failed` | `redis call failed`(`error.type`). 성공하면 `redis call completed`(걸린 시간)가 남는다 |
 | gateway | `session store check failed during <stage>` | `valkey call failed`(`error.type`, 단계는 `loresentry.param.stage`). 세션 확인마다 결과 줄 `valkey call completed`가 남는다 |
 | gateway | `session store connection warmed up`, `session store warm-up failed` | `session store warm-up start`, `session store warm-up completed`, `session store warm-up failed`(예외면 `error`) |
+| graph-rag | `Kafka event skipped: topic=…`, `Kafka processing failed: …`, `Kafka event dead-lettered: …` | `kafka event skipped`(`error.type: UNKNOWN_EVENT_TYPE`), `kafka processing failed`(`loresentry.param.attempt`, `error.type`), `kafka event dead-lettered`(`error.type`). topic·partition·offset·cloudevent는 레코드 문맥에 있다 |
+| graph-rag | `Refresh Outbox relay failed: reason=…`, `Refresh Outbox delivery deferred: reason=…` | `schedule run failed`(`loresentry.schedule.name: refresh-outbox-relay`, `error.type`, 다시 보내면 `loresentry.result.backoff_seconds`) |
+| graph-rag | `Business Kafka worker failed: …`, `Kafka polling started …`, `Kafka polling stopped …` | worker 스레드 하나의 `LogFlow.task` 시작·종료 줄 |
+| ai-chat | `turn finished`, `setting check finished`, `summary tick`, `model call` 등 처리 결과 줄 | `chat turn`·`setting check`·`document summary`의 `LogFlow.task` 종료 줄, `summary-tick` 스케줄 종료 줄, `openai call completed`. 건수·토큰은 `loresentry.result.*` |
 | gateway | `ai-chat stream relay completed`, `ai-chat stream ended before completion`, `ai-chat stream cancelled: browser disconnected` | `ai-chat stream relay start`, `ai-chat stream relay completed`(브라우저가 끊으면 `loresentry.result.browser_disconnected`), `ai-chat stream relay failed`(ai-chat 쪽 끊김은 `warn`, `error.type: AI_CHAT_STREAM_INTERRUPTED`). 모든 줄에 `loresentry.chat.session_id` |
 
 ### 레이어와 위치
@@ -461,7 +472,16 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - formatter는 모든 값을 하나의 중첩 객체에 합치고, 먼저 들어간 필수 필드를 key-value가 바꾸지 못하게 한다.
   - 프레임워크 로그(Spring, Tomcat, Kafka client, Flyway)도 같은 formatter를 거친다.
   - `service.name`은 Kubernetes 이름으로 맞춘다(`logging.structured.ecs.service.name`). `spring.application.name`(`gateway`·`authentication`·`content`)은 Kafka client-id 등이 쓰므로 그대로 둔다.
-- Python: 같은 필드를 내는 formatter를 root·uvicorn 로거에 단다. ai-chat의 `time`·`level`·`logger`는 `@timestamp`·`log.level`·`log.logger`로 바꾼다.
+- Python: 같은 필드를 내는 formatter를 root 로거에 단다. uvicorn·라이브러리 로거는 root로 보낸다.
+  - 프레임워크 줄에는 contextvars에 바인딩된 흐름 문맥(trace·user·문맥 필드)이 붙는다. Java의 MDC 문맥 필드와 같다.
+  - 프레임워크 줄의 예외는 `error.type`과 메시지 없는 스택만 남긴다(`error.message`는 남기지 않는다).
+  - uvicorn 접근 로그는 끈다(`--no-access-log`). 요청 로그 middleware가 접근 로그를 남긴다.
+  - `httpx`·`httpcore`·`openai`·`botocore`·`urllib3`는 `WARNING`으로 둔다. `INFO` 줄에 쿼리를 포함한 URL이 들어간다.
+  - librdkafka 로그는 `kafka_client_logger()`로 받아 같은 formatter로 낸다.
+  - 시작 스크립트의 flyway 출력은 한 줄씩 같은 formatter로 감싼다.
+  - 처리되지 않은 예외(`sys.excepthook`·`threading.excepthook`)도 같은 formatter로 낸다.
+  - `log.level`은 `INFO`·`WARN`·`ERROR`로 낸다(`CRITICAL`도 `ERROR`).
+  - 예외의 `error.type`은 클래스의 짧은 이름(`type(e).__name__`)이다. Java는 패키지를 붙인 전체 이름이다. 메시지 없는 스택의 첫 줄에는 `모듈.이름`이 남는다.
 - `service.version`은 이미지 태그(`build-<run>-<attempt>`)다. CI가 `docker build --build-arg APP_VERSION=<태그>`로 넘기고, Dockerfile이 `ENV APP_VERSION`으로 둔다.
 
 ### 필드
