@@ -136,6 +136,7 @@ ECS는 `log.level`에 출처의 원래 값을 넣으라고 권한다. 하지만 
 | OAuth `code`·`state`, Google ID 토큰 | 로그인 과정의 비밀 값. ID 토큰(JWT) 안에는 이메일과 이름이 있다 |
 | 비밀번호 (DB 역할, Valkey 계정) | 사용자 비밀번호는 없다(Google 로그인만). 인프라 비밀번호가 대상이다 |
 | 광고 클릭 ID 값(`gclid`, `gbraid`, `wbraid`) | 클릭 하나를 특정한다. 이미 `user_acquisitions`와 GA로 수집한다 |
+| S3 객체 키 | 이미지 키는 공개 주소(CloudFront) 뒤에 붙이면 누구나 열 수 있어 키가 곧 열람 권한이다. 최신화 입력·결과 키도 같은 규칙으로 남기지 않는다 |
 
 `user.id`(auth `users.id` UUID)와 도메인 ID(프로젝트·문서·세션 대화·설정 검사 등의 UUID, 문서 저장의 `X-Save-Id`)는 남겨도 된다.
 UUID만으로는 사람이나 내용을 특정할 수 없다. 다만 이름에 ID가 붙어도 인증에 쓰는 값(세션 ID인 `ls_session` 쿠키 값, 동의 요청 ID,
@@ -182,12 +183,17 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 | --- | --- | --- |
 | 쿼리 지우기 | `url.full`·`url.original`·`http.url`·`http.target`의 `?` 뒤, `url.query` 속성 | 검색어 등 쿼리스트링 전체를 남기지 않는다. 경로만 남는다 |
 | SQL 지우기 | `db.statement`, `db.query.text` | SQL은 남기지 않는다. 느린 쿼리는 RDS 로그로 본다 |
-| 예외 지우기 | span event의 `exception.message`, `exception.stacktrace` | 예외 메시지는 남기지 않는다(스택의 `Caused by` 줄에도 있다). `exception.type`만 남고, 스택은 같은 `trace.id`의 앱 로그 `error.stack_trace`로 본다 |
+| 예외 지우기 | span event의 `exception.message`, `exception.stacktrace` | 예외 메시지는 남기지 않는다(스택의 `Caused by` 줄에도 있다). `exception.type`만 남고, 스택은 같은 `span.id`의 앱 로그 `error.stack_trace`로 본다 |
+| 객체 키 지우기 | AWS 호출 span(`rpc.system: aws-api`)의 `url.full`·`url.path`, `aws.s3.key`·`aws.s3.copy_source` | S3 객체 키가 든다(위 표). bucket, 작업 이름(`rpc.service`·`rpc.method`), 상태, 걸린 시간은 남는다 |
+| 대화 내용 지우기 | GenAI span 속성 `gen_ai.prompt`·`gen_ai.completion`·`gen_ai.input.messages`·`gen_ai.output.messages`·`gen_ai.system_instructions`, 이름이 `gen_ai.`로 시작하는 span event | 프롬프트와 모델 응답은 작품 데이터다. 모델 이름(`gen_ai.request.model`)과 토큰 수(`gen_ai.usage.*`)는 남는다 |
 | 가리기 | 남은 모든 span·span event 문자열 속성 | 위 표의 규칙(이메일, OAuth `code`·`state`, 광고 클릭 ID, 서명 URL, 세션 쿠키, 인증 헤더, JWT, 비밀번호, DB 키 값) |
 
 - collector 정규식은 Go RE2라 lookahead가 없다. 그래서 이메일 규칙은 Logstash와 달리 클러스터 안 주소(`0@…svc`)도 가리고,
   DB 키 값 규칙은 `Key (…)=(…)`의 괄호 안을 통째로 가린다. 더 많이 가리는 쪽으로만 다르다.
-- HTTP 헤더와 요청·응답 본문은 계측 라이브러리가 기본으로 담지 않는다. 그 설정을 켜지 않는다.
+- HTTP 헤더, 요청·응답 본문, GenAI 대화 내용은 계측이 기본으로 담지 않는다. 그 설정을 켜지 않고, 대화 내용 기록은
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`로 명시한다. collector 규칙은 잘못 켜졌을 때의 두 번째 방어선이다.
+- 요청 span의 `client.address`·`user_agent.original`은 남긴다. ALB 접근 로그([6절](#6-data-stream))와 같은 기준이다.
+- 계측을 새로 켜면 dev에서 span 속성 표본을 뽑아 이 표로 덮이는지 확인한다.
 - traces·`logs-*.otel-*`(예외 event)에도 같은 반대 검색을 돌린다.
 - 규칙은 gitops `logging/base/otel-collector/otel.yml`의 `transform/privacy`에 있다. 바꾸면 이 표도 같은 시점에 고친다.
 
@@ -204,7 +210,7 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 
 | 버리는 것 | 이유 |
 | --- | --- |
-| 헬스체크 흐름의 `info` 줄(`tags: health`) | kubelet probe가 파드마다 시간당 수백 번 부른다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 앱은 헬스체크 요청의 모든 줄(접근 로그, 계층 진입 로그, 내부 서비스 호출)에 `health` 태그를 붙인다. 실패한 헬스체크는 결과 줄과 원인 줄이 `warn`·`error`가 되므로 남는다. span은 버리지 않는다 |
+| 헬스체크 흐름의 `info` 줄(`tags: health`) | kubelet probe가 파드마다 시간당 수백 번 부른다. 성공 여부는 Prometheus와 파드 이벤트가 이미 기록한다. 앱은 헬스체크 요청의 모든 줄(접근 로그, 계층 진입 로그, 내부 서비스 호출)에 `health` 태그를 붙인다. 실패한 헬스체크는 결과 줄과 원인 줄이 `warn`·`error`가 되므로 남는다. span도 같은 기준이다. 성공한 헬스체크의 trace는 EDOT Collector가 버리고, 실패한 것은 남긴다([7절](#7-trace)) |
 | RDS `rdsadmin` 계정의 연결·해제 줄 | AWS 내부 관리 연결이다 |
 
 ## 5. 앱 로그 규약
@@ -223,12 +229,13 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     앱이 시작할 때 설정(config)이 그 구현을 bean으로 만들며 `AppLogger.install(...)`로 꽂는다. Spring 없이 만드는 단위 테스트는 테스트 확장이 같은 구현을 꽂는다.
     서비스 코드에서 부르는 모양(`AppLogger.current().info(...)`)은 다른 저장소와 같다.
 - 레벨은 `info`·`warn`·`error`만 쓴다. 프레임워크 로그는 원래 레벨 그대로 들어간다.
-- **만들기**: 서비스 코드는 로깅 로직을 모른다. 인자만 넘기고, 로그를 찍는 작업은 모두 로깅 팩토리(로그 패키지)가 한다.
-  - 로깅 팩토리가 하는 일: 로그 객체 만들기·바인딩, 걸린 시간 재기, 결과로 레벨 정하기, 시작·종료 줄 쓰기.
-  - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회, outbox 행 하나다. 로깅 팩토리가 그때 아는 값(`trace.id`, `span.id`, `user.id`)으로 객체를 만든다.
+- **만들기**: 서비스 코드는 로깅·추적 로직을 모른다. 인자(값, 할 일 람다, 헤더 목록)만 넘기고, 로그를 찍는 작업과 span을 다루는 작업은 모두 로깅 팩토리(로그 패키지)가 한다.
+  - 로깅 팩토리가 하는 일: 로그 객체 만들기·바인딩, 걸린 시간 재기, 결과로 레벨 정하기, 시작·종료 줄 쓰기, 우리 span 열기와 현재 문맥 바꾸기, 저장된 trace 잇기([7절](#7-trace)).
+  - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회, outbox 행 하나다. 로깅 팩토리가 그때 아는 값(흐름의 trace, `user.id`)으로 객체를 만든다. 줄의 `span.id`는 줄을 찍는 순간의 현재 span이다.
   - 만든 객체는 요청 범위 저장소(Java ThreadLocal, Python contextvars)에 넣고, 아래 계층은 `AppLogger.current()`로 꺼낸다.
   - 스레드를 옮기는 곳(비동기 실행기, 처리 스레드)은 객체를 함께 옮긴다. 옮기는 실행기도 로깅 팩토리가 만든다.
   - 서비스 코드가 쓰는 것은 아래가 전부다. Java는 객체를 만드는 멤버(생성자, `with`, `withTag`, `withUser`, `bind`, `LogField.duration`)를 로그 패키지 안에서만 보이게 해 컴파일 단계에서 막는다. authentication은 로그 패키지가 둘(core `logging`, `adapter/out/logging`)이라 ArchUnit으로 막는다.
+  - 서비스 코드는 추적 API(Java `io.opentelemetry`·`io.micrometer.tracing`, Python `opentelemetry`)를 쓰지 않고 `traceparent` 헤더를 직접 넣지 않는다. 로그 패키지 밖의 import를 Java는 ArchUnit, Python은 ruff banned-api로 막는다.
 
     | API | 쓰는 곳 |
     | --- | --- |
@@ -239,18 +246,19 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     | `LogFlow.schedule(name, run -> …, start...)` | 하루 한 번 도는 스케줄 1회. 시작 `schedule run start`, 종료 `schedule run completed` 또는 `schedule run failed`. 예외는 삼키고 실패 줄을 남긴다 |
     | `LogFlow.polling(name, run -> …)` | 짧은 주기 폴링 1회. 그 회차에서 처음 줄이 찍힐 때 시작 줄을 먼저 남기고, 줄이 하나도 없으면 시작·종료 줄을 모두 남기지 않는다 |
     | `LogFlow.kafkaRecord(record, knownTypes, event, flow -> …)` | Kafka 레코드 하나. 시작 `<event> event received`, 종료 `<event> event processed`. 예외는 종료 줄을 남긴 뒤 다시 던진다 |
-    | `LogFlow.call(target, [uri,] call -> …)` | 외부 호출. 시작은 client 진입 줄이고, 결과는 `<target> call completed` 또는 `<target> call failed` |
-    | `LogFlow.task(name, task -> …, start...)` | 흐름 안·밖의 별도 작업(스트리밍 중계, 커밋 뒤 정리, migration). `<name> start`, `<name> completed` 또는 `<name> failed` |
+    | `LogFlow.call(target, [uri,] call -> …)` | 외부 호출. `<target> call` span을 열고 그 안에서 할 일을 실행한다. 시작은 client 진입 줄이고, 결과는 `<target> call completed` 또는 `<target> call failed` |
+    | `LogFlow.task(name, task -> …, start...)` | 흐름 안·밖의 별도 작업(스트리밍 중계, 커밋 뒤 정리, migration). `<name>` span을 열고 `<name> start`, `<name> completed` 또는 `<name> failed`를 남긴다 |
     | `LogFlow.request(...)`(authentication) | 헥사고날 구조라 web adapter에 있는 요청 필터가 HTTP 값만 넘긴다. gateway·content의 요청 필터는 로그 패키지 안에 있다 |
     | 흐름 객체 `with`, `result`, `outcome`, `status`, `fail` | `with`는 진행 중에 알게 된 대상 ID를 이후 모든 줄에 붙인다. `result`는 종료 줄 값, `outcome`은 Kafka 결과, `status`는 호출 응답 상태, `fail`은 예외 없이 끝난 실패의 이유다 |
-    | `LogScope.outboxEvent(traceparent, schedule, id, type, subject, ids...)`, `LogScope.kafkaRecord(record, knownTypes)` | 시작·종료 줄 없이 바인딩만 하는 범위. outbox 행 하나의 줄(발행, 실패 기록, 격리), Kafka 에러 처리기 콜백의 줄 |
+    | `LogScope.outboxEvent(traceparent, schedule, id, type, subject, ids..., () -> send)`, `LogScope.kafkaRecord(record, knownTypes, () -> recover)` | 시작·종료 줄 없이 저장된 trace를 잇는 범위. 저장된 `traceparent`(행 칼럼, 레코드 헤더)를 부모로 한 span을 열어 현재 문맥으로 두고, 넘긴 할 일을 실행한다. outbox 행 하나의 줄(발행, 실패 기록, 격리), Kafka 에러 처리기 콜백의 줄, 그 안의 발행(DLQ 포함)이 저장된 trace를 잇는다 |
     | `LogField.*` | 필드. 허용 목록(`LogField.code`의 `allowed`)은 도메인 코드 목록이라 서비스 쪽에 두고 인자로 넘긴다 |
 
   - 흐름의 시작·종료 줄 위치(`log.logger`·`log.origin.function`·`log.layer`)는 로깅 팩토리가 아니라 그 흐름을 연 서비스 메서드다. 예를 들어 `OutboxPurge.run`의 `scheduler` 레이어다.
-  - 흐름은 람다로 받는다. 할 일이 예외로 끝나도 종료 줄이 남는다. 실패 줄에는 예외 메시지를 싣지 않고, 클래스 이름(`error.type`)과 메시지 없는 스택만 남긴다.
+  - 흐름은 람다로 받는다. 할 일이 예외로 끝나도 종료 줄이 남는다. 실패 줄에는 예외 메시지를 싣지 않고, 클래스 이름(`error.type`)과 메시지 없는 스택만 남긴다. 흐름이 연 span도 같은 범위에서 닫히고, 실패면 span 상태가 ERROR다.
   - **Python**(ai-chat, graph-rag): 같은 API를 snake_case로 둔다.
     - 이름: `identify`, `add_to_outcome`, `trace_id`, `traceparent()`, `LogFlow.schedule/polling/kafka_record/call/task`, `LogScope.stored/outbox_event`, `kafka_client_logger()`(librdkafka 로그를 우리 formatter로 보낼 logger)
     - 흐름은 람다 대신 context manager로 받는다(`with LogFlow.call("openai") as call:`). `__exit__`가 예외를 보므로 예외가 나도 종료 줄이 남는다.
+    - Kafka 발행은 `LogFlow.call("kafka", …, headers=…)`다. 로깅 팩토리가 PRODUCER span을 열고, 넘긴 헤더 목록에 그 span의 `traceparent`를 넣는다.
     - 흐름 객체의 `with`는 Python 예약어라 `add`다.
     - async 함수 안에서도 같은 방식으로 쓴다.
     - 로그 객체는 contextvars에 둔다. `asyncio.create_task`·`asyncio.to_thread`는 문맥을 이어 받는다. 문맥을 넘기지 않는 스레드 풀(graph-rag 처리 스레드)은 레코드마다 처리 스레드에서 새로 바인딩한다.
@@ -288,7 +296,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     시작점이 요청을 받을 때 Spring이 고를 템플릿을 미리 찾아 로그 클래스에 넣기 때문에, 세션 확인처럼 컨트롤러 앞의 줄과 거절된 요청에도 붙는다.
     맞는 경로가 없는 요청(404)에는 `http.route`가 없다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 때는 `http.route`를 쓴다.
   - 레벨은 5xx `error`, 4xx `warn`, 그 외 `info`다.
-  - 헬스체크도 다른 요청과 같은 줄을 남기고 span도 만든다. 모든 줄에 `tags: health`가 붙고, `info` 줄은 Logstash가 버린다.
+  - 헬스체크도 다른 요청과 같은 줄을 남기고 span도 만든다. 모든 줄에 `tags: health`가 붙고, `info` 줄은 Logstash가 버린다. 성공한 헬스체크의 trace는 EDOT Collector가 버린다([7절](#7-trace)).
   - **실패의 결과는 이 한 줄이다.** 예외 처리기·보안 응답은 실패를 따로 찍지 않고 이유(`error.type` 우리 오류 코드, `error.code` 상대가 준 코드)를 로그 클래스에 맡긴다. 결과 줄이 그 필드를 붙인다. 그래서 `log.level: error` 건수가 실패 요청 수와 같다.
   - 실패의 원인(어느 호출·단계에서 무엇이 잘못됐나)은 그 자리에서 `warn`으로 따로 남긴다. 예: `upstream call failed`, `account deletion stopped: …`
   - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
@@ -325,7 +333,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - HTTP(내부 서비스, Google), Redis·Valkey, S3·KMS 호출은 결과 줄 하나를 남긴다(`LogFlow.call`, gateway RestClient는 interceptor).
   - 결과 줄에는 걸린 시간을 넣고, HTTP면 `url.domain`·`url.full`·응답 상태도 넣는다. 실패면 `warn`과 `error.type`이다.
   - 시작은 그 호출을 부른 client 메서드의 진입 줄이다.
-  - DB 쿼리는 줄을 따로 남기지 않는다. repository 진입 줄로 본다.
+  - 결과 줄은 그 호출을 감싸는 `<target> call` span 안에서 찍는다. 그래서 결과 줄의 `span.id`로 APM에서 그 호출과, 계측이 만든 자식 span(HTTP·Redis·S3 등)을 바로 찾는다([7절](#7-trace)).
+  - DB 쿼리는 줄을 따로 남기지 않는다. repository 진입 줄로 보고, span은 JDBC·psycopg 계측이 쿼리마다 만든다.
 
 - **줄을 남기지 않는 것**
   - 값을 계산하기만 하는 코드: 암호화·압축(`Manuscripts`, `Envelope`), 본문 변환, 순서 계산, 메시지 변환, 입력 검증
@@ -341,11 +350,26 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 모든 줄 | `log.*`, `service.*`, `message`, 흐름 안이면 `trace.id`·`span.id`, 흐름의 사용자를 알면 `user.id`, 흐름 문맥 |
 | 흐름 문맥 | HTTP는 `url.path`·`http.route`·`http.request.method`(gateway는 `http.request.id`도). Kafka 레코드는 `loresentry.kafka.*`와 `loresentry.cloudevent.*`. 스케줄은 `loresentry.schedule.name`. outbox 행은 `loresentry.schedule.name`, `loresentry.cloudevent.*`, event key 도메인 ID |
 | 진입 줄 | 받은 도메인 ID(전용 필드), 입력값([입력값과 결과](#입력값과-결과-param-result) 규칙) |
-| `warn`·`error` | `error.type`(우리 이유 코드 또는 예외 클래스). 상대가 준 코드가 있으면 `error.code`, 예외가 있으면 메시지 없는 스택(`error.stack_trace`) |
+| `warn`·`error` | `error.type`(우리 이유 코드 또는 예외 클래스), `error.stack_trace`(언제나. 아래 [warn·error 스택](#warnerror-스택)). 상대가 준 코드가 있으면 `error.code` |
 | 흐름 종료 줄 | `event.duration`, 결과(`http.response.status_code`, `loresentry.result.outcome`, 건수), 진행 중에 알게 된 대상 ID |
 | 외부 호출 결과 줄 | `event.duration`, HTTP면 `url.domain`·`url.full`·`http.response.status_code`, 실패면 `error.type` |
 
 `event.duration`은 흐름 종료 줄과 외부 호출 결과 줄에만 넣는다. service의 `… completed` 같은 결과 줄은 같은 trace의 앞 줄과 시각 차이로 본다.
+
+#### warn·error 스택
+
+`warn`·`error` 줄에는 언제나 `error.stack_trace`가 있다. 로그만 보고 그 줄이 어느 호출 경로에서 나왔는지 알 수 있게 한다.
+로깅 팩토리와 formatter가 채우고, 서비스 코드는 지금처럼 예외나 이유 코드만 넘긴다.
+
+| 줄 | `error.stack_trace` |
+| --- | --- |
+| 예외가 있는 줄(로그 클래스 줄, 프레임워크 줄) | 원인 사슬의 메시지 없는 스택. Java는 원인 8단계·단계마다 30프레임, Python은 5단계·20프레임까지 |
+| 예외가 없는 로그 클래스 줄(업무 거절, 상대 5xx, 흐름 객체 `fail`) | 줄을 찍는 순간의 호출 위치 스택. 첫 줄은 `log site: <error.type>`이고, 그 아래 30프레임까지 |
+| 예외가 없는 프레임워크 줄(Spring, Hibernate, Kafka client, uvicorn 등) | formatter가 같은 스레드의 호출 위치 스택을 남긴다. 첫 줄은 `log site: <log.logger>` |
+
+- 호출 위치 스택은 Java `StackWalker`, Python `traceback.extract_stack`으로 만든다. 로그 패키지와 로깅 라이브러리(logback·SLF4J, Python `logging`) 프레임은 뺀다. 줄은 동기로 쓰므로 찍은 스레드의 스택이다.
+- 프레임은 클래스(모듈)·메서드·파일·줄 번호만 남는다. 예외 메시지와 소스 코드 줄은 넣지 않는다([4절](#4-금지-항목과-마스킹)).
+- 원인 줄과 스택이 겹치는 줄(Kafka 레코드 실패 종료 줄, 흐름 실패 줄)도 스택을 빼지 않는다.
 
 #### 문맥 필드와 프레임워크 줄
 
@@ -355,6 +379,7 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - 그 밖의 MDC 값은 내보내지 않는다.
   - MDC는 문자열만 담으므로 숫자 필드(`loresentry.kafka.partition`·`offset`)는 formatter가 숫자로 되돌린다.
   - 로그 클래스 줄은 그 줄에 넘긴 값이 MDC 값보다 우선한다.
+  - `trace.id`·`span.id`는 줄을 쓰는 순간의 현재 span이 MDC 값보다 우선한다([7절](#7-trace) 로그 필드).
 - Kafka client의 내부 스레드(consumer 백그라운드·network 스레드)가 찍는 줄(리밸런스, 파티션 할당, metadata)은 흐름 밖이라 문맥이 붙지 않는다. `log.logger: org.apache.kafka*`로 찾는다.
 
 #### 바뀐 문구 (2026-11-04)
@@ -479,11 +504,11 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 - Spring: 서비스의 ECS formatter 클래스(`logging.structured.format.console`에 클래스 이름)를 쓴다.
   - Boot 내장 `ecs` 형식은 key-value·MDC 이름이 자기가 쓰는 객체(`log`, `error`)와 겹치면 그 줄을 통째로 버린다. 그래서 `log.origin.function`, `error.type`을 함께 낼 수 없다.
   - formatter는 모든 값을 하나의 중첩 객체에 합치고, 먼저 들어간 필수 필드를 key-value가 바꾸지 못하게 한다.
-  - 프레임워크 로그(Spring, Tomcat, Kafka client, Flyway)도 같은 formatter를 거친다.
+  - 프레임워크 로그(Spring, Tomcat, Kafka client, Flyway)도 같은 formatter를 거친다. 예외가 없는 `WARN` 이상 줄에는 호출 위치 스택을 붙인다([warn·error 스택](#warnerror-스택)).
   - `service.name`은 Kubernetes 이름으로 맞춘다(`logging.structured.ecs.service.name`). `spring.application.name`(`gateway`·`authentication`·`content`)은 Kafka client-id 등이 쓰므로 그대로 둔다.
 - Python: 같은 필드를 내는 formatter를 root 로거에 단다. uvicorn·라이브러리 로거는 root로 보낸다.
   - 프레임워크 줄에는 contextvars에 바인딩된 흐름 문맥(trace·user·문맥 필드)이 붙는다. Java의 MDC 문맥 필드와 같다.
-  - 프레임워크 줄의 예외는 `error.type`과 메시지 없는 스택만 남긴다(`error.message`는 남기지 않는다).
+  - 프레임워크 줄의 예외는 `error.type`과 메시지 없는 스택만 남긴다(`error.message`는 남기지 않는다). 예외가 없는 `WARNING` 이상 줄은 호출 위치 스택을 남긴다.
   - uvicorn 접근 로그는 끈다(`--no-access-log`). 요청 로그 middleware가 접근 로그를 남긴다.
   - `httpx`·`httpcore`·`openai`·`botocore`·`urllib3`는 `WARNING`으로 둔다. `INFO` 줄에 쿼리를 포함한 URL이 들어간다.
   - librdkafka 로그는 `kafka_client_logger()`로 받아 같은 formatter로 낸다.
@@ -499,8 +524,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | --- | --- | --- | --- |
 | 필수 | `@timestamp`, `log.level`, `log.logger`, `message`, `service.name`, `service.version`(이미지 태그), `ecs.version` | | 항상 |
 | 호출 위치 | `log.origin.function`, `log.layer`, `log.package`, `process.thread.name` | keyword | 함수·레이어·패키지는 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
-| 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
-| 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
+| 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때. 줄을 찍는 순간의 현재 span([7절](#7-trace)) |
+| 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때. `error.stack_trace`는 모든 `warn`·`error` 줄([warn·error 스택](#warnerror-스택)) |
 | HTTP | `http.request.method`, `url.path`(그 서비스가 받은 요청의 실제 경로, 쿼리 제외. gateway는 브라우저가 부른 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`·`http.request.method`는 요청의 모든 줄(같은 스레드의 프레임워크 줄 포함). 내부 서비스 호출 결과 줄의 `http.request.method`도 받은 요청의 메서드다 |
 | HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트), `url.full`(그 호출의 대상 주소, 쿼리 제외) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
@@ -571,23 +596,65 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 ## 7. trace
 
 요청이 서비스를 옮겨 가며 처리되는 흐름을 `trace.id` 하나로 이어 본다. 로그에서는 `trace.id`로 한 요청의 모든 줄을
-모으고, 호출 그림(누가 누구를 불렀나, 어디서 시간이 걸렸나)은 Kibana APM에서 본다. dev부터 적용 중이다.
+모으고, 호출 그림(누가 누구를 불렀나, 어디서 시간이 걸렸나)은 Kibana APM에서 본다. 구성은
+[APM_ARCHITECTURE.md](APM_ARCHITECTURE.md)에 있다.
+
+지키는 것:
+
+- **로그와 APM이 같은 곳을 가리킨다.** 로그 줄의 `trace.id`·`span.id`는 그 줄을 찍는 순간의 현재 span이고, 그 span은 APM에
+  저장된다. 로그 줄의 `span.id`로 폭포 그림의 그 span을 찾고, 반대로 span에서 그 안에서 찍힌 줄을 찾는다.
+- **같은 흐름은 같은 trace다.** HTTP, Kafka, 저장했다 나중에 처리하는 일(outbox 행, `summary_queue`, `InboxEvent`, Kafka 에러
+  처리기·DLQ)은 원래 요청의 trace를 잇는다. trace를 새로 여는 곳은 아래 시작점뿐이다. 계측이 헤더를 덮어써도 결과가 저장된
+  trace가 되게 한다.
+- **빈 구간이 없다.** 서비스가 쓰는 모든 의존 대상(HTTP, DB, Redis·Valkey, S3·KMS, Kafka, OpenAI, Neptune, Google)에 span이
+  있고, 외부 호출 결과 줄마다 그 호출을 감싸는 span이 있다. 부모 없는 span은 시작점뿐이다.
+- **중복이 없다.** 추적 엔진은 하나이고, 한 작업에 같은 종류의 span이 둘 생기지 않는다.
+
+2026-11-05부터 Java·Python의 추적 엔진을 EDOT로 옮기는 중이다. 서비스별 진행은
+[APM_ARCHITECTURE.md 12절](APM_ARCHITECTURE.md#12-전환-상태와-남은-일)에 있다. 옮기기 전 서비스는 이전 엔진(Java Micrometer
+Tracing, Python OpenTelemetry SDK)으로 같은 헤더 규약을 지킨다.
 
 | 항목 | 규약 |
 | --- | --- |
 | 형식 | W3C Trace Context `traceparent: 00-<trace-id 32 hex>-<span-id 16 hex>-<flags>` |
 | 헤더 이름 | HTTP와 Kafka 모두 `traceparent` (소문자 정확히. Kafka 헤더는 대소문자를 구분한다). [KAFKA_DESIGN.md](KAFKA_DESIGN.md)의 필수 헤더다. 자체 `traceId` 헤더는 쓰지 않는다. `tracestate`·`baggage`는 쓰지 않는다 |
-| ID 생성 | 추적 라이브러리가 만든다. 128비트 무작위라 번호 관리가 필요 없다. Spring은 `spring-boot-starter-opentelemetry`(Micrometer Tracing의 OpenTelemetry bridge), Python은 OpenTelemetry SDK다. W3C 형식만 읽고 쓴다 |
-| 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 추적 라이브러리가 읽기 전에 숨긴다. 스케줄·폴링 작업은 1회마다 새로 시작한다. 1초 relay처럼 자주 도는 폴링은 빈 순회에 span도 로그도 남기지 않는다. 로그는 첫 줄 직전에 시작 줄을 남긴다. span은 graph-rag처럼 첫 줄 직전에 열거나, 프레임워크가 회차마다 여는 곳(Spring `@Scheduled`, ai-chat summarizer tick)은 빈 회차 span에 `loresentry.polling.idle=true`를 달고 EDOT Collector가 그 trace를 자식 span까지 통째로 버린다(`tail_sampling`) |
-| 서비스 간 HTTP | 계측 라이브러리(Spring RestClient observation, Python httpx 계측)가 `traceparent`를 붙인다. 라이브러리를 거치지 않는 호출(gateway의 채팅 SSE)은 코드가 직접 넣는다 |
-| outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다). relay가 행마다 남기는 발행 줄도 그 행에 저장된 trace로 남겨, 요청의 흐름 끝에 발행이 보인다 |
-| 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
-| Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다. 레코드 하나를 처리하는 동안의 모든 줄(재시도·DLQ 같은 에러 처리기 줄 포함)이 그 trace로 남는다 |
-| span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크도 span을 만든다(로그는 Logstash가 `info` 줄을 버린다) |
-| 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값이다. 프레임워크 로그는 바인딩 안이면 그 값(MDC), 밖이면 그때 열려 있는 span의 값이다 |
+| 추적 엔진 | EDOT(Elastic Distribution of OpenTelemetry). Java는 `elastic-otel-javaagent`(OpenTelemetry Java agent 기반)를 `-javaagent`로, Python은 `elastic-opentelemetry`를 `opentelemetry-instrument`로 띄운다. trace·span ID는 엔진이 만든다(128비트 무작위). Spring Boot OTel starter와 Micrometer Tracing은 쓰지 않는다. 엔진이 둘이면 같은 작업의 span이 두 번 생긴다 |
+| 계측 | 서비스가 쓰는 라이브러리만 켠다([계측 범위](#계측-범위)). 지표·로그 계측과 로그 MDC 계측은 끈다. 지표는 Prometheus, 로그는 Filebeat가 모으고, 로그 줄의 ID는 로깅 팩토리가 넣는다 |
+| 서비스 코드 | 추적 API를 쓰지 않는다([5절 만들기](#로그-클래스)). span 열기, 현재 문맥 바꾸기, 헤더 넣기는 계측과 로깅 팩토리가 한다 |
+| 시작점 | gateway가 외부 요청마다 새로 시작한다. gateway의 전파기는 나가는 호출에 넣기만 하고 들어온 값을 읽지 않는다(inject-only). 그래서 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 무시된다. 스케줄·폴링 작업은 1회마다, 헤더가 없거나 형식이 틀린 Kafka 레코드는 레코드마다 새로 시작한다 |
+| 빈 폴링 회차 | 1초 relay처럼 자주 도는 폴링의 빈 회차는 로그도 span도 남기지 않는다. 로그는 첫 줄 직전에 시작 줄을 남긴다. span은 회차를 시작할 때 열려 현재 문맥이 되고(회차 안의 조회가 그 자식이 된다), 줄 없이 끝난 회차 span에는 `loresentry.polling.idle=true`가 붙는다. EDOT Collector가 그 trace를 자식 span까지 통째로 버린다(`tail_sampling`) |
+| 헬스체크 | 성공한 헬스체크(root span이 `/health`·`/health/**` 요청이고 응답이 400 미만)의 trace는 collector가 통째로 버린다. 실패한 헬스체크는 span도 로그(`warn`·`error` 줄)도 남는다. 로그 쪽은 Logstash가 `tags: health`인 `info` 줄을 버린다([4절](#소음-제거)) |
+| 서비스 간 HTTP | HTTP client 계측(Java agent, Python httpx)이 현재 문맥으로 `traceparent`를 붙인다. gateway의 채팅 SSE도 같다. 코드가 직접 넣는 곳은 없다 |
+| 외부 호출 | `LogFlow.call`(gateway RestClient는 interceptor)이 `<target> call` INTERNAL span을 열고, 그 안에서 호출하고 결과 줄을 찍는다. 계측의 CLIENT span(HTTP, DB, Redis·Valkey, S3·KMS, Kafka 발행, OpenAI)은 그 자식이다. 계측이 없는 대상이 생기면 우리 span을 CLIENT로 두고 `server.address`를 넣는다. 결과 줄의 `span.id`가 이 span이고, span 길이가 결과 줄의 `event.duration`과 같다 |
+| 별도 작업 | `LogFlow.task`가 끝이 있는 작업(스트리밍 중계, 커밋 뒤 정리, 세션 저장소 예열, 시작할 때 한 번 도는 정리·대기, migration)마다 INTERNAL span을 연다. 스레드 수명만큼 도는 루프(Kafka polling worker)는 span을 열지 않고 레코드마다 연다 |
+| Kafka 소비 | 헤더의 값을 이어받는다. Java는 계측(Spring Kafka)이 레코드마다 CONSUMER span을 연다. Python은 `LogFlow.kafka_record`가 빈 문맥에서 헤더를 꺼내(다른 흐름의 문맥이 섞이지 않게) CONSUMER span을 열고, messaging 속성(`messaging.system`, `messaging.destination.name`, `messaging.consumer.group.name`, `messaging.destination.partition.id`, `messaging.kafka.offset`)을 넣는다. 처리에 실패하면 span 상태가 ERROR다. 레코드 하나를 처리하는 동안의 모든 줄(재시도·DLQ 같은 에러 처리기 줄 포함)이 그 trace로 남는다 |
+| Kafka 발행 | Java는 발행 계측(kafka-clients)이 현재 문맥으로 `traceparent` 헤더를 넣는다. 계측은 같은 이름의 헤더를 지우고 다시 넣으므로 코드가 넣은 값은 남지 않는다. 그래서 저장된 trace로 보낼 때는 그 문맥을 현재 문맥으로 둔 채 보낸다(아래 저장 후 처리). Python은 Kafka 계측(헤더를 바꾸지 않고 하나 더 붙인다)을 쓰지 않고, `LogFlow.call("kafka", …, headers=…)`가 PRODUCER span을 열어 그 문맥을 헤더 목록에 넣는다 |
+| 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. 요청 트랜잭션이 그때의 `traceparent`(`TraceContext.traceparent()`, 현재 span)를 함께 저장한다. 대상은 outbox 행(`outbox_events.traceparent`, content·authentication), ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`(처리와 완료 이벤트 발행), Kafka 에러 처리기·DLQ(레코드 헤더)다. 로깅 팩토리(`LogScope.outboxEvent`·`kafkaRecord`·`stored`)가 저장된 값을 부모로 한 INTERNAL span을 열고, 그 span을 현재 문맥으로 둔 채 서비스가 넘긴 할 일(발행, 복구, 작업)을 실행한다. 그 안의 계측 span(발행, DB, HTTP)과 줄은 모두 저장된 trace에 붙고, 발행 헤더도 그 trace를 잇는다. relay·tick 회차 trace에는 회차 span과 행 조회만 남는다. 저장된 값이 없거나 형식이 틀리면 그 행·작업만 새 trace로 처리한다 |
+| 로그 필드 | `trace.id`, `span.id`. 줄을 찍는 순간의 현재 span이다. 로그 클래스 줄은 로깅 팩토리가, 프레임워크 줄은 formatter가 그 순간 읽는다. 흐름이 바인딩돼 있는데 현재 span이 없거나 다른 trace면(계측이 문맥을 넘기지 않은 스레드 등) 흐름 시작점의 값을 쓴다. 흐름 밖 줄은 현재 span이 있으면 그 값이고, 없으면 비운다 |
 | 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
-| span 저장 | 앱이 OTLP로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 전송은 overlay 환경 변수로 켠다(dev 켬: Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`, 공통 `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev`). 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%, prod는 실측 후 정한다. span의 OTLP 지표·로그 전송은 끈다(Prometheus·Filebeat가 수집) |
+| 속성 이름 | OpenTelemetry semantic conventions의 안정 이름이다(`OTEL_SEMCONV_STABILITY_OPT_IN=http,database`). HTTP는 `http.request.method`·`url.path`·`http.route`·`http.response.status_code`로 로그 필드와 이름이 같다. 서버 span은 5xx, 클라이언트 span은 4xx 이상이면 상태가 ERROR다 |
+| resource | `service.name`(Kubernetes 이름, `OTEL_SERVICE_NAME`), `service.version`(이미지 태그, 시작 스크립트가 `APP_VERSION`으로 넣는다), `service.instance.id`·`k8s.pod.name`(파드 이름), `k8s.namespace.name`, `deployment.environment.name`. 로그 줄의 `service.*`와 같은 값이다 |
+| span 저장 | 앱이 OTLP(HTTP protobuf)로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 설정은 환경 변수다. base(prod 포함)는 `OTEL_TRACES_EXPORTER`·`OTEL_METRICS_EXPORTER`·`OTEL_LOGS_EXPORTER`를 `none`으로 두고, overlay가 traces만 `otlp`로 켠다(dev 켬). 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%(`parentbased_always_on`), prod는 실측 후 정한다 |
+
+### 계측 범위
+
+| 서비스 | 켜는 계측 |
+| --- | --- |
+| gateway | Tomcat·Servlet, Spring Web MVC, Apache HttpClient(RestClient, 채팅 SSE), Lettuce(Valkey 세션 저장소), executors |
+| authentication | Tomcat·Servlet, Spring Web MVC, Java HttpClient(Google), Lettuce(Redis), JDBC, Spring Scheduling, kafka-clients(발행), executors |
+| content | Tomcat·Servlet, Spring Web MVC, JDBC, AWS SDK(S3·KMS), kafka-clients(발행), Spring Kafka(소비), Spring Scheduling, executors |
+| ai-chat API·summarizer | FastAPI, httpx, psycopg, botocore(KMS), OpenAI(EDOT 계측), threading |
+| graph-rag | FastAPI, httpx(content, Neptune), botocore(S3·KMS), OpenAI(EDOT 계측), threading |
+
+- Java는 agent 기본 계측을 모두 끄고(`otel.instrumentation.common.default-enabled=false`) 표의 것만 켠다. 로깅 팩토리가
+  OpenTelemetry API로 연 span이 agent에 이어지도록 API bridge(`opentelemetry-api`)도 켠다. 설정은 서비스 저장소의 agent 설정
+  파일이고 이미지에 함께 들어간다.
+- Python은 표의 계측 패키지만 설치한다. FastAPI는 자동 계측을 끄고, 로깅 팩토리의 설정 함수가 내부 ASGI span(`receive`·`send`)을
+  빼고 단다. Kafka(confluent-kafka)는 계측을 쓰지 않고 로깅 팩토리가 맡는다. asyncio는 contextvars로 문맥이 저절로 이어진다.
+- EDOT Java의 span 스택(`code.stacktrace`)은 끈다. 원인 경로는 로그의 `error.stack_trace`로 본다.
+- 표에 없는 라이브러리·의존 대상을 새로 쓰면 이 표에 먼저 더한다. dev 정합성 점검([APM_ARCHITECTURE.md 11절](APM_ARCHITECTURE.md#11-정합성-점검))이
+  span이 없는 의존 대상을 잡는다.
 
 ## 8. DB 로그
 
