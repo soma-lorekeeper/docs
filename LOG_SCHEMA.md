@@ -626,8 +626,10 @@ slowquery 로그의 소요 시간(`event.duration`), 응답 코드, `exceptionCl
 - 쿼리를 보내는 곳은 graph-rag 하나이고, 모든 값을 작은따옴표 리터럴(`'...'`)로 쿼리에 넣는다(Gremlin, 바인딩 없음).
   리터럴에는 문서 제목·설명처럼 원고에서 나온 내용이 들어간다.
 - 리터럴 가운데 **스키마 낱말 허용 목록**(라벨, 속성 키, 결과·오류 코드, consumer 이름, 폴더 코드), **UUID 식별자**
-  (`file:<uuid>`, `inbox:<consumer>:<uuid>:<uuid>` 처럼 소문자 접두어와 이은 것 포함), sha256, ISO 시각만 남기고 나머지는
+  (`file:<uuid>`, `inbox:<consumer>:<uuid>:<uuid>` 처럼 소문자 접두어와 이은 것 포함), sha256, ISO 시각, W3C traceparent 값
+  (`00-<trace>-<span>-<flags>`, graph-rag가 `InboxEvent.traceparent`에 저장하는 값)만 남기고 나머지는
   `'[redacted]'`로 바꾼다. 쿼리 모양과 "어느 프로젝트·문서였나"는 남고 내용은 지워진다.
+  traceparent 값은 무작위 ID라 내용이 없고, 느린 쿼리에서 그 요청의 trace(`trace.id`)로 바로 건너갈 수 있게 남긴다.
 - 허용 목록에 없는 낱말은 지워지기만 하므로 내용이 새지 않는다. graph-rag에 새 라벨·키·코드를 더하면 gitops
   `logging/base/logstash/pipelines/aws-neptune.rb`의 목록에도 더한다.
 - 값을 지운 뒤라 ES와 **S3 보관 모두**에 남긴다. Neptune이 만드는 `queryFingerprint`(값을 자리표시자로 바꾼 쿼리)도
