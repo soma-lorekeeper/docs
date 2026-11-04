@@ -622,6 +622,7 @@ Tracing, Python OpenTelemetry SDK)으로 같은 헤더 규약을 지킨다.
 | 계측 | 서비스가 쓰는 라이브러리만 켠다([계측 범위](#계측-범위)). 지표·로그 계측과 로그 MDC 계측은 끈다. 지표는 Prometheus, 로그는 Filebeat가 모으고, 로그 줄의 ID는 로깅 팩토리가 넣는다 |
 | 서비스 코드 | 추적 API를 쓰지 않는다([5절 만들기](#로그-클래스)). span 열기, 현재 문맥 바꾸기, 헤더 넣기는 계측과 로깅 팩토리가 한다 |
 | 시작점 | gateway가 외부 요청마다 새로 시작한다. gateway의 전파기는 나가는 호출에 넣기만 하고 들어온 값을 읽지 않는다(inject-only). 그래서 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 무시된다. 스케줄·폴링 작업은 1회마다, 헤더가 없거나 형식이 틀린 Kafka 레코드는 레코드마다 새로 시작한다 |
+| 흐름 밖 DB 쿼리 | 기동 중의 쿼리(Flyway, Hibernate 검증, `main` 스레드), 연결 풀이 연결을 만들고 살필 때의 쿼리(`HikariPool-*`), Redis 연결 handshake(HELLO, CLIENT SETINFO, Lettuce event loop)는 흐름이 아니다. 부모 없는 DB span이 되는 것이 맞고, 허용된 root다. 흐름 안의 쿼리와 Redis 명령은 같은 스레드에서 돌아도 부르는 쪽 span을 부모로 갖는다 |
 | 빈 폴링 회차 | 1초 relay처럼 자주 도는 폴링의 빈 회차는 로그도 span도 남기지 않는다. 로그는 첫 줄 직전에 시작 줄을 남긴다. span은 회차를 시작할 때 열려 현재 문맥이 되고(회차 안의 조회가 그 자식이 된다), 줄 없이 끝난 회차 span에는 `loresentry.polling.idle=true`가 붙는다. EDOT Collector가 그 trace를 자식 span까지 통째로 버린다(`tail_sampling`) |
 | 헬스체크 | 성공한 헬스체크(root span이 `/health`·`/health/**` 요청이고 응답이 400 미만)의 trace는 collector가 통째로 버린다. 실패한 헬스체크는 span도 로그(`warn`·`error` 줄)도 남는다. 로그 쪽은 Logstash가 `tags: health`인 `info` 줄을 버린다([4절](#소음-제거)) |
 | 서비스 간 HTTP | HTTP client 계측(Java agent, Python httpx)이 현재 문맥으로 `traceparent`를 붙인다. gateway의 채팅 SSE도 같다. 코드가 직접 넣는 곳은 없다 |
@@ -635,7 +636,7 @@ Tracing, Python OpenTelemetry SDK)으로 같은 헤더 규약을 지킨다.
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
 | 속성 이름 | OpenTelemetry semantic conventions의 안정 이름이다(`OTEL_SEMCONV_STABILITY_OPT_IN=http,database`). HTTP는 `http.request.method`·`url.path`·`http.route`·`http.response.status_code`로 로그 필드와 이름이 같다. 서버 span은 5xx, 클라이언트 span은 4xx 이상이면 상태가 ERROR다 |
 | resource | `service.name`(Kubernetes 이름, `OTEL_SERVICE_NAME`), `service.version`(이미지 태그, 시작 스크립트가 `APP_VERSION`으로 넣는다), `service.instance.id`·`k8s.pod.name`(파드 이름), `k8s.namespace.name`, `deployment.environment.name`. 로그 줄의 `service.*`와 같은 값이다 |
-| span 저장 | 앱이 OTLP(HTTP protobuf)로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 설정은 환경 변수다. base(prod 포함)는 `OTEL_TRACES_EXPORTER`·`OTEL_METRICS_EXPORTER`·`OTEL_LOGS_EXPORTER`를 `none`으로 두고, overlay가 traces만 `otlp`로 켠다(dev 켬). 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%(`parentbased_always_on`), prod는 실측 후 정한다 |
+| span 저장 | 앱이 OTLP(HTTP protobuf)로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 기본값(보내지 않음, prod 포함)은 이미지에 있다. Java는 agent 설정 파일(`docker/otel-agent.properties`), Python은 이미지 시작 스크립트다. overlay가 환경 변수로 traces만 `otlp`로 켠다(dev 켬, 환경 변수가 설정 파일보다 먼저다). agent가 설정 파일보다 먼저 읽는 값(agent 자신의 로그를 앱 로깅으로 보내기, DB 안정 속성 이름)은 Java 시작 스크립트의 `-D`로 넘긴다. 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%(`parentbased_always_on`), prod는 실측 후 정한다 |
 
 ### 계측 범위
 

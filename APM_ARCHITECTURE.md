@@ -240,6 +240,14 @@ flowchart LR
 EDOT로 옮기면 쿼리·Redis·AWS·OpenAI span이 늘고 성공한 헬스체크 trace는 줄어든다. 옮긴 뒤 부하 테스트로 span 수, 저장량,
 collector·노드 자원을 다시 잰다.
 
+Java 서비스에 agent를 붙이며 바꾼 것(2026-11-05 dev 실측):
+
+| 항목 | 내용 |
+|---|---|
+| 메모리 | agent의 계측 클래스와 span 버퍼로 약 50MiB가 는다(auth 로컬: 시작 직후 357MiB, 요청 1,500개 뒤 382MiB). heap 상한이 컨테이너 한도의 75%라 auth·content 한도를 512Mi에서 768Mi로 올렸다(요청 256Mi는 그대로) |
+| 기동 | agent가 기동 중 클래스에 계측을 붙여 느려진다(auth 45초 → 63초, content 약 35초 → 48초, CPU 요청 100m). liveness(20초 뒤부터 20초마다, 3번)만으로는 기동 중 재시작될 수 있어 `startupProbe`(5초마다, 36번 = 3분)를 둔다 |
+| 첫 연결 | 처음 쓰는 라이브러리 클래스에도 계측을 붙여, 짧은 시간 제한이 걸린 첫 연결이 실패할 수 있다. auth Redis(명령·handshake 500ms)는 첫 handshake가 2.7초에 실패해 배포 뒤 첫 로그아웃이 503이었다. 기동할 때 Tomcat이 요청을 받기 전에 연결을 미리 열고(`RedisWarmUp`, 붙을 때까지 5번), dev에서 두 번째 시도에 붙었다 |
+
 로깅 노드는 부하 테스트 때 노드 CPU가 100%를 넘은 것과 Stack Monitoring sidecar 예약을 보고 2026-11-04 `r7i.xlarge`로 올렸다.
 관리형 노드 그룹은 인스턴스 타입을 그 자리에서 바꿀 수 없어, 새 노드 그룹 `lore-sentry-dev-logging-pool-v2`(같은 2b·label·taint)를
 만들고 이전 노드를 drain한 뒤 이전 그룹을 지웠다.
@@ -262,7 +270,7 @@ flowchart LR
 | 지우기·가리기 규칙, 파이프라인 | `logging/base/otel-collector/otel.yml`(바꾸면 ConfigMap 이름이 바뀌어 collector가 다시 뜬다). LOG_SCHEMA 4절도 같이 고친다 |
 | 자원, 이미지 버전 | `logging/base/otel-collector/collector.yaml`. 버전은 ES·Kibana와 같게 둔다 |
 | 보존·레플리카 | `logging/base/elasticsearch/{traces,metrics}-otel-custom.json`(새 data stream·다음 rollover부터 적용) |
-| 앱 쪽 전송 | 환경 변수. `workload/base`는 `OTEL_TRACES_EXPORTER`·`OTEL_METRICS_EXPORTER`·`OTEL_LOGS_EXPORTER=none`과 `OTEL_SERVICE_NAME`을 둔다. `workload/overlays/dev`가 `OTEL_TRACES_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_TRACES_SAMPLER=parentbased_always_on`, `OTEL_SEMCONV_STABILITY_OPT_IN=http,database`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false`, `OTEL_RESOURCE_ATTRIBUTES`(환경, namespace, 파드 이름은 Downward API)를 켠다. gateway는 `OTEL_PROPAGATORS`로 inject-only 전파기를 고른다. 옮기기 전 서비스는 이전 변수(Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`)를 쓴다 |
+| 앱 쪽 전송 | 기본값(보내지 않음, 서비스 이름, 전파기, 계측 범위)은 이미지에 있다. Java는 `docker/otel-agent.properties`와 `docker/entrypoint.sh`(설정 파일보다 먼저 읽히는 `-Dotel.javaagent.logging=application`·`-Dotel.semconv-stability.opt-in=database`, CDS 경고를 막는 `-Xshare:off`, `service.version`), Python은 이미지 시작 스크립트다. `workload/overlays/dev`가 `OTEL_TRACES_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_RESOURCE_ATTRIBUTES`(`deployment.environment.name`, Downward API의 `k8s.namespace.name`·`k8s.pod.name`, 파드 이름을 `service.instance.id`로도)를 켠다. gateway는 `OTEL_PROPAGATORS`로 inject-only 전파기를 고른다. 옮기기 전 서비스는 이전 변수(Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`)를 쓴다 |
 | 계측 범위 | 서비스 저장소. Java는 agent 설정 파일(이미지에 들어간다), Python은 requirements의 계측 패키지와 `OTEL_PYTHON_DISABLED_INSTRUMENTATIONS`. [LOG_SCHEMA.md 7절 계측 범위](LOG_SCHEMA.md#계측-범위)도 같이 고친다 |
 
 설정을 바꾼 뒤에는 로컬에서 ES 9.5.5(보안 켬)와 같은 collector 이미지에 시험 span을 보내, ES 문서에 지운 값이 없는지 확인한다.
@@ -273,6 +281,7 @@ flowchart LR
 |---|---|
 | collector가 멈춤·재시작 | 앱의 추적 엔진이 잠시 다시 보내다가 못 보낸 span은 버린다. 요청 처리와 로그는 영향이 없다. collector 메모리 안의 보내기 대기분은 사라진다 |
 | Java agent를 읽지 못함 | `-javaagent`의 jar가 없거나 깨졌으면 JVM이 시작하지 않는다. 이미지 빌드에서 jar를 받으며 확인한다. collector에 닿지 못하는 것은 시작을 막지 않는다 |
+| 기동 직후 첫 연결이 시간 제한을 넘김 | agent가 처음 읽는 클래스에 계측을 붙이는 동안 첫 연결이 느리다. 시간 제한이 짧은 연결(auth Redis)은 기동할 때 미리 연다. 미리 열지 못해도 기동은 계속하고, 첫 요청이 연결한다 |
 | ES가 멈춤 | exporter가 메모리 큐에서 다시 시도하다가, 큐가 차면 span을 버린다. 로그는 Logstash 디스크 큐에 따로 쌓인다 |
 | 메모리 한도 근처 | `memory_limiter`가 받기를 거절하고 앱의 추적 엔진이 다시 보낸다 |
 | API key 무효·만료 | ES가 401을 돌려주고 span이 버려진다. collector 로그(`logs-kubernetes.container-*`의 `edot-collector` 파드)에 남는다 |
@@ -290,7 +299,7 @@ flowchart LR
 | C2 | 외부 호출 결과 줄마다 같은 `span.id`인 `<target> call` span이 있고, span 길이가 `event.duration`과 맞는다(±5ms). 계측이 있는 대상은 CLIENT 자식이 있다 | 100% |
 | C3 | 흐름별 trace(파일 저장 → Kafka → graph-rag·summarizer, 최신화 요청 → 완료, 채팅 SSE → content·OpenAI, 로그인·로그아웃, 탈퇴 auth outbox → content)마다 root가 하나이고 부모 없는 span이 없다. 기대한 서비스와 span 종류(DB·Redis·AWS·Kafka·OpenAI)가 모두 있다 | 흐름마다 표본 20개 모두 |
 | C4 | outbox·`summary_queue`·`InboxEvent` 행에 저장된 trace와 소비 span의 trace가 같고, relay 회차 trace와는 다르다 | 100% |
-| C5 | 빈 폴링 회차 trace, 성공한 헬스체크 trace, 시작점이 아닌 부모 없는 span이 저장되지 않는다 | 0건 |
+| C5 | 빈 폴링 회차 trace, 성공한 헬스체크 trace, 시작점이 아닌 부모 없는 span이 저장되지 않는다. 흐름 밖 DB 쿼리(기동, 연결 풀, Redis handshake)는 허용된 root로 따로 센다 | 0건 |
 | C6 | 서비스마다 쓰는 의존 대상([LOG_SCHEMA.md 계측 범위](LOG_SCHEMA.md#계측-범위))에 span이 있고, span 종류별 표준 속성 보유율이 99% 이상이다. 한 작업에 같은 종류의 span이 둘 있는 곳이 없다 | 기준 충족 |
 | C7 | 외부 `traceparent`를 붙여 보낸 gateway 요청이 새 trace로 시작한다 | 이어지지 않음 |
 | C8 | resource에 `service.name`·`service.version`·`service.instance.id`·`k8s.pod.name`·`deployment.environment.name`이 있다 | 100% |
@@ -304,10 +313,10 @@ EDOT로 옮기는 순서다. 각 단계는 dev에 배포한 뒤 11절 점검을 
 
 | 순서 | 대상 | 바뀌는 것 | 상태 |
 |---|---|---|---|
-| 1 | 문서 | 이 문서와 LOG_SCHEMA 4·5·7절, KAFKA_DESIGN 헤더 규약 | 이 문서 |
-| 2 | collector, 점검 스크립트 | 성공한 헬스체크 drop, S3 객체 키·GenAI 대화 내용 지우기, `apm_consistency.py` | 예정 |
-| 3 | authentication | EDOT Java agent, 로깅 팩토리 span(호출 감싸기, 작업, outbox 저장 문맥), 로그 `span.id` 규칙, warn·error 스택 | 예정 |
-| 4 | content | 같은 패턴과 Kafka 소비, 에러 처리기·DLQ 저장 문맥, S3·KMS | 예정 |
+| 1 | 문서 | 이 문서와 LOG_SCHEMA 4·5·7절, KAFKA_DESIGN 헤더 규약 | 완료(docs #59, 이 PR) |
+| 2 | collector, 점검 스크립트 | 성공한 헬스체크 drop, S3 객체 키·GenAI 대화 내용 지우기, `apm_consistency.py` | 완료(gitops #61·#63·#68). dev에서 성공한 헬스체크 root 0 |
+| 3 | authentication | EDOT Java agent, 로깅 팩토리 span(호출 감싸기, 작업, outbox 저장 문맥), 로그 `span.id` 규칙, warn·error 스택 | 완료(auth #15·#16·#17, gitops #65·#66). C1·C2·C5·C8·C9·C11 통과. Google 호출·UserDeleted 발행은 실제 로그인·탈퇴 E2E 때 본다 |
+| 4 | content | 같은 패턴과 Kafka 소비, 에러 처리기·DLQ 저장 문맥, S3·KMS | 완료(content #40, gitops #67). C1·C2·C4·C9·C11 통과. 문서 생성 요청 → `kms call` → `Kms.GenerateDataKey`, `outbox FileChanged` → 발행 → summarizer·graph-rag 소비가 한 trace로 이어진다 |
 | 5 | gateway | inject-only 전파기 확장, RestClient interceptor 감싸는 span, 채팅 SSE, Valkey | 예정 |
 | 6 | ai-chat | EDOT Python, summarizer 작업 저장 문맥(요청 밖에서 생기던 부모 없는 DB span이 없어진다), messaging 속성, OpenAI·KMS | 예정 |
 | 7 | graph-rag | 폴링 회차 span을 시작할 때 열기, `InboxEvent` 저장 문맥과 발행 헤더, Neptune httpx 계측, 내부 ASGI span 빼기 | 예정 |
