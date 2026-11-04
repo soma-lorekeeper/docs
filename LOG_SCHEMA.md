@@ -214,10 +214,31 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     앱이 시작할 때 설정(config)이 그 구현을 bean으로 만들며 `AppLogger.install(...)`로 꽂는다. Spring 없이 만드는 단위 테스트는 테스트 확장이 같은 구현을 꽂는다.
     서비스 코드에서 부르는 모양(`AppLogger.current().info(...)`)은 다른 저장소와 같다.
 - 레벨은 `info`·`warn`·`error`만 쓴다. 프레임워크 로그는 원래 레벨 그대로 들어간다.
-- **만들기**: 요청·flow 시작점에서 그때 아는 값(`trace.id`, `span.id`, `user.id`)을 생성자 인자로 넘겨 만든다.
-  - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회다.
+- **만들기**: 서비스 코드는 로깅 로직을 모른다. 인자만 넘기고, 로그를 찍는 작업은 모두 로깅 팩토리(로그 패키지)가 한다.
+  - 로깅 팩토리가 하는 일: 로그 객체 만들기·바인딩, 걸린 시간 재기, 결과로 레벨 정하기, 시작·종료 줄 쓰기.
+  - 시작점은 HTTP 필터·미들웨어, Kafka 레코드 하나, 스케줄 1회, outbox 행 하나다. 로깅 팩토리가 그때 아는 값(`trace.id`, `span.id`, `user.id`)으로 객체를 만든다.
   - 만든 객체는 요청 범위 저장소(Java ThreadLocal, Python contextvars)에 넣고, 아래 계층은 `AppLogger.current()`로 꺼낸다.
-  - 스레드를 옮기는 곳(비동기 실행기, 처리 스레드)은 객체를 함께 옮긴다.
+  - 스레드를 옮기는 곳(비동기 실행기, 처리 스레드)은 객체를 함께 옮긴다. 옮기는 실행기도 로깅 팩토리가 만든다.
+  - 서비스 코드가 쓰는 것은 아래가 전부다. Java는 객체를 만드는 멤버(생성자, `with`, `withTag`, `withUser`, `bind`, `LogField.duration`)를 로그 패키지 안에서만 보이게 해 컴파일 단계에서 막는다. authentication은 로그 패키지가 둘(core `logging`, `adapter/out/logging`)이라 ArchUnit으로 막는다.
+
+    | API | 쓰는 곳 |
+    | --- | --- |
+    | `AppLogger.current().info/warn/error(message, LogField...)` | 진입·진행·결과 줄 |
+    | `AppLogger.current().identify(userId)` | 흐름 중간에 알게 된 사용자. 이후 모든 줄, 결과 줄, 같은 스레드의 프레임워크 줄에 `user.id`가 붙는다 |
+    | `AppLogger.current().addToOutcome(LogField...)` | 예외 처리기가 결과 줄에 이유를 맡긴다 |
+    | `AppLogger.current().traceId()`, `TraceContext.traceparent()` | 응답 본문 `trace_id`, outbox 행에 저장할 전파 값(로그가 아니다) |
+    | `LogFlow.schedule(name, run -> …, start...)` | 하루 한 번 도는 스케줄 1회. 시작 `schedule run start`, 종료 `schedule run completed` 또는 `schedule run failed`. 예외는 삼키고 실패 줄을 남긴다 |
+    | `LogFlow.polling(name, run -> …)` | 짧은 주기 폴링 1회. 그 회차에서 처음 줄이 찍힐 때 시작 줄을 먼저 남기고, 줄이 하나도 없으면 시작·종료 줄을 모두 남기지 않는다 |
+    | `LogFlow.kafkaRecord(record, knownTypes, event, flow -> …)` | Kafka 레코드 하나. 시작 `<event> event received`, 종료 `<event> event processed`. 예외는 종료 줄을 남긴 뒤 다시 던진다 |
+    | `LogFlow.call(target, [uri,] call -> …)` | 외부 호출. 시작은 client 진입 줄이고, 결과는 `<target> call completed` 또는 `<target> call failed` |
+    | `LogFlow.task(name, task -> …, start...)` | 흐름 안·밖의 별도 작업(스트리밍 중계, 커밋 뒤 정리, migration). `<name> start`, `<name> completed` 또는 `<name> failed` |
+    | `LogFlow.request(...)`(authentication) | 헥사고날 구조라 web adapter에 있는 요청 필터가 HTTP 값만 넘긴다. gateway·content의 요청 필터는 로그 패키지 안에 있다 |
+    | 흐름 객체 `with`, `result`, `outcome`, `status`, `fail` | `with`는 진행 중에 알게 된 대상 ID를 이후 모든 줄에 붙인다. `result`는 종료 줄 값, `outcome`은 Kafka 결과, `status`는 호출 응답 상태, `fail`은 예외 없이 끝난 실패의 이유다 |
+    | `LogScope.outboxEvent(traceparent, schedule, id, type, subject, ids...)`, `LogScope.kafkaRecord(record, knownTypes)` | 시작·종료 줄 없이 바인딩만 하는 범위. outbox 행 하나의 줄(발행, 실패 기록, 격리), Kafka 에러 처리기 콜백의 줄 |
+    | `LogField.*` | 필드. 허용 목록(`LogField.code`의 `allowed`)은 도메인 코드 목록이라 서비스 쪽에 두고 인자로 넘긴다 |
+
+  - 흐름의 시작·종료 줄 위치(`log.logger`·`log.origin.function`·`log.layer`)는 로깅 팩토리가 아니라 그 흐름을 연 서비스 메서드다. 예를 들어 `OutboxPurge.run`의 `scheduler` 레이어다.
+  - 흐름은 람다로 받는다. 할 일이 예외로 끝나도 종료 줄이 남는다. 실패 줄에는 예외 메시지를 싣지 않고, 클래스 이름(`error.type`)과 메시지 없는 스택만 남긴다.
 - **필드**: 정해 둔 필드만 받는다(Java `LogField` 팩토리, Python 허용 목록).
   - 임의의 이름·값을 받지 않으므로 이메일·이름·본문을 필드로 넣을 자리가 없다.
   - 새 필드는 아래 [필드](#필드) 표에 먼저 추가한다.
@@ -233,7 +254,8 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
     - 짧은 주기로 도는 폴링의 실행 메서드(1초 outbox relay 등). 처리할 일이 있을 때만 시작·결과 줄을 남긴다([7절](#7-trace) 시작점).
   - `warn`: 처리했지만 예상 밖인 상황. 재시도, 충돌(409), 검증 실패, 건너뛴 이벤트, 느린 외부 호출이 해당한다.
   - `error`: 예외로 작업 하나가 실패했을 때.
-- **문구**: 짧은 영어 소문자 문장으로 쓰고, 값은 문구가 아니라 필드에 넣는다. 검색·알림 키로 쓰는 기존 문구는 바꾸지 않는다.
+- **문구**: 짧은 영어 소문자 문장으로 쓰고, 값은 문구가 아니라 필드에 넣는다. 값을 이어 붙인 문구(`"… id=" + id`)는 쓰지 않는다.
+  2026-11-04에 고정 문구로 바꾼 것은 아래 [바뀐 문구](#바뀐-문구-2026-11-04) 표에 있다. 같은 문구에서 상태로 레벨만 바꾸는 코드도 쓰지 않는다. 상황이 다르면 문구가 다른 줄로 나눈다.
 
   | 레이어 | 문구 | 예 |
   | --- | --- | --- |
@@ -242,7 +264,10 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   | client | `<상대> <대상> <동작> call` | `ai-chat usage get call` |
   | 결과 줄 | `<대상> <동작> completed` 또는 상태 이름 | `document save conflict` |
 - **접근 로그**: 시작점이 `request received`와 `request completed`를 남긴다. 완료 줄(결과 줄)에는 `http.response.status_code`, `event.duration`이 들어간다.
-  - 요청 하나의 **모든 줄**에 그 서비스가 받은 요청의 실제 경로 `url.path`와 경로 템플릿 `http.route`(예: `/projects/{projectId}`)가 붙는다.
+  - 요청 하나의 로그 클래스 줄과 같은 스레드의 프레임워크 줄([문맥 필드](#문맥-필드와-프레임워크-줄))에 세 값이 붙는다.
+    - 그 서비스가 받은 요청의 실제 경로 `url.path`
+    - 경로 템플릿 `http.route`(예: `/projects/{projectId}`)
+    - 메서드 `http.request.method`
     gateway에서는 브라우저가 부른 경로이고, 내부 서비스에서는 gateway가 부른 경로다(gateway 호출 결과 줄의 `url.full`과 같은 경로).
     시작점이 요청을 받을 때 Spring이 고를 템플릿을 미리 찾아 로그 클래스에 넣기 때문에, 세션 확인처럼 컨트롤러 앞의 줄과 거절된 요청에도 붙는다.
     맞는 경로가 없는 요청(404)에는 `http.route`가 없다. `url.path`는 실제 경로라 ID가 섞여 엔드포인트별로 묶을 때는 `http.route`를 쓴다.
@@ -253,20 +278,91 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
   - 처리되지 않은 예외는 결과 줄 대신 `request failed with an unhandled exception`을 예외와 함께 한 줄 남긴다.
   - uvicorn 기본 접근 로그는 끈다.
   - 다른 내부 서비스를 부른 결과도 한 줄 남긴다(`upstream call completed`). 대상 호스트는 `url.domain`, 대상 주소(쿼리 제외)는
-    `url.full`이다(ECS·OpenTelemetry HTTP client 이름). 이 줄의 `url.path`·`http.route`는 다른 줄과 같은 받은 요청(gateway는 브라우저 요청)의 값이라,
-    같은 줄의 `url.*`가 두 URL을 가리킨다. 내부 서비스 쪽 경로는 `url.full`로 본다.
+    `url.full`이다(ECS·OpenTelemetry HTTP client 이름).
+    - 이 줄의 `url.path`·`http.route`·`http.request.method`는 다른 줄과 같이 받은 요청(gateway는 브라우저 요청)의 값이다. 보낸 호출의 메서드는 남기지 않는다.
+    - 그래서 같은 줄의 `url.*`가 두 URL을 가리킨다. 내부 서비스 쪽 경로는 `url.full`로 본다.
+    - 상대가 5xx로 답하면 `warn`에 `error.type: UPSTREAM_SERVER_ERROR`를 붙인다.
 - **Kafka 레코드·스케줄 작업의 시작·종료 줄**: HTTP의 `request received`·`request completed`처럼 흐름 하나에 시작 줄과 종료 줄을 반드시 남긴다.
-  그 사이의 줄(계층 진입·분기 결과)은 HTTP와 같은 규칙이다.
-  - **줄마다 붙는 값**(HTTP의 `url.path`·`http.route` 자리): Kafka 레코드는 `loresentry.kafka.topic`·`partition`·`offset`과
-    `loresentry.cloudevent.id`, 스케줄 작업은 작업 이름 `loresentry.schedule.name`(예: `outbox-relay`, `outbox-purge`,
-    `inbox-purge`, `graph-refresh-timeout`). 시작점이 로그 객체에 붙여, 그 흐름이 부른 repository 줄까지 모든 줄에 남는다.
+  그 사이의 줄(계층 진입·분기 결과)은 HTTP와 같은 규칙이다. 시작·종료 줄은 `LogFlow`가 남긴다.
+  - **문구**
+    - 스케줄 작업: `schedule run start`, `schedule run completed`, `schedule run failed`. 작업은 문구가 아니라 `loresentry.schedule.name`으로 가린다.
+    - Kafka 레코드: `<event> event received`, `<event> event processed`(예: `user deleted event processed`)
+  - **줄마다 붙는 값**(HTTP의 `url.path`·`http.route` 자리). 시작점이 로그 객체에 붙여, 그 흐름이 부른 repository 줄까지 모든 줄에 남는다.
+    - Kafka 레코드: `loresentry.kafka.topic`·`partition`·`offset`과 `loresentry.cloudevent.id`·`type`·`subject`
+    - 스케줄 작업: 작업 이름 `loresentry.schedule.name`(예: `outbox-relay`, `outbox-purge`, `inbox-purge`, `graph-refresh-timeout`)
+    - outbox 행: 행의 trace, relay 작업 이름, `loresentry.cloudevent.id`·`type`·`subject`, 이벤트 key인 도메인 ID(content는 `loresentry.project_id`)
+    - 받는 서비스의 Kafka 레코드 줄과 보낸 서비스의 outbox 행 줄은 같은 `cloudevent.*` 필드를 가진다. 그래서 이벤트 ID 하나로 보낸 줄과 받은 줄을 함께 찾는다.
+    - 받은 레코드의 `ce_type`은 보낸 쪽 값 그대로라, 그 서비스가 처리하는 종류만 그대로 남기고 나머지는 `other`로 남긴다. `ce_id`·`ce_subject`는 표준 표기 UUID일 때만 남긴다.
   - **시작 줄**: 시작할 때 아는 값을 [입력값과 결과](#입력값과-결과-param-result) 규칙대로 함께 남긴다(예: 보존 기간, 이번 회차의 행 수).
     진행 중에 알게 된 값은 그 값을 다룬 줄과 종료 줄에 남긴다. 붙일 값이 없으면 남기지 않아도 된다.
   - **종료 줄**: 걸린 시간(`event.duration`)과 결과를 남긴다. Kafka 레코드는 `loresentry.result.outcome`
     (`PROCESSED` 처리함, `DUPLICATE` 이미 처리한 이벤트, `SKIPPED` 처리하지 않는 종류, `FAILED` 예외)과 진행 중에 알게 된 대상 ID를
     붙이고, 실패면 `warn`에 `error.type`을 붙인다(원인 줄은 재시도·DLQ 처리기가 남긴다). 스케줄 작업은 처리 건수(`loresentry.result.*`)를 붙인다.
   - 짧은 주기로 도는 폴링(1초 outbox relay, 1분 graph refresh timeout)은 처리할 일이 있는 회차에만 시작·종료 줄을 남긴다.
+    그 회차에서 처음 줄이 찍힐 때 시작 줄이 먼저 남고, 예외로 끝난 회차는 줄이 없었어도 시작 줄과 실패 줄을 남긴다.
     하루 한 번 도는 작업은 할 일이 없어도 남긴다(줄이 없으면 "할 일이 없었다"와 "돌지 않았다"를 가릴 수 없다).
+  - **흐름 중간에 알게 된 값**
+    - 대상 ID는 흐름 객체의 `with`로 이후 모든 줄과 종료 줄에 붙인다. 예: 최신화 완료 이벤트의 `project_id`·`refresh.request_id`
+    - 사용자는 `identify`로 붙인다. 예: 탈퇴 이벤트의 사용자, 로그인 callback에서 확인한 사용자. 요청이면 `request completed`에도 `user.id`가 붙는다.
+
+- **외부 호출**
+  - HTTP(내부 서비스, Google), Redis·Valkey, S3·KMS 호출은 결과 줄 하나를 남긴다(`LogFlow.call`, gateway RestClient는 interceptor).
+  - 결과 줄에는 걸린 시간을 넣고, HTTP면 `url.domain`·`url.full`·응답 상태도 넣는다. 실패면 `warn`과 `error.type`이다.
+  - 시작은 그 호출을 부른 client 메서드의 진입 줄이다.
+  - DB 쿼리는 줄을 따로 남기지 않는다. repository 진입 줄로 본다.
+
+- **줄을 남기지 않는 것**
+  - 값을 계산하기만 하는 코드: 암호화·압축(`Manuscripts`, `Envelope`), 본문 변환, 순서 계산, 메시지 변환, 입력 검증
+  - CSRF 검사 통과
+  - 결과 칸에 이유를 맡기기만 하는 예외 처리기
+
+#### 줄 종류별 필수 필드
+
+값이 있으면 반드시 채운다. 필드를 채우려고 구조를 크게 바꾸지는 않는다.
+
+| 줄 | 필드 |
+| --- | --- |
+| 모든 줄 | `log.*`, `service.*`, `message`, 흐름 안이면 `trace.id`·`span.id`, 흐름의 사용자를 알면 `user.id`, 흐름 문맥 |
+| 흐름 문맥 | HTTP는 `url.path`·`http.route`·`http.request.method`(gateway는 `http.request.id`도). Kafka 레코드는 `loresentry.kafka.*`와 `loresentry.cloudevent.*`. 스케줄은 `loresentry.schedule.name`. outbox 행은 `loresentry.schedule.name`, `loresentry.cloudevent.*`, event key 도메인 ID |
+| 진입 줄 | 받은 도메인 ID(전용 필드), 입력값([입력값과 결과](#입력값과-결과-param-result) 규칙) |
+| `warn`·`error` | `error.type`(우리 이유 코드 또는 예외 클래스). 상대가 준 코드가 있으면 `error.code`, 예외가 있으면 메시지 없는 스택(`error.stack_trace`) |
+| 흐름 종료 줄 | `event.duration`, 결과(`http.response.status_code`, `loresentry.result.outcome`, 건수), 진행 중에 알게 된 대상 ID |
+| 외부 호출 결과 줄 | `event.duration`, HTTP면 `url.domain`·`url.full`·`http.response.status_code`, 실패면 `error.type` |
+
+`event.duration`은 흐름 종료 줄과 외부 호출 결과 줄에만 넣는다. service의 `… completed` 같은 결과 줄은 같은 trace의 앞 줄과 시각 차이로 본다.
+
+#### 문맥 필드와 프레임워크 줄
+
+- 시작점이 로그 객체에 붙인 흐름 문맥은 바인딩하는 동안 MDC에도 들어간다.
+- 같은 스레드에서 프레임워크(Spring, Hibernate, Tomcat 등)가 찍은 줄에도 formatter가 MDC의 정해 둔 이름만 꺼내 붙인다.
+  - 정해 둔 이름: `trace.id`, `span.id`, `user.id`, `url.path`, `http.route`, `http.request.method`, `http.request.id`, `loresentry.schedule.name`, `loresentry.kafka.topic`·`partition`·`offset`, `loresentry.cloudevent.id`·`type`·`subject`
+  - 그 밖의 MDC 값은 내보내지 않는다.
+  - MDC는 문자열만 담으므로 숫자 필드(`loresentry.kafka.partition`·`offset`)는 formatter가 숫자로 되돌린다.
+  - 로그 클래스 줄은 그 줄에 넘긴 값이 MDC 값보다 우선한다.
+- Kafka client의 내부 스레드(consumer 백그라운드·network 스레드)가 찍는 줄(리밸런스, 파티션 할당, metadata)은 흐름 밖이라 문맥이 붙지 않는다. `log.logger: org.apache.kafka*`로 찾는다.
+
+#### 바뀐 문구 (2026-11-04)
+
+값을 이어 붙인 문구를 고정 문구와 필드로 바꿨다. 값은 이미 필드에 있다.
+
+| 서비스 | 전 | 후 |
+| --- | --- | --- |
+| content·authentication | `outbox relay: published=…, quarantined=…, failed=…, rounds=…, took=…[, backoff=…]` | `schedule run completed`. 다시 보낼 행이 남으면 `schedule run failed`(`warn`, `error.type: OUTBOX_SEND_FAILED`). 값은 `loresentry.result.published`·`quarantined`·`failed`·`rounds`·`backoff_seconds` |
+| content·authentication | `outbox purge start`, `outbox purge: deleted=…, took=…`, `outbox purge failed: reason=…`(content `inbox purge`도 같음) | `schedule run start`, `schedule run completed`(`loresentry.result.deleted`), `schedule run failed`(`error.type`) |
+| content | `graph refresh timeout start`, `graph refresh timeout: expired=…`, `graph refresh timeout failed: reason=…` | `schedule run start`, 배치마다 `graph refresh overdue runs found`, `schedule run completed`(`loresentry.result.expired`), `schedule run failed` |
+| content·authentication | `outbox relay round threw: reason=…` | `outbox relay round failed` |
+| content·authentication | `outbox event quarantined: id=…, type=…, reason=…` | `outbox event quarantined` |
+| content·authentication | `outbox events still failing: {이유=개수}` | 이유마다 `outbox events still failing`(`error.type`, `loresentry.result.rows`) |
+| content | `inbox event failed: topic=…`, `inbox event dead-lettered: …`, `inbox event dead-letter failed: …` | `inbox event failed`, `inbox event dead-lettered`, `inbox event dead-letter failed` |
+| content | `inbox event skipped: topic=…, type=…` | `inbox event skipped`(`warn`, `error.type: UNKNOWN_EVENT_TYPE`). 받은 종류는 `loresentry.cloudevent.type`(처리하지 않는 종류라 `other`) |
+| content | `inbox event already processed: consumer=…, event=…` | `inbox event already processed`(이벤트는 `loresentry.cloudevent.id`) |
+| content | `s3 refresh input put failed`, `image object verify failed` | `s3 call failed`(`error.type`, 상대가 답한 실패면 `http.response.status_code`) |
+| content | `media objects left orphaned` | `media cleanup failed`(`warn`, `error.type: MEDIA_DELETE_FAILED`, `loresentry.result.deleted`·`failed`) |
+| authentication | `google token exchange call completed`, `google token exchange call interrupted` | `google call completed`·`google call failed`(`url.domain`·`url.full`·응답 상태·걸린 시간). OAuth 오류 코드와 ID 토큰 검증 실패는 `google token exchange call failed`에 남는다 |
+| authentication | `login session store call failed`, `oauth state store call failed`, `consent request store call failed` | `redis call failed`(`error.type`). 성공하면 `redis call completed`(걸린 시간)가 남는다 |
+| gateway | `session store check failed during <stage>` | `valkey call failed`(`error.type`, 단계는 `loresentry.param.stage`). 세션 확인마다 결과 줄 `valkey call completed`가 남는다 |
+| gateway | `session store connection warmed up`, `session store warm-up failed` | `session store warm-up start`, `session store warm-up completed`, `session store warm-up failed`(예외면 `error`) |
+| gateway | `ai-chat stream relay completed`, `ai-chat stream ended before completion`, `ai-chat stream cancelled: browser disconnected` | `ai-chat stream relay start`, `ai-chat stream relay completed`(브라우저가 끊으면 `loresentry.result.browser_disconnected`), `ai-chat stream relay failed`(ai-chat 쪽 끊김은 `warn`, `error.type: AI_CHAT_STREAM_INTERRUPTED`). 모든 줄에 `loresentry.chat.session_id` |
 
 ### 레이어와 위치
 
@@ -376,11 +472,11 @@ dataset은 파드 label로 정하고, `service.name`은 앱이 보낸 값(없으
 | 호출 위치 | `log.origin.function`, `log.layer`, `log.package`, `process.thread.name` | keyword | 함수·레이어·패키지는 로그 클래스로 찍은 줄, 스레드 이름은 모든 줄 |
 | 추적 | `trace.id`, `span.id` | keyword | 요청이나 이벤트를 처리하는 중일 때([7절](#7-trace)) |
 | 에러 | `error.type`(예외 클래스), `error.message`, `error.stack_trace` | keyword, match_only_text, wildcard | 예외를 남길 때 |
-| HTTP | `http.request.method`, `url.path`(그 서비스가 받은 요청의 실제 경로, 쿼리 제외. gateway는 브라우저가 부른 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`는 요청의 모든 줄 |
+| HTTP | `http.request.method`, `url.path`(그 서비스가 받은 요청의 실제 경로, 쿼리 제외. gateway는 브라우저가 부른 경로), `http.route`(경로 템플릿, keyword), `http.response.status_code`, `event.duration`(ns) | | 요청 처리를 남길 때. `url.path`·`http.route`·`http.request.method`는 요청의 모든 줄(같은 스레드의 프레임워크 줄 포함). 내부 서비스 호출 결과 줄의 `http.request.method`도 받은 요청의 메서드다 |
 | HTTP 연결 | `http.request.id`(ALB `X-Amzn-Trace-Id`), `url.domain`(다른 서비스를 부를 때의 대상 호스트), `url.full`(그 호출의 대상 주소, 쿼리 제외) | keyword | gateway 요청의 모든 줄, 나가는 호출 |
 | 사용자 | `user.id` | keyword | auth `users.id` UUID만 |
 | Kafka | `loresentry.kafka.topic`, `loresentry.kafka.partition`(long), `loresentry.kafka.offset`(long), `loresentry.kafka.key` | keyword | 메시지를 보내거나 받을 때 |
-| CloudEvents | `loresentry.cloudevent.id`, `loresentry.cloudevent.type`, `loresentry.cloudevent.subject` | keyword | 이벤트를 다룰 때 |
+| CloudEvents | `loresentry.cloudevent.id`(`ce_id`), `loresentry.cloudevent.type`(`ce_type`), `loresentry.cloudevent.subject`(`ce_subject`) | keyword | Kafka 레코드 흐름과 outbox 행 하나의 모든 줄. 받은 `ce_type`은 처리하는 종류만 그대로, 밖은 `other` |
 | 도메인 ID | `loresentry.project_id`, `loresentry.document_id`, `loresentry.file_id`, `loresentry.episode_id`, `loresentry.memo_id`, `loresentry.version_id`(문서 버전), `loresentry.image_id`, `loresentry.save_id`(문서 저장의 `X-Save-Id`) | keyword | 해당 대상을 다룰 때 |
 | 채팅 | `loresentry.chat.session_id`, `loresentry.chat.turn_id` | keyword | ai-chat. 인증 세션과 헷갈리지 않게 `chat` 아래에 둔다 |
 | 최신화 | `loresentry.refresh.request_id`, `loresentry.refresh.draft_id` | keyword | content, graph-rag, gateway. content의 run(`refresh_runs.id`)도 `request_id`와 같은 값이라 이 필드 하나로 남긴다 |
@@ -459,7 +555,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
 | Kafka 소비 | 헤더의 값을 이어받는다. Spring은 listener observation, Python은 레코드마다 헤더에서 추출한다. 헤더가 없거나 형식이 틀리면 새 trace를 시작한다. 레코드 하나를 처리하는 동안의 모든 줄(재시도·DLQ 같은 에러 처리기 줄 포함)이 그 trace로 남는다 |
 | span | 작업(요청 받기, 다른 서비스 호출, DB 쿼리, Kafka 소비) 단위로 새로 생긴다. 서비스 안에서는 스택처럼 쌓였다 빠지고, 헤더에는 현재 span 하나만 실린다. 헬스체크도 span을 만든다(로그는 Logstash가 `info` 줄을 버린다) |
-| 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값, 프레임워크 로그는 그때 열려 있는 span의 값이다 |
+| 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값이다. 프레임워크 로그는 바인딩 안이면 그 값(MDC), 밖이면 그때 열려 있는 span의 값이다 |
 | 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
 | span 저장 | 앱이 OTLP로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 전송은 collector를 세운 뒤 환경 변수로 켜고, 그 전에도 trace ID는 만들어지고 전파된다. sampling은 dev 100%, prod는 실측 후 정한다. span의 OTLP 지표·로그 전송은 끈다(Prometheus·Filebeat가 수집) |
