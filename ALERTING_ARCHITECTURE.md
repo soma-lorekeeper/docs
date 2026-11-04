@@ -1,14 +1,15 @@
 # 경보 아키텍처 — Prometheus·Grafana에서 Alertmanager를 거쳐 Slack까지
 
-> 최신화: 2026-11-04
+> 최신화: 2026-11-05
 > 대상: 클러스터 지표·앱 지표·Elasticsearch 로그로 평가하는 경보와 그 전달 경로
-> 상태: **설계 확정, dev 구현 중.** prod는 prod 환경을 세팅할 때 같은 구성으로 붙인다. AI 진단은 이 경로 위에 나중에 얹는다.
+> 상태: **dev 운영 중. 앱 지표만 아직 없다(APM 세팅 뒤).** prod는 prod 환경을 세팅할 때 같은 구성으로 붙인다. AI 진단은 이 경로 위에
+> 나중에 얹는다.
 > 관련: severity·라벨·규칙 목록은 [ALERTING.md](ALERTING.md), 로그 수집 경로는 [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md),
 > 매니페스트는 `loresentry-gitops/alerting/`과 `argocd-apps-dev/kube-prometheus-stack.yaml`
 
 경보는 두 곳에서 평가되고 한 곳으로 나간다.
 
-- **지표 경보**: Prometheus가 지표를 30초마다 수집하고 규칙(PrometheusRule)을 평가한다. 앱 지표, 파드·Deployment 상태, 노드
+- **지표 경보**: Prometheus가 지표를 30초마다 수집하고 규칙(PrometheusRule)을 평가한다. 앱 지표(예정), 파드·Deployment 상태, 노드
   자원, Kafka, Argo CD를 본다.
 - **로그 경보**: Grafana가 1분마다 Elasticsearch에 개수 쿼리를 보내 규칙을 평가한다. 앱 error·warn, 의존 서비스 실패, ALB 5xx,
   DB 오류·느린 쿼리, 로그 수집 멈춤을 본다.
@@ -22,7 +23,7 @@
 ```mermaid
 flowchart LR
   subgraph SRC["지표 출처"]
-    APP["앱 HTTP API 5개<br/>:9464/metrics"]
+    APP["앱 HTTP API 5개<br/>:9464/metrics (예정)"]
     KSM["kube-state-metrics<br/>파드 · Deployment 상태"]
     NE["node-exporter<br/>노드 자원"]
     KUBELET["kubelet<br/>컨테이너 자원"]
@@ -64,11 +65,11 @@ silence를 건다. Slack 메시지의 링크도 Grafana로 간다.
 | Prometheus | kps Helm chart 91.8.2 | 지표 수집, PrometheusRule 평가, 경보를 Alertmanager로 보냄. 보존 15일 | `argocd-apps-dev/kube-prometheus-stack.yaml` |
 | Prometheus Operator | kps | PrometheusRule·ServiceMonitor CR을 Prometheus 설정으로 바꾼다. 클러스터의 모든 CR을 읽는다 | 같은 곳 |
 | kube-state-metrics, node-exporter, kubelet | kps | 쿠버네티스 상태, 노드 자원, 컨테이너 자원 지표 | 같은 곳 |
-| 앱 `/metrics` | 각 서비스 코드 | 요청 수·응답 시간·상태 코드(`http_server_requests_seconds`), Spring은 JVM·HikariCP | 서비스 저장소, gitops `workload/base/<svc>/` |
-| Grafana | kps 하위 chart | ES 로그 규칙 평가, Alertmanager로 넘김, 경보·silence 화면 | `argocd-apps-dev/kube-prometheus-stack.yaml`(데이터 소스·contact point·policy), `alerting/base/grafana/`(규칙) |
+| 앱 `/metrics` (예정) | 각 서비스 코드 | 요청 수·응답 시간·상태 코드(`http_server_requests_seconds`), Spring은 JVM·HikariCP | 서비스 저장소, gitops `workload/base/<svc>/` |
+| Grafana | kps 하위 chart | ES 로그·로그 스택 규칙 평가, Alertmanager로 넘김, 경보·silence 화면 | `argocd-apps-dev/kube-prometheus-stack.yaml`(데이터 소스·규칙 sidecar), `alerting/base/grafana/`(규칙, contact point `kps-alertmanager`·policy) |
 | Elasticsearch | ECK | 로그(`logs-*`)와 로그 스택 모니터링 데이터(`.monitoring-*`) 저장. Grafana는 읽기 전용 역할 `grafana_reader`로 읽는다 | `logging/base/elasticsearch/` |
 | Metricbeat sidecar | ECK가 만든다(`spec.monitoring`) | ES·Kibana·Logstash·Filebeat 파드마다 하나. 각 구성요소의 상태 API를 10초마다 읽어 `.monitoring-*`에 쓴다 | `logging/base/`의 각 CR |
-| Alertmanager | kps, v0.34.1 | 경로·묶기·억제·silence, Slack 전송과 메시지 수정. 저장소는 emptyDir | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config` |
+| Alertmanager | kps, v0.34.1 | 경로·묶기·억제·silence, Slack 전송과 메시지 수정. 받는 곳은 `slack`(그리고 보내지 않는 `null`) 하나다. 저장소는 emptyDir | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles` |
 | Slack app | Slack | bot token 하나로 경보 메시지를 쓰고 고친다. 나중에 진단 답글도 단다 | token은 Git 밖 Secret `monitoring/alertmanager-slack` |
 
 ## 3. 지표 경보가 Slack까지 가는 길
@@ -91,7 +92,7 @@ sequenceDiagram
   P->>P: 규칙 평가 (30초마다)<br/>AppDeploymentUnavailable pending
   Note over P: for 2분 동안 조건이 이어지면 firing
   P->>AM: firing 경보<br/>severity=critical · namespace=dev · service=content-api
-  AM->>AM: 경로 slack-critical<br/>묶음 alertname · namespace · service, group_wait 30초
+  AM->>AM: critical 경로 → 받는 곳 slack<br/>묶음 alertname · namespace · service, group_wait 30초
   AM->>S: chat.postMessage (@channel, 빨강, 끝줄 fp)
   S-->>AM: 메시지 ts (알림 기록에 저장)
   S-->>U: 알림
@@ -221,8 +222,8 @@ sequenceDiagram
 flowchart TB
   IN["들어온 경보<br/>Prometheus · Grafana"] --> ROUTE{"경로<br/>severity"}
   ROUTE -->|"none · info"| NULL["null<br/>보내지 않음"]
-  ROUTE -->|warning| W["slack-warning<br/>반복 12시간"]
-  ROUTE -->|critical| C["slack-critical<br/>@channel · 반복 4시간"]
+  ROUTE -->|warning| W["warning 경로<br/>받는 곳 slack · 반복 12시간"]
+  ROUTE -->|critical| C["critical 경로<br/>받는 곳 slack · @channel · 반복 4시간"]
   W --> GRP["묶기<br/>alertname · namespace · service<br/>group_wait 30초 · group_interval 5분"]
   C --> GRP
   GRP --> FILTER{"보낼 때 거르기<br/>억제 · silence"}
@@ -339,10 +340,10 @@ dev와 prod는 클러스터가 다르고, 클러스터마다 자기 Argo CD가 �
 ```text
 alerting/
 ├── base/            # 두 환경이 같이 쓰는 규칙
-│   ├── prometheus/  # loresentry-infra · loresentry-app · ServiceMonitor
-│   └── grafana/     # 로그 · 로그 스택 규칙 ConfigMap
+│   ├── prometheus/  # loresentry-infra (loresentry-app · ServiceMonitor는 앱 지표 때)
+│   └── grafana/     # 로그 · 로그 스택 규칙, contact point · policy ConfigMap
 └── overlays/
-    ├── dev/         # argocd-apps-dev/alerting.yaml이 읽는다 (지금 만든다)
+    ├── dev/         # argocd-apps-dev/alerting.yaml이 읽는다
     └── prod/        # argocd-apps/alerting.yaml이 읽는다 (prod 세팅 때 만든다)
 ```
 
@@ -356,8 +357,8 @@ alerting/
 
 | Argo CD Application | 경보와 관련된 것 | 바뀌면 |
 |---|---|---|
-| `kube-prometheus-stack` (`argocd-apps-dev/kube-prometheus-stack.yaml`의 Helm values) | Alertmanager 설정(경로·받는 곳·억제·메시지 템플릿), Slack Secret 마운트. Grafana 설정(ES 데이터 소스 3개, Alertmanager contact point·policy, 규칙 sidecar, ES 비밀번호 환경 변수·CA 마운트) | Alertmanager 설정은 재시작 없이 다시 읽는다. Secret 마운트를 처음 넣을 때는 Alertmanager 파드가 한 번 재시작한다. Grafana의 환경 변수·마운트·sidecar를 바꾸면 Grafana 파드가 재시작한다(DB가 emptyDir이지만 설정은 모두 provisioning이라 그대로 돌아온다) |
-| `alerting` (`alerting/overlays/ENV`, 새로) | PrometheusRule `loresentry-infra`·`loresentry-app`, 앱 ServiceMonitor, Grafana 규칙 ConfigMap(label `grafana_alert`) | 재시작 없음. Prometheus Operator가 규칙·수집 대상을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
+| `kube-prometheus-stack` (`argocd-apps-dev/kube-prometheus-stack.yaml`의 Helm values) | Alertmanager 설정(경로·받는 곳·억제·메시지 템플릿), Slack Secret 마운트. Grafana 설정(ES 데이터 소스 3개, 규칙 sidecar, ES 비밀번호 환경 변수·CA 마운트) | Alertmanager 설정은 재시작 없이 다시 읽는다. Secret 마운트를 처음 넣을 때는 Alertmanager 파드가 한 번 재시작한다. Grafana의 환경 변수·마운트·sidecar를 바꾸면 Grafana 파드가 재시작한다(DB가 emptyDir이지만 설정은 모두 provisioning이라 그대로 돌아온다) |
+| `alerting` (`alerting/overlays/ENV`, wave -2) | PrometheusRule `loresentry-infra`, Grafana 규칙과 contact point·policy ConfigMap(label `grafana_alert`). 앱 지표 때 `loresentry-app`·앱 ServiceMonitor가 더해진다 | 재시작 없음. Prometheus Operator가 규칙·수집 대상을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
 | `logging` (`logging/overlays/ENV`) | ES 역할 `grafana_reader`와 file realm 사용자, ES·Kibana·Logstash·Filebeat CR의 `spec.monitoring`(Metricbeat sidecar) | 역할·사용자는 재시작 없음(1~2분 안에 반영). **`spec.monitoring`을 처음 켜면 sidecar가 붙으면서 ES·Kibana·Logstash·Filebeat 파드가 모두 재시작한다.** ES가 1노드라 1~3분 동안 색인·검색이 멈추고, 그동안 로그는 Logstash 큐에 쌓였다가 이어서 들어간다 |
 | `workload-ENV` (`workload/overlays/ENV`) | 앱 Deployment·Service의 `metrics` 포트(9464), 앱 이미지 태그, Kafka PrometheusRule | 앱 파드가 롤링 업데이트된다. 서비스 중단은 없다 |
 
@@ -382,10 +383,10 @@ flowchart LR
   end
   subgraph ST3["3. 로그 경보"]
     E0["Secret<br/>ES Grafana 비밀번호"] --> E1["logging<br/>역할 · 사용자 · Metricbeat sidecar"]
-    E1 --> G1["kube-prometheus-stack<br/>Grafana 데이터 소스 · contact point"]
-    G1 --> G2["alerting<br/>Grafana 규칙"]
+    E1 --> G1["kube-prometheus-stack<br/>Grafana 데이터 소스 · 규칙 sidecar"]
+    G1 --> G2["alerting<br/>Grafana 규칙 · contact point"]
   end
-  subgraph ST4["4. 앱 지표"]
+  subgraph ST4["4. 앱 지표 (예정)"]
     M1["서비스 저장소 dev 머지<br/>CI가 이미지 태그 갱신"] --> M2["workload<br/>metrics 포트"]
     M2 --> M3["alerting<br/>ServiceMonitor · loresentry-app"]
   end
@@ -405,10 +406,11 @@ flowchart LR
 | 바꾸는 것 | 위치 |
 |---|---|
 | Slack 채널·묶기·반복·억제·메시지 형식 | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles` |
-| Grafana 데이터 소스·Alertmanager로 넘기는 설정 | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `grafana` |
+| Grafana 데이터 소스 | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `grafana` |
+| Grafana가 Alertmanager로 넘기는 설정(contact point·policy) | `alerting/base/grafana/notifications.yaml` |
 | 지표 규칙 | `alerting/base/prometheus/` |
 | 로그·로그 스택 규칙 | `alerting/base/grafana/` |
-| 수집 대상 | `alerting/base/prometheus/servicemonitor.yaml`, 앱 Service의 `metrics` 포트 |
+| 수집 대상 (앱 지표 때) | `alerting/base/prometheus/servicemonitor.yaml`, 앱 Service의 `metrics` 포트 |
 | Grafana가 읽는 ES 범위 | `logging/base/elasticsearch/`의 역할 정의 |
 | 로그 스택 모니터링 sidecar | `logging/base/`의 Elasticsearch·Kibana·Logstash·Beat CR `spec.monitoring` |
 | prod | `argocd-apps/kube-prometheus-stack.yaml`과 `*/overlays/prod`. prod 환경을 세팅할 때 만든다 |

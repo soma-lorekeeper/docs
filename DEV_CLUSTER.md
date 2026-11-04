@@ -56,7 +56,7 @@ dev:   dev.loresentry.com  → api-dev.loresentry.com  → EKS lore-sentry-dev-k
 |---|---|
 | 프런트엔드 | S3 `loresentry-web-dev-<AWS_ACCOUNT_ID>`, CloudFront(`dev.loresentry.com`), CloudFront Function `loresentry-web-dev-rewrite` |
 | 진입점 | ALB 1개 (IngressGroup `lore-sentry-dev`) — `api-dev`·`argocd-dev`·`grafana-dev`·`kibana-dev`가 공유. 접근 로그는 S3 `loresentry-aws-logs-dev-<AWS_ACCOUNT_ID>/alb/` |
-| 클러스터 | EKS `lore-sentry-dev-k8s`, 노드 그룹 `lore-sentry-dev-pool`·`lore-sentry-dev-logging-pool`(로깅 전용 `r7i.large` 1대, 2b, taint `dedicated=logging:NoSchedule`), 애드온, Pod Identity 연결, access entry |
+| 클러스터 | EKS `lore-sentry-dev-k8s`, 노드 그룹 `lore-sentry-dev-pool`·`lore-sentry-dev-logging-pool-v2`(로깅 전용 `r7i.xlarge` 1대, 2b, taint `dedicated=logging:NoSchedule`. 2026-11-04 `r7i.large` 그룹에서 교체), 애드온, Pod Identity 연결, access entry |
 | 워크로드 | gateway·authentication·content·ai-chat(+요약기)·graph-rag, auth-valkey, openai-mock |
 | 관계형 DB | RDS `lore-sentry-dev-postgres` — 논리 DB 3개, 서비스 역할 3개, 마스터 비밀번호(Secrets Manager) 모두 별도. 로그용 파라미터 그룹 `lore-sentry-dev-postgres18` |
 | 그래프 DB | Neptune `lore-sentry-dev-neptune`. 로그용 파라미터 그룹 `lore-sentry-dev-neptune14`(slowquery 1초) |
@@ -110,7 +110,7 @@ dev를 만들 때 EIP 쿼터(5개 중 4개 사용) 증설 없이 만들기 위�
 | 애드온 | vpc-cni·coredns·kube-proxy·ebs-csi·pod-identity-agent·metrics-server·node-monitoring-agent, 같은 버전 |
 | RDS | PostgreSQL 18.6 `db.t4g.micro`, gp3 20GB, Single-AZ **2b**, 백업 7일 |
 | Neptune | 1.4.8.0 `db.t4g.medium` writer 1대 **2b** |
-| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Telepresence — 차트 버전과 values 동일. Grafana datasource 설정에 dev만 Loki가 없다(§11) |
+| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Telepresence — 차트 버전 동일. values는 dev에만 경보 설정이 더 있다: Alertmanager Slack 전송, Grafana의 Elasticsearch 데이터 소스 3개(Loki 대신)와 경보 규칙 sidecar(docs `ALERTING.md`) |
 | 워크로드 | `workload/base` 그대로. replica·CPU·메모리 request/limit 동일 |
 | 오토스케일 | 없음 (HPA·Cluster Autoscaler 모두 없음, prod와 같음) |
 
@@ -449,23 +449,23 @@ kubectl --context lore-sentry-dev -n monitoring get secret grafana-admin -o json
 | 로컬 `GOOGLE_CLIENT_*`가 dev Secret에 들어감 | 스크립트가 일반 이름의 환경 변수를 읽었다 | 되돌리고 `DEV_` 접두사로 바꿨다 |
 | **gateway 파드가 새로 뜬 직후, 파드마다 첫 인증 요청이 503 `SESSION_UNAVAILABLE`** | 미확인. 세션 저장소 연결이나 검증 스크립트가 첫 요청 시점에 준비되지 않는 것으로 보인다. 오래 쉰 뒤에는 재현되지 않았다 | **미해결.** dev에서 3번 재현됐다. prod도 배포 직후 같을 가능성이 있다 |
 | `strimzi-kafka-operator` OutOfSync | prod와 같은 표시상 문제 | 그대로 둔다 |
-| dev Grafana에서 Loki datasource를 고르면 연결 실패 | provisioning에서 빼도 Grafana는 DB에 넣어 둔 datasource를 지우지 않는다 | Grafana 알림 작업 때 `deleteDatasources`로 지운다 |
+| dev Grafana에서 Loki datasource를 고르면 연결 실패 | provisioning에서 빼도 Grafana는 DB에 넣어 둔 datasource를 지우지 않는다 | 해결. 경보 작업 때 `deleteDatasources`로 지웠고(2026-11-04), 지워진 것을 확인한 뒤 그 설정을 뺐다(2026-11-05) |
 | kube-system csi-snapshotter가 error를 계속 남긴다(하루 약 2만 줄) | 클러스터에 VolumeSnapshot CRD가 없다 | 그대로 둔다. Kibana에서 걸러 본다 |
 
 ## 12. prod 대비 점검 — 2026-10-31
 
 prod와 dev의 실제 상태를 계층별로 꺼내 비교했다(prod는 조회만). 환경 이름·버킷 이름처럼 당연히 다른 값은 맞춘 뒤 비교했다.
-dev 로깅 전환(2026-11-01) 뒤 달라진 행은 그 기준으로 고쳤다.
+dev 로깅 전환(2026-11-01)과 경보 작업(2026-11-04~05) 뒤 달라진 행은 그 기준으로 고쳤다.
 
 | 계층 | 결과 |
 |---|---|
 | EKS·노드 그룹·애드온·Pod Identity·access entry | 같다. 플랫폼 버전만 dev `eks.17` / prod `eks.14` (AWS가 정하는 값, 고정 불가) |
 | 노드 | OS·커널·kubelet·containerd·allocatable·AZ 배치(2a 1 / 2b 2) 같다 |
 | kube-system, VPC CNI 설정 | 같다 |
-| Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application은 둘 다 9개이고, dev만 `eck-operator`·`logging`, prod만 `loki`·`alloy`가 있다. 나머지 7개는 정의·상태 같다 |
+| Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application은 dev 10개·prod 9개다. dev만 `eck-operator`·`logging`·`alerting`, prod만 `loki`·`alloy`가 있다. 나머지 7개는 정의·상태 같다 |
 | 워크로드 | replica·리소스·probe·볼륨·보안 설정 같다. env 차이는 §5의 의도한 것뿐 |
 | Service·PDB·NetworkPolicy·PVC·StorageClass·ConfigMap·Secret 키·Kafka·토픽 | 같다. prod에만 쓰이지 않는 옛 `auth-valkey` Secret이 남아 있다 |
-| 모니터링 | dev는 PrometheusRule 31·ServiceMonitor 10·PodMonitor 2, 규칙 228개, 수집 대상 36/36 정상. prod(33·12·2, 251개)와의 차이는 prod에만 있는 Loki·Alloy 차트의 것이다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)는 같다 |
+| 모니터링 | dev는 PrometheusRule 32·ServiceMonitor 10·PodMonitor 2, 규칙 233개, 수집 대상 36/36 정상(2026-11-05). prod(33·12·2, 251개)와의 차이는 prod에만 있는 Loki·Alloy 차트의 것과 dev에만 있는 `loresentry-infra`(5개)다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)는 같다(2026-10-31). dev는 Slack `#alerts-dev`로 경보를 보내고 prod는 아직 받는 곳이 없다 |
 | ALB | 리스너·헬스체크·대상 그룹 설정 같다. 속성은 dev만 접근 로그가 켜져 있다 |
 | RDS·Neptune | 엔진·사양·스토리지·암호화·AZ 같다. 파라미터 그룹과 로그 내보내기는 dev만 켜져 있다(§5). 백업·점검 시간대는 **달랐다 → 맞췄다** |
 | S3·CloudFront·Lambda | 같다(CORS 주소·태그 제외). dev는 로그 버킷 2개와 CloudFront 로그 전달이 더 있다 |

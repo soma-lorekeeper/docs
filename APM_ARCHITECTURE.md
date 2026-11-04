@@ -195,13 +195,14 @@ flowchart LR
 | 항목 | 값 |
 |---|---|
 | collector | 1대, 요청 100m·256Mi, 한도 500m·512Mi, `GOMEMLIMIT` 400MiB |
-| 로깅 노드 | `r7i.large`(2 vCPU·16GiB) 1대에 ES·Logstash·Kibana·Filebeat·collector가 함께 뜬다 |
-| CPU 예약 | collector 전 1,610m/1,930m(83%). collector 요청을 작게 둔 이유다 |
+| 로깅 노드 | `r7i.xlarge`(4 vCPU·32GiB) 1대에 ES·Logstash·Kibana·Filebeat·collector와 Stack Monitoring sidecar가 함께 뜬다. 2026-11-04 `r7i.large`(2 vCPU·16GiB)에서 바꿨다 |
+| CPU·메모리 예약 | CPU 2,210m/3,920m(56%), 메모리 8,952Mi/29.8GiB(29%)(2026-11-05, sidecar 포함). `r7i.large` 때는 collector 전에 이미 CPU 1,610m/1,930m(83%)였고, collector 요청을 작게 둔 이유다 |
 | 부하 테스트 때 최고치(2026-11-04) | 노드 CPU 1,950m(100%, Logstash 1,546m·ES 950m), ES 메모리 2,894Mi/3Gi, Kibana 1,506Mi/1,536Mi |
 | span 전송 뒤 실측(2026-11-04 부하 테스트 중) | span 초당 약 155개. traces 저장량 시간당 약 165MB(병합 전 크기). collector CPU 38m·메모리 217Mi. 노드 CPU 2,000m(103%) |
 
-노드는 그대로 두고 다음 부하 테스트 지표를 근거로 증설을 정한다. 관리형 노드 그룹은 인스턴스 타입을 그 자리에서 바꿀 수 없어,
-새 노드 그룹(같은 2b·label·taint)을 만들고 이전 노드를 drain한다.
+부하 테스트 때 노드 CPU가 100%를 넘은 것과 Stack Monitoring sidecar 예약을 보고 2026-11-04 `r7i.xlarge`로 올렸다. 관리형 노드 그룹은
+인스턴스 타입을 그 자리에서 바꿀 수 없어, 새 노드 그룹 `lore-sentry-dev-logging-pool-v2`(같은 2b·label·taint)를 만들고 이전 노드를
+drain한 뒤 이전 그룹을 지웠다.
 
 ## 9. 배포
 

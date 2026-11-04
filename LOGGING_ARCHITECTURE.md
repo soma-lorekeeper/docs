@@ -76,7 +76,7 @@ flowchart LR
 | Kibana | Kibana CR, 1대 | 로깅 노드 | 검색 화면 | — |
 | template Job | Job | 로깅 노드 | 첫 data stream이 생기기 전에 `logs@custom` component template을 넣는다 | — |
 
-로깅 노드는 `r7i.large` 1대이고 2b 서브넷에만 있다. ES·Logstash 디스크(EBS)가 2b에 묶여 있어서, 노드가 바뀌어도 같은 AZ에 떠야
+로깅 노드는 `r7i.xlarge` 1대(노드 그룹 `lore-sentry-dev-logging-pool-v2`, 2026-11-04 `r7i.large`에서 교체)이고 2b 서브넷에만 있다. ES·Logstash 디스크(EBS)가 2b에 묶여 있어서, 노드가 바뀌어도 같은 AZ에 떠야
 디스크가 그대로 붙는다. 다른 파드는 taint `dedicated=logging:NoSchedule` 때문에 이 노드에 오지 않는다.
 
 ## 3. 파드 로그가 Kibana까지 가는 길
