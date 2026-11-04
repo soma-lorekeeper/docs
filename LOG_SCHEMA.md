@@ -31,7 +31,7 @@ AWS(ALB·CloudFront·RDS·Neptune·EKS) ─▶ S3·CloudWatch ─▶ Filebeat(aw
 | 앱 | 아래 [앱 로그 규약](#5-앱-로그-규약)대로 로그 클래스로만 ECS JSON 한 줄씩 stdout에 쓴다. 금지 항목을 찍지 않는다. [7절](#7-trace)대로 span을 만들고 전파한다 | 마스킹을 Logstash·collector에 기대지 않는다 |
 | Filebeat | 줄 읽기, CRI 해제, 여러 줄 묶기, `kubernetes.*` 붙이기 | 파싱·가공 |
 | Logstash | 파싱, `log.level` 정규화, 필수 필드 채우기, 마스킹, 소음 제거, data stream 선택 | — |
-| EDOT Collector | span 받기(OTLP), APM 화면용 지표 만들기, span 속성 마스킹 | 로그를 받지 않는다 |
+| EDOT Collector | span 받기(OTLP), APM 화면용 지표 만들기, span 속성 지우기·마스킹 | 로그를 받지 않는다 |
 | ES | 필드 타입(`logs@custom`, traces·metrics `@custom`), 보존 기간, 거부된 문서 보관(failure store) | ingest pipeline을 두지 않는다 |
 
 ## 2. 공통 필드
@@ -176,11 +176,20 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 ### trace(span) 마스킹
 
 로그는 Logstash가, trace는 EDOT Collector가 마스킹한다. span은 Logstash를 거치지 않고 collector에서 ES로 바로 가기 때문이다.
+로그와 같은 원칙으로, 앱 로그에 남기지 않는 값은 span에서도 **지우고**, 남은 값에는 위 표의 규칙을 한 번 더 건다.
 
-- collector가 ES에 쓰기 전에 위 표의 규칙(이메일, OAuth, 광고 클릭 ID, 서명 URL, JWT, 비밀번호, DB 키 값)을 적용한다.
-- 대상 span 속성: `url.full`, `url.query`, `exception.message`, `exception.stacktrace`, `db.query.text`·`db.statement`
+| 처리 | 대상 | 이유 |
+| --- | --- | --- |
+| 쿼리 지우기 | `url.full`·`url.original`·`http.url`·`http.target`의 `?` 뒤, `url.query` 속성 | 검색어 등 쿼리스트링 전체를 남기지 않는다. 경로만 남는다 |
+| SQL 지우기 | `db.statement`, `db.query.text` | SQL은 남기지 않는다. 느린 쿼리는 RDS 로그로 본다 |
+| 예외 지우기 | span event의 `exception.message`, `exception.stacktrace` | 예외 메시지는 남기지 않는다(스택의 `Caused by` 줄에도 있다). `exception.type`만 남고, 스택은 같은 `trace.id`의 앱 로그 `error.stack_trace`로 본다 |
+| 가리기 | 남은 모든 span·span event 문자열 속성 | 위 표의 규칙(이메일, OAuth `code`·`state`, 광고 클릭 ID, 서명 URL, 세션 쿠키, 인증 헤더, JWT, 비밀번호, DB 키 값) |
+
+- collector 정규식은 Go RE2라 lookahead가 없다. 그래서 이메일 규칙은 Logstash와 달리 클러스터 안 주소(`0@…svc`)도 가리고,
+  DB 키 값 규칙은 `Key (…)=(…)`의 괄호 안을 통째로 가린다. 더 많이 가리는 쪽으로만 다르다.
 - HTTP 헤더와 요청·응답 본문은 계측 라이브러리가 기본으로 담지 않는다. 그 설정을 켜지 않는다.
-- traces에도 같은 반대 검색을 돌린다.
+- traces·`logs-*.otel-*`(예외 event)에도 같은 반대 검색을 돌린다.
+- 규칙은 gitops `logging/base/otel-collector/otel.yml`의 `transform/privacy`에 있다. 바꾸면 이 표도 같은 시점에 고친다.
 
 ### 길이 상한
 
@@ -661,13 +670,19 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 
 ### traces·metrics (APM)
 
-EDOT Collector가 쓰는 traces·metrics data stream에도 같은 이유로 `@custom` component template을 둔다. gitops APM 단계에서
-첫 데이터보다 먼저 넣는다.
+EDOT Collector가 쓰는 traces·metrics data stream에도 같은 이유로 `@custom` component template을 둔다. gitops template Job이
+collector보다 먼저 넣는다.
 
 | 설정 | 값 | 이유 |
 | --- | --- | --- |
 | 레플리카 | 0 | 1노드 ES |
-| 보존 | 30일 | 로그와 같은 기간. 호출 그림을 로그와 같은 기간 동안 본다 |
+| 보존 | 30일, `prefer_ilm: false` | 로그와 같은 기간. 호출 그림을 로그와 같은 기간 동안 본다. 내장 ILM 정책(`traces@lifecycle` 등)은 삭제 단계가 없어 data stream lifecycle을 쓴다 |
+| template | `traces-otel@custom`(span, `traces-*.otel-*`), `metrics-otel@custom`(APM 집계 지표, `metrics-*.otel-*`) | `traces@custom`·`metrics@custom`은 OTel 밖 data stream에도 걸려 OTel 전용 hook을 쓴다. span의 예외 event(`logs-*.otel-*`, APM 오류)는 `logs@custom`이 맡는다 |
+| 쓰기 계정 | API key `edot-collector` | `*.otel-*` data stream 만들기·쓰기(`auto_configure`, `create_doc`)만. 읽기와 앱 로그 data stream 쓰기는 안 된다 |
+
+- `error.stack_trace`는 로그 인덱스가 logsdb 모드라 기본 `ignore_above`가 8191자다. 더 긴 스택이 ES|QL·exists·wildcard에서
+  빠지지 않도록 `logs@custom`의 dynamic template(`error_stack_trace_fully_indexed`)이 wildcard 그대로 한도를 262144자(Logstash
+  ES 쪽 길이 상한)로 둔다. OTel template에서 이 필드가 alias라 property로는 지정할 수 없다.
 
 ## 바꾸는 절차
 
