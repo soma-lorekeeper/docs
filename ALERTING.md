@@ -1,11 +1,13 @@
 # 경보 규약 — severity·Slack 전달·라벨·규칙 목록
 
-> 최신화: 2026-11-04
+> 최신화: 2026-11-05
 > 대상: 클러스터 안 Prometheus 경보(kps 기본·Kafka·우리 규칙), Grafana가 Elasticsearch 로그와 로그 스택 모니터링 데이터로
 > 평가하는 경보, 앱이 내보내는 지표
-> 상태: **규약 확정, dev 구현 중.** prod는 prod 환경을 세팅할 때 같은 규약으로 붙인다.
+> 상태: **dev 운영 중. 앱 지표만 아직 없다.** 앱 지표([6.6](#66-앱-지표-규칙-loresentry-app)·[7절](#7-앱-지표-규약))는 APM 세팅이
+> 끝난 뒤 붙인다. prod는 prod 환경을 세팅할 때 같은 규약으로 붙인다([10절](#10-아직-없는-것)).
 > 관련: 구성과 흐름 그림은 [ALERTING_ARCHITECTURE.md](ALERTING_ARCHITECTURE.md), 로그 필드는 [LOG_SCHEMA.md](LOG_SCHEMA.md),
-> 매니페스트는 `loresentry-gitops/alerting/`(규칙)과 `argocd-apps-dev/kube-prometheus-stack.yaml`(Alertmanager·Grafana 설정)
+> 매니페스트는 `loresentry-gitops/alerting/`(규칙, Grafana가 Alertmanager로 넘기는 설정)과
+> `argocd-apps-dev/kube-prometheus-stack.yaml`(Alertmanager·Grafana 설정)
 
 경보를 만들고 보내는 모든 곳이 따르는 규약이다. Prometheus 규칙, Grafana 로그 규칙, Alertmanager 설정, 앱의 지표 코드가 이 문서를
 기준으로 한다.
@@ -19,7 +21,7 @@
 ## 1. 경로와 책임
 
 ```text
-앱 /metrics · kube-state-metrics · node-exporter · kubelet · Kafka ─▶ Prometheus ─(PrometheusRule)─┐
+앱 /metrics(예정) · kube-state-metrics · node-exporter · kubelet · Kafka ─▶ Prometheus ─(PrometheusRule)─┐
 앱·AWS 로그 ─▶ Filebeat ─▶ Logstash ─▶ Elasticsearch logs-* ◀─┐                                    │
 ES·Kibana·Logstash·Filebeat 상태 ─▶ Metricbeat sidecar ─▶ Elasticsearch .monitoring-* ◀─┤            │
                                                        (ES 쿼리, 1분마다) Grafana 경보 규칙 ─────────┤
@@ -31,7 +33,7 @@ ES·Kibana·Logstash·Filebeat 상태 ─▶ Metricbeat sidecar ─▶ Elasticse
 
 | 단계 | 하는 일 | 하지 않는 일 |
 | --- | --- | --- |
-| 앱 | [7절](#7-앱-지표-규약)대로 요청 지표를 `:9464/metrics`에 내보낸다 | 경보를 직접 보내지 않는다 |
+| 앱 (예정) | [7절](#7-앱-지표-규약)대로 요청 지표를 `:9464/metrics`에 내보낸다 | 경보를 직접 보내지 않는다 |
 | Prometheus | 지표 수집(30초), 규칙 평가(30초), firing 경보를 Alertmanager로 보낸다 | Slack에 보내지 않는다 |
 | Metricbeat sidecar | ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인다. 각 구성요소의 상태 API를 10초마다 읽어 ES `.monitoring-*`에 쓴다(Elastic Stack Monitoring) | 경보를 평가하지 않는다. 구성요소의 로그는 모으지 않는다(이미 Filebeat가 모은다) |
 | Grafana | ES 로그 규칙과 로그 스택 규칙 평가(1분), firing 경보를 contact point로 Alertmanager에 넘긴다 | 묶기·반복·Slack 전송(Grafana 내장 Alertmanager는 쓰지 않는다) |
@@ -99,30 +101,34 @@ Alertmanager `update_message: true`로, 같은 묶음의 후속 알림(반복, �
 ### 3.4 메시지 형식
 
 ```text
-@channel [CRITICAL] AppDeploymentUnavailable · dev/content-api          ← message_text (critical만 @channel)
-┃ content-api에 준비된 파드가 없어요.                                    ← 빨강(critical)·노랑(warning)·초록(해소)
-┃ • 시작 2026-11-04 16:02 KST
-┃ • deployment content-api · replicas 0/1
-┃ Grafana 경보 · silence 만들기 · Kibana 로그
+@channel [CRITICAL] AppDeploymentUnavailable · dev/content-api      ← message_text (울리는 critical만 @channel)
+┃ content-api에 준비된 파드가 없어요.                                ← 막대 제목(summary). 누르면 Grafana 경보 목록
+┃ dev/content-api의 준비된 파드가 2분 넘게 0개예요. …                  ← description
+┃ • 시작 11-04 16:02 KST · deployment content-api                    ← 경보마다 시각과 핵심 라벨
+┃ silence 만들기                                                     ← 링크(runbook·Kibana는 있는 규칙만)
 ┃ fp: 3f2a9c1b7e0d4a55
 ```
 
-해소되면 같은 메시지가 이렇게 바뀐다.
+막대 색은 빨강(critical)·노랑(warning)·초록(해소)이다. 해소되면 같은 메시지가 이렇게 바뀐다.
 
 ```text
 [RESOLVED] AppDeploymentUnavailable · dev/content-api
-┃ content-api에 준비된 파드가 없어요.                                    ← 초록
-┃ • 시작 16:02 · 해소 16:11 KST (9분)
+┃ content-api에 준비된 파드가 없어요.                                ← 초록
+┃ …
+┃ • 시작 11-04 16:02 · 해소 16:11 KST · deployment content-api
 ┃ …
 ```
 
 | 부분 | 규칙 |
 | --- | --- |
-| 첫 줄 | `[CRITICAL]`·`[WARNING]`·`[RESOLVED]`, 경보 이름, `namespace/service`. critical이 울리는 중일 때만 앞에 `@channel` |
-| 색 | 묶음 상태(`.Status`)와 severity로 정한다. firing critical 빨강, firing warning 노랑, resolved 초록 |
-| 본문 | 경보마다 `summary`(우리 규칙은 한국어 한 문장), 시작 시각(KST), 핵심 라벨(pod·deployment·route 등 있는 것만) |
-| 링크 | Grafana 경보 목록과 silence 만들기, 로그 경보는 Kibana. Alertmanager·Prometheus 주소는 클러스터 안에서만 열리므로 링크로 쓰지 않는다 |
-| 끝줄 | `fp:` 뒤에 묶음 안 경보들의 fingerprint. 나중에 진단 서비스가 webhook으로 받은 fingerprint로 이 메시지를 찾아 답글을 단다 |
+| 첫 줄 | `[CRITICAL]`·`[WARNING]`·`[RESOLVED]`, 경보 이름, `namespace/service`. 울리는 critical일 때만 앞에 `@channel`. namespace가 없으면 둘 다 빼고, kps 기본 규칙처럼 `service`가 수집기 이름(`kps-`·`kube-prometheus-stack-`·`argocd-`로 시작)이면 `service`만 뺀다 |
+| 색 | 묶음 상태(`.Status`)와 공통 severity로 정한다. firing critical 빨강, 그 밖의 firing 노랑, resolved 초록 |
+| 막대 제목 | 묶음 공통 `summary`(우리 규칙은 한국어 한 문장). 공통 summary가 없으면 경보 이름. 누르면 그 경보 이름으로 거른 Grafana 경보 목록이 열린다 |
+| 본문 | 공통 `description`, 그리고 경보마다 시작(해소) 시각(KST)과 핵심 라벨(pod·container·deployment·statefulset·pvc·route·node 중 있는 것). 공통 summary가 없으면 경보마다 summary도 적는다. 경보가 많으면 10건만 적고 "(총 N건 중 10건만 표시)"를 붙인다(Slack 글자 수 한도) |
+| 링크 | silence 만들기(Grafana, 경보 이름·namespace를 채워 연다), `runbook_url`이 있으면 runbook(kps 기본 규칙), `kibana_url`이 있으면 Kibana 로그(로그 규칙). Alertmanager·Prometheus 주소는 클러스터 안에서만 열리므로 링크로 쓰지 않는다 |
+| 끝줄 | `fp:` 뒤에 묶음 안 경보들의 fingerprint(앞의 10건). 나중에 진단 서비스가 webhook으로 받은 fingerprint로 이 메시지를 찾아 답글을 단다 |
+
+받는 곳은 `slack` 하나이고, severity별 경로(critical·warning)가 반복 간격만 다르게 같은 받는 곳으로 보낸다.
 
 ## 4. 라벨
 
@@ -132,17 +138,23 @@ Alertmanager `update_message: true`로, 같은 묶음의 후속 알림(반복, �
 | --- | --- | --- |
 | `alertname` | 규칙 이름(UpperCamelCase, 예: `AppHigh5xxRatio`) | **자동으로 붙는다.** Prometheus는 `alert:` 값, Grafana는 규칙 제목이다. 직접 달거나 바꾸지 않는다. 같은 현상의 단계는 같은 이름에 severity만 다르게 둔다 |
 | `severity` | [2절](#2-severity) 네 값 중 하나 | |
-| `namespace` | 경보가 가리키는 리소스의 namespace(`dev`·`monitoring` 등) | Grafana 로그 규칙은 고정값(dev overlay에서 `dev`)을 단다 |
+| `namespace` | 경보가 가리키는 리소스의 namespace(`dev`·`monitoring` 등) | Grafana 로그 규칙은 로그의 `service.environment`(`dev`·`prod`)를, 수집 멈춤·failure store·로그 스택 규칙은 `monitoring`을 단다 |
 | `service` | Kubernetes 이름(`gateway-api`·`content-api`·`ai-chat-summarizer` 등). 로그의 `service.name`과 같은 값 | 아래 주의 참고 |
 
 - **`service` 라벨이 이미 다른 뜻으로 붙어 있다.** kube-state-metrics·kubelet·Argo CD 지표에는 수집기 Service 이름
-  (`kps-kube-state-metrics` 등)이 `service`로 붙어 온다. 우리 규칙은 `label_replace`로 `deployment`나 `container` 값을 `service`에
-  덮어써서 앱 이름이 되게 한다.
-- Grafana 로그 규칙은 ES의 `service.name`별로 결과가 나뉘고, 라벨 이름이 `service.name`으로 온다. 규칙에서
-  `service: '{{ index $labels "service.name" }}'`로 옮긴다.
+  (`kps-kube-state-metrics` 등)이 `service`로 붙어 온다. 우리 규칙은 `label_replace`로 앱 이름을 `service`에 덮어쓴다.
+  - AppDeploymentUnavailable은 `deployment` 값을 쓴다.
+  - 컨테이너 규칙(ContainerMemoryNearLimit·ContainerOOMKilled)은 kps recording rule `namespace_workload_pod:kube_pod_owner:relabel`을
+    곱해 파드의 `workload`(Deployment·StatefulSet·DaemonSet 이름)를 붙이고 그 값을 쓴다. 이 rule의 값은 늘 1이라 곱해도 원래 값이 그대로다.
+  - Argo CD 규칙은 Application 이름(`name`)을 쓴다.
+- Grafana 로그 규칙은 ES의 `service.name`·`service.environment`별로 결과가 나뉘고, 라벨 이름이 그대로 온다. 규칙에서
+  `service: '{{ index $$labels "service.name" }}'`, `namespace: '{{ index $$labels "service.environment" }}'`로 옮긴다.
+- **Grafana 규칙의 `$`**: provisioning이 라벨 안의 `$이름`을 환경 변수로 바꾸므로, 라벨의 템플릿 변수는 `$$labels`·`$$values`로
+  적는다. annotation(summary·description·kibana_url)은 바꾸지 않으므로 `$labels`·`$values` 그대로 적는다.
 - 로그 스택 규칙([6.5](#65-로그-스택-규칙-grafana-stack-monitoring))은 `namespace: monitoring`, `service`는 구성요소 이름
-  (`elasticsearch`·`kibana`·`logstash`·`filebeat`)이다. 로그의 `service.name`과 같은 값이다. Filebeat처럼 여러 대인 것은
-  `pod` 라벨로 어느 것인지 구분한다.
+  (`elasticsearch`·`logstash`·`filebeat`)이다. 로그의 `service.name`과 같은 값이다. ES 노드·Filebeat처럼 여러 대일 수 있는 것은
+  `pod` 라벨로 어느 것인지 구분한다. StackMonitoringDataMissing만 `.monitoring-*`의 `event.module` 값(`elasticsearch`·`kibana`·
+  `logstash`·`beat`)을 `service`로 단다.
 - kps 기본 규칙과 Kafka 규칙은 원래 라벨 그대로 둔다.
 - 우리 규칙의 `summary`·`description`은 한국어로 쓴다. kps 기본 규칙의 영어 설명은 그대로 둔다.
 
@@ -182,7 +194,7 @@ kube-proxy·Windows) 규칙은 이미 꺼져 있다.
 | 규칙 | 조건 | for | severity | 근거 |
 | --- | --- | --- | --- | --- |
 | AppDeploymentUnavailable | 앱 Deployment(gateway·content·authentication·ai-chat·ai-chat-summarizer·graph-rag)의 준비된 파드 0 | 2m | critical | 기본 규칙은 15분 뒤에야 울린다. 롤링 업데이트는 새 파드가 뜰 때까지 옛 파드를 남겨 오탐이 없다 |
-| ContainerMemoryNearLimit | 컨테이너 메모리 사용량이 limit의 90% 초과 | 10m | warning | kps 기본에 없다. dev에서 Logstash OOMKilled가 있었다. 2026-11-04 부하 테스트 중 Kibana 97%·ES 89%였다. 부하 테스트가 끝난 뒤 평소 값을 보고, ES처럼 heap과 파일 캐시로 원래 높은 것은 빼거나 기준을 따로 둔다 |
+| ContainerMemoryNearLimit | 컨테이너 RSS(`container_memory_rss`)가 memory limit의 90% 초과 | 10m | warning | kps 기본에 없다. working set은 회수할 수 있는 파일 캐시를 포함해 ES처럼 디스크를 많이 읽는 컨테이너는 늘 limit 가까이 있으므로, 회수할 수 없는 RSS로 본다. 켠 직후 Logstash OOMKilled 3번과 Kibana RSS 96%를 잡아 Logstash 3Gi·Kibana 2Gi로 올렸다(2026-11-04) |
 | ContainerOOMKilled | 최근 10분 안에 재시작했고 마지막 종료 이유가 `OOMKilled` | 0 | warning | 재시작 반복(15분)보다 먼저, 원인과 함께 알린다 |
 | ArgoCDAppUnhealthy | Argo CD Application이 Healthy·Progressing이 아님 | 15m | warning | 배포가 깨진 상태 |
 | ArgoCDAppOutOfSync | OutOfSync가 이어짐. `strimzi-kafka-operator`는 원래 OutOfSync로 표시되어 뺀다 | 30m | warning | selfHeal이 켜져 있어 오래 OutOfSync면 sync가 실패하고 있다 |
@@ -232,27 +244,34 @@ data stream만 보는 규칙이라 걸리지 않는다.
 | 결과 없음(NoData) | OK. LogIngestionStopped·AwsLogIngestionStopped만 Alerting | 오류가 없는 평소에는 개수 쿼리 결과가 비어 있다 |
 | 쿼리 오류(Error) | 직전 상태 유지. LogIngestionStopped만 Error | ES가 잠깐 끊겨도 로그·로그 스택 규칙이 한꺼번에 울리지 않게 하고, 끊김 자체는 한 규칙으로 알린다 |
 | severity가 두 단계인 규칙 | 한 규칙에서 값에 따라 `severity` 라벨을 정한다 | Grafana는 같은 폴더에 같은 이름의 규칙을 둘 수 없다 |
-| Alertmanager로 넘기기 | contact point(prometheus-alertmanager) + 루트 policy `group_by ['...']`, `group_wait 0s`, `group_interval 1m`, `repeat_interval 1m` | Grafana는 경보 끝 시각을 약 4분 뒤로 찍어 보내므로 1분마다 다시 보내야 Alertmanager가 해소로 오해하지 않는다. 묶기·반복은 Alertmanager가 한다 |
+| Alertmanager로 넘기기 | contact point `kps-alertmanager`(종류 prometheus-alertmanager, `http://kps-alertmanager.monitoring:9093`) + 루트 policy `group_by ['...']`, `group_wait 0s`, `group_interval 1m`, `repeat_interval 1m`. `alerting/base/grafana/notifications.yaml`(ConfigMap)에 있다 | Grafana는 경보 끝 시각을 약 4분 뒤로 찍어 보내므로 1분마다 다시 보내야 Alertmanager가 해소로 오해하지 않는다. 묶기·반복은 Alertmanager가 한다 |
+| Kibana 링크 | 앱·ALB·RDS·Neptune 규칙은 annotation `kibana_url`에 같은 조건(앱 규칙은 그 `service.name`까지)의 Discover 링크(최근 30분)를 단다 | Slack 메시지에서 바로 해당 로그로 간다 |
+| 규칙 파일 | `alerting/base/grafana/log-rules.yaml`(로그 12개), `log-stack-rules.yaml`(로그 스택 7개). Grafana sidecar가 label `grafana_alert: "1"`인 ConfigMap을 재시작 없이 다시 읽는다 | |
 
 ### 6.5 로그 스택 규칙 (Grafana, Stack Monitoring)
 
-ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인 Metricbeat sidecar가 10초마다 쓰는 `.monitoring-*`를 Grafana가 읽는다. 공통
-설정은 [6.4](#64-로그-규칙-grafana-es-쿼리)의 표와 같다. 기준값은 켜기 전에 dev 실측(부하 테스트가 끝난 평소 값)으로 확정하고
-근거 열에 적는다.
+ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인 Metricbeat sidecar가 10초마다 쓰는 `.monitoring-*`를 Grafana가 읽는다(데이터
+소스 `es-monitoring`). 구성요소와 지표는 `event.dataset`(`elasticsearch.node.stats`·`elasticsearch.cluster.stats`·
+`logstash.node.stats`·`beat.stats`)으로 고른다. 공통 설정은 [6.4](#64-로그-규칙-grafana-es-쿼리)의 표와 같다.
+
+누적 카운터(thread pool 거부 수, Filebeat 실패·버림 수)는 창 안의 최댓값 − 최솟값으로 늘어난 양을 본다. 파드가 재시작해
+카운터가 0부터 다시 세도 이 값은 음수가 되지 않는다. 그래서 창 안에 재시작이 끼면 늘어난 양이 실제보다 크게 잡힐 수 있다.
 
 | 규칙 | 조건 | 창 | severity | 근거 |
 | --- | --- | --- | --- | --- |
-| EsClusterNotGreen | ES 클러스터 상태 yellow / red | 5m | warning / critical | dev는 1노드·레플리카 0이라 평소 green이다. red는 색인·검색이 안 되는 shard가 있다는 뜻 |
-| EsJvmHeapHigh | ES 노드 heap 사용률 85% 초과 | 10m | warning | 오래 높으면 GC가 길어지고 색인·검색이 느려진다 |
-| EsThreadPoolRejections | write·search thread pool 거부 수가 늘어남 | 10m | warning | ES가 감당하지 못해 요청을 버리고 있다. Logstash는 다시 보내므로 큐가 쌓인다 |
-| EsDiskHigh | ES 노드 디스크 사용률 80% 초과 / 90% 초과 | 10m | warning / critical | ES 기본 watermark는 85%(새 shard 배치 중단)·90%·95%(index 읽기 전용)다. PVC 경보보다 ES 기준에 맞춘다 |
-| LogstashQueueBacklog | pipeline별 persistent queue에 쌓인 이벤트가 계속 늘어남 | 15m | warning | 출력(ES·S3)이 막힌 신호. `to-s3`(2GB)·`to-es`(1GB) 큐가 차면 Logstash가 입력을 늦춘다 |
-| FilebeatOutputFailures | Filebeat 전송 실패·버린 이벤트 수가 늘어남(파드별) | 10m | warning | Logstash 연결 문제나 거부. 로그가 늦거나 빠진다 |
-| StackMonitoringDataMissing | 구성요소별 `.monitoring-*` 문서 0건 | 5m | warning | sidecar나 모니터링 수집이 멈췄다. 이 데이터가 없으면 위 규칙이 모두 눈을 감는다 |
+| EsClusterNotGreen | 창 안에 green이 아닌 클러스터 상태 측정이 있음. 상태가 red면 critical. pending 5분 | 5m | warning / critical | dev는 1노드·사본 0이라 평소 green이다. yellow는 배정되지 않은 사본 shard가 있다는 뜻이고(사본 1인 index가 생기면 그렇다), red는 색인·검색이 안 되는 shard가 있다는 뜻 |
+| EsJvmHeapHigh | ES 노드 heap 사용률의 창 평균 85% 초과 | 10m | warning | 오래 높으면 GC가 길어지고 색인·검색이 느려진다. 평소에는 GC 때문에 20~80% 사이를 오르내린다(2026-11-05) |
+| EsThreadPoolRejections | write·search thread pool 거부 누적값이 늘어남 | 10m | warning | ES가 감당하지 못해 요청을 버리고 있다. Logstash는 다시 보내므로 큐가 쌓인다 |
+| EsDiskHigh | 마지막 측정의 디스크 사용률 80% 초과 / 90% 이상 | 10m | warning / critical | ES 기본 watermark는 85%(새 shard 배치 중단)·90%·95%(index 읽기 전용)다. PVC 경보보다 ES 기준에 맞춘다. 평소 2%(128Gi, 2026-11-05) |
+| LogstashQueueBacklog | 디스크 큐 이벤트 수(`queue.events_count`, pipeline 합)가 창 내내 1만 초과(창 안 1분 구간 최댓값들의 최솟값) | 15m | warning | 출력(ES·S3)이 막힌 신호. 잠깐 쌓였다 빠지는 것은 거르고 계속 쌓여 있는 것만 본다. `to-s3`(2GB)·`to-es`(1GB) 큐가 차면 Logstash가 입력을 늦춘다. 평소 0 |
+| FilebeatOutputFailures | Filebeat 전송 실패(`failed`)·버림(`dropped`) 누적값이 늘어남(Filebeat 파드별) | 10m | warning | Logstash 연결 문제나 거부. 로그가 늦거나 빠진다. 평소 0 |
+| StackMonitoringDataMissing | `event.module`(`elasticsearch`·`kibana`·`logstash`·`beat`)별 문서 0건 | 5m | warning | sidecar나 모니터링 수집이 멈췄다. 이 데이터가 없으면 위 규칙이 모두 눈을 감는다. 0건인 구성요소도 결과에 남도록 terms에 `min_doc_count 0`을 쓴다 |
 
 결과가 없을 때(NoData)는 위 규칙 모두 OK, StackMonitoringDataMissing만 Alerting이다.
 
 ### 6.6 앱 지표 규칙 (`loresentry-app`)
+
+> **아직 없다.** 앱이 [7절](#7-앱-지표-규약)의 지표를 내보낸 뒤(APM 세팅이 끝난 다음) 이 표대로 붙인다.
 
 [7절](#7-앱-지표-규약)의 지표로 계산한다. 대상은 HTTP API 5개(gateway·content·authentication·ai-chat·graph-rag)다.
 ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailable이 덮는다.
@@ -270,6 +289,8 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 생성(`/projects/sample`, p99 2.0초). 정확한 목록은 규칙 파일에 둔다.
 
 ## 7. 앱 지표 규약
+
+> **아직 구현 전이다.** 서비스 5개가 이 규약대로 `/metrics`를 열 때 따른다.
 
 | 항목 | 규약 |
 | --- | --- |
@@ -297,7 +318,24 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 | sidecar 이름 | podTemplate에서 자원값을 줄 컨테이너 이름이 구성요소마다 다르다. ES·Kibana·Logstash는 `metricbeat`, Beat(Filebeat)는 `metrics-monitoring-sidecar`다. 이름이 다르면 ECK가 sidecar와 합치지 못해 이미지 없는 컨테이너가 생기고 파드가 거부된다 |
 | `metricbeat-*` | ES sidecar는 Stack Monitoring 형식이 없는 `ingest_pipeline` 지표를 `metricbeat-<버전>` data stream에 쓴다. sidecar가 넣는 template은 사본 1·삭제 없는 ILM이라 1노드 ES가 yellow가 되므로, template Job이 우선순위가 더 높은 `metricbeat-sidecar` template(사본 0, 보존 3일)을 넣는다. 경보에는 쓰지 않는다 |
 | Grafana 읽기 | 데이터 소스 `es-monitoring`(index `.monitoring-*`). ES 역할 `grafana_reader`가 `.monitoring-*`도 읽는다 |
-| 화면 | Kibana → Stack Monitoring. 클러스터·노드 상태, 색인 속도, Logstash pipeline 흐름도, Beats 전송량 |
+| 화면 | Kibana → Stack Monitoring(클러스터·노드 상태, 색인 속도, Logstash pipeline 흐름도, Beats 전송량)과 아래 [8.1](#81-kibana-화면-모니터링-dev)의 대시보드·Discover 세션. Stack Monitoring 화면에서 Filebeat와, ES로 보내지 않는 Logstash pipeline은 클러스터 `logs`가 아니라 "Standalone cluster" 아래에 따로 보인다. Filebeat는 Logstash로 보내 자기 ES cluster uuid를 모르기 때문이다 |
+
+### 8.1 Kibana 화면 "모니터링 (dev)"
+
+로그 스택 지표와 monitoring 쪽 파드 로그를 한곳에서 보는 화면이다. Kibana API로 만든 저장 객체라 Git에 없다(2026-11-05).
+
+| 객체 | id | 내용 |
+| --- | --- | --- |
+| data view "Stack Monitoring (dev)" | `stack-monitoring-dev` | `.monitoring-*`. 숨김 data stream이라 숨김 index를 허용한다. 바이트 필드는 단위로 보인다 |
+| 대시보드 "모니터링 (dev)" | `loresentry-dash-monitoring` | 기본 24시간, 패널은 ES\|QL. 지금 상태 타일(제목에 경보 기준), ES heap·CPU·색인·검색·거부, Logstash 입출력·큐, Filebeat별 전송·실패, Kibana 응답 시간·메모리, monitoring·elastic-system 파드의 warn·error 추이와 상위 표 |
+| Discover 세션 "모니터링 (dev)" | `stack-monitoring-dev` | 탭: ES 노드 지표, ES 클러스터 지표, Logstash 지표, Filebeat 지표, Kibana 지표(data view `stack-monitoring-dev`), 로그 · ELK, 로그 · 경보, 로그 경고·오류(data view `cluster-pods-dev`) |
+
+- **로그 · ELK**는 `monitoring`·`elastic-system`의 파드 중 경보 스택이 아닌 것(ES·Kibana·Logstash·Filebeat·sidecar·EDOT collector·
+  ECK operator·template Job)이다. **로그 · 경보**는 파드 이름이 `grafana-`·`kps-`·`prometheus-kps-`·`alertmanager-kps-`·
+  `kube-prometheus-stack-`로 시작하는 것(Grafana·Prometheus·Alertmanager·Prometheus Operator·node-exporter)이다.
+- Grafana·Prometheus·Alertmanager의 **지표**는 ES에 없다(Prometheus가 스스로 수집한다). Kibana에서는 그 로그만 보이고, 지표는 Grafana의 kps 기본 대시보드에서 본다.
+- 지표는 3일만 남으므로 그보다 넓은 시간 범위에서는 지표 패널이 비고 로그 패널만 보인다.
+- 다른 대시보드 9개와 위쪽 Links 패널로 오간다("APM (dev)" 다음).
 
 ## 9. 운영
 
@@ -308,22 +346,43 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 - **Grafana 화면에서 규칙을 고치지 않는다.** 규칙은 provisioning으로만 넣으므로 화면에서는 읽기 전용이고, Grafana DB가
   emptyDir이라 화면에서 바꾼 것은 재시작하면 사라진다.
 - **Kibana Stack Monitoring의 기본 규칙을 만들지 않는다.** Slack으로 못 보내는 데다 Grafana 규칙과 겹친다.
+- **Grafana 로그가 많다.** 경보 규칙이 ES를 조회할 때마다 Grafana가 `logger=plugin.elasticsearch` info 줄을 남겨, 15분에 약
+  1,500줄이 쌓인다(2026-11-05). 같은 로거의 error `Partial data response error`(데이터 소스 `es-logs`)도 하루 수백 건 있는데 원인은
+  아직 보지 않았다. 규칙 평가 결과에는 영향이 보이지 않는다(규칙 상태 오류 0).
 
 ## 10. 아직 없는 것
 
 | 항목 | 상태 |
 | --- | --- |
-| APM 경보 | APM(EDOT Collector → ES `traces-apm*`)을 세팅한 뒤, 같은 방식으로 Grafana 규칙을 붙인다 |
+| 앱 지표 | APM 세팅이 끝난 뒤 붙인다. 서비스 5개의 `:9464/metrics`([7절](#7-앱-지표-규약)), workload의 `metrics` 포트, ServiceMonitor, 규칙 `loresentry-app`([6.6](#66-앱-지표-규칙-loresentry-app)) 순서다. 붙이기 전까지 앱 장애는 AppDeploymentUnavailable과 로그 규칙(AppErrorLogs·DependencyUnavailable·AlbServerErrors)이 덮는다 |
+| APM 경보 | APM(EDOT Collector → ES traces)을 세팅한 뒤, 같은 방식으로 Grafana 규칙을 붙인다 |
 | AI 진단 | Alertmanager webhook으로 진단 서비스를 부르고, 결과를 경보 메시지의 스레드 답글로 단다. 알림 경로와 별도로 붙인다 |
 | `Watchdog` 외부 감시 | Alertmanager나 Prometheus 자체가 죽으면 알릴 곳이 없다. 외부 dead man's switch를 붙이기 전까지는 빈 곳이다 |
-| prod | prod 환경을 세팅할 때 `#alerts-prod`, prod kps values, prod ELK 이후의 로그 규칙, 앱 지표 prod overlay를 붙인다 |
+| prod | prod 환경을 세팅할 때 아래를 붙인다. 지금 prod Alertmanager는 받는 곳이 `null` 하나뿐이다 |
+
+prod에서 할 일:
+
+1. Slack 채널 `#alerts-prod`를 만들고 bot을 초대한다. critical 멘션을 정한다(dev는 `@channel`).
+2. prod Secret `monitoring/alertmanager-slack`을 넣고, `argocd-apps/kube-prometheus-stack.yaml`에 dev와 같은 Alertmanager 설정을
+   넣는다(채널·Grafana 주소만 prod 값).
+3. `alerting/overlays/prod`와 `argocd-apps/alerting.yaml`을 만든다. 처음에는 Prometheus 인프라 규칙만 넣는다.
+4. prod ELK가 생긴 뒤:
+   - `logs-es-grafana-user` Secret과 ES 역할 `grafana_reader`
+   - Grafana ES 데이터 소스 3개
+   - ECK CR의 `spec.monitoring`(sidecar)
+   - Grafana 로그·로그 스택 규칙
+   - Kibana 화면 prod판
+5. 앱 지표를 붙인 뒤 prod overlay에 ServiceMonitor와 `loresentry-app`을 넣는다. 5xx 최소 건수 같은 기준값은 prod 트래픽을 보고 정한다.
 
 ## 바꾸는 절차
 
 1. 이 문서의 표(규칙·조건·severity·근거)를 먼저 고친다.
-2. gitops의 규칙 파일을 같은 내용으로 고친다. Prometheus 규칙은 `alerting/base/prometheus/`, Grafana 규칙은
-   `alerting/base/grafana/`, Slack·묶기·억제는 `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`, 로그 스택
-   모니터링 sidecar는 `logging/base/`의 각 CR이다.
+2. gitops의 규칙 파일을 같은 내용으로 고친다.
+   - Prometheus 규칙: `alerting/base/prometheus/`
+   - Grafana 규칙과 Grafana가 Alertmanager로 넘기는 설정: `alerting/base/grafana/`
+   - Slack·묶기·억제·메시지 형식: `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles`
+   - Grafana 데이터 소스: 같은 파일의 `grafana`
+   - 로그 스택 모니터링 sidecar: `logging/base/`의 각 CR
 3. 확인한다. Prometheus 규칙은 `promtool test rules`, Alertmanager 설정은 `amtool check-config`·`amtool config routes test`,
    Grafana 규칙은 규칙 미리보기로 쿼리 결과를 본다.
 4. docs PR과 gitops PR을 함께 올린다.

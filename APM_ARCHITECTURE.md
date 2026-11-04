@@ -233,11 +233,16 @@ flowchart LR
 |---|---|
 | collector | 1대, 요청 100m·256Mi, 한도 500m·512Mi, `GOMEMLIMIT` 400MiB |
 | 로깅 노드 | `r7i.xlarge`(4 vCPU·32GiB) 1대에 ES·Logstash·Kibana·Filebeat·collector가 함께 뜬다(2026-11-05 확인) |
+| CPU·메모리 예약 | CPU 2,210m/3,920m(56%), 메모리 8,952Mi/29.8GiB(29%)(2026-11-05, Stack Monitoring sidecar 포함). `r7i.large` 때는 collector 전에 이미 CPU 1,610m/1,930m(83%)였고, collector 요청을 작게 둔 이유다 |
 | 부하 테스트 때 최고치(2026-11-04, 당시 `r7i.large` 2 vCPU·16GiB) | 노드 CPU 1,950m(100%, Logstash 1,546m·ES 950m), ES 메모리 2,894Mi/3Gi, Kibana 1,506Mi/1,536Mi |
 | span 전송 뒤 실측(2026-11-04 부하 테스트 중, 당시 `r7i.large`) | span 초당 약 155개. traces 저장량 시간당 약 165MB(병합 전 크기). collector CPU 38m·메모리 217Mi. 노드 CPU 2,000m(103%) |
 
 EDOT로 옮기면 쿼리·Redis·AWS·OpenAI span이 늘고 성공한 헬스체크 trace는 줄어든다. 옮긴 뒤 부하 테스트로 span 수, 저장량,
 collector·노드 자원을 다시 잰다.
+
+로깅 노드는 부하 테스트 때 노드 CPU가 100%를 넘은 것과 Stack Monitoring sidecar 예약을 보고 2026-11-04 `r7i.xlarge`로 올렸다.
+관리형 노드 그룹은 인스턴스 타입을 그 자리에서 바꿀 수 없어, 새 노드 그룹 `lore-sentry-dev-logging-pool-v2`(같은 2b·label·taint)를
+만들고 이전 노드를 drain한 뒤 이전 그룹을 지웠다.
 
 ## 9. 배포
 
