@@ -10,6 +10,8 @@
 | [LOAD_TEST.md](LOAD_TEST.md) | **부하 테스트 — 동시 사용자 수.** dev 대상, 같은 리전 EC2에서 k6로 가상 작가를 단계별로 늘려 기준을 지키는 최대 동시 사용자 수와 첫 병목을 찾는 방법. 행동 모델·합격 기준·EC2 준비·스크립트·볼 곳·결과 기록 |
 | [LOG_SCHEMA.md](LOG_SCHEMA.md) | **로그 스키마.** 앱·Kafka·Valkey·AWS(ALB·CloudFront·RDS·Neptune·EKS authenticator) 로그의 ECS 필드 규약, `log.level` 7개 값과 출처별 매핑, 금지 항목·마스킹·길이 상한, data stream 15개, trace(`traceparent`) 규약, DB 에러 분류, index template |
 | [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md) | **로깅 아키텍처.** ELK(ECK) 구성요소와 배치, 파드 로그·AWS 관리형 로그가 Filebeat → Logstash → Elasticsearch·S3 → Kibana로 가는 흐름(Mermaid), 출처별 지연, 저장·보존, Kibana 검색 예시, 배포 순서, 장애 시 동작 |
+| [ALERTING.md](ALERTING.md) | **경보 규약.** severity 4단계와 Slack 전달(채널·멘션·묶기·반복·메시지 수정·형식), 라벨, 억제, 규칙 목록(kps 기본·인프라·Kafka·로그·앱 지표)과 근거, 앱 지표 규약(`:9464/metrics`), 운영, 바꾸는 절차 |
+| [ALERTING_ARCHITECTURE.md](ALERTING_ARCHITECTURE.md) | **경보 아키텍처.** Prometheus·Grafana가 평가한 경보가 kps Alertmanager를 거쳐 Slack까지 가는 구조와 흐름(Mermaid), Alertmanager 안의 경로·억제, Slack 메시지의 생애, AI 진단이 붙는 자리, 배포, 장애 시 동작 |
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |
 | [AI_CHAT_REQUIREMENTS.md](AI_CHAT_REQUIREMENTS.md) | **AI 챗 백엔드 요구사항.** 세션·질문과 답·컨텍스트 스냅샷·분량 판정·근거 형식·SSE·검색·드래그 질의·API 계약·데이터 모델 |
