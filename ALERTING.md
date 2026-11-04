@@ -346,6 +346,16 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 - **Grafana 화면에서 규칙을 고치지 않는다.** 규칙은 provisioning으로만 넣으므로 화면에서는 읽기 전용이고, Grafana DB가
   emptyDir이라 화면에서 바꾼 것은 재시작하면 사라진다.
 - **Kibana Stack Monitoring의 기본 규칙을 만들지 않는다.** Slack으로 못 보내는 데다 Grafana 규칙과 겹친다.
+- **Grafana 대시보드도 Git으로만 넣는다.** 화면에서 저장한 대시보드는 Grafana가 재시작하면 사라진다(emptyDir). 우리 대시보드는
+  `alerting/base/grafana/dashboards/`의 JSON을 ConfigMap(label `grafana_dashboard`, annotation `grafana_folder: LoreSentry`)으로
+  provisioning한다. 화면에서 고친 뒤에는 JSON을 내보내 그 파일을 바꾼다.
+
+  | 대시보드 | uid | 내용 |
+  | --- | --- | --- |
+  | 경보 현황 | `loresentry-alerting` | 지금 울리는 critical·warning(Prometheus 규칙)과 Grafana 규칙 경보 수, 경보 경로(Watchdog), 가린 경보·silence, Slack 전송 실패, 규칙 평가 실패. 울리는 경보 목록과 라벨, 경보별·상태별 추이, Slack 전송 수·지연, Alertmanager로 보내기 오류 |
+  | ArgoCD | `LCAgc9rWz` | Argo CD 공식 예제 대시보드(v3.5.2 `examples/dashboard.json`) 그대로. Application 상태·sync·controller·repo server·API server |
+
+  kps 기본 대시보드 25개는 General, Strimzi 4개는 Kafka 폴더에 있다. Grafana·Prometheus 지표는 ES에 없으므로 Kibana가 아니라 여기서 본다.
 - **Grafana 로그가 많다.** 경보 규칙이 ES를 조회할 때마다 Grafana가 `logger=plugin.elasticsearch` info 줄을 남겨, 15분에 약
   1,500줄이 쌓인다(2026-11-05). 같은 로거의 error `Partial data response error`(데이터 소스 `es-logs`)도 하루 수백 건 있는데 원인은
   아직 보지 않았다. 규칙 평가 결과에는 영향이 보이지 않는다(규칙 상태 오류 0).
