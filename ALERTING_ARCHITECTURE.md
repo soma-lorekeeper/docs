@@ -176,7 +176,7 @@ flowchart LR
   KBM -->|"api/stats"| KBC
   FBAM -->|"stats"| FBAC
   FBM -->|"stats"| FBC
-  ESM & LSM & KBM & FBAM & FBM -->|"10초마다"| MON[("같은 ES의 .monitoring-*<br/>보존 7일")]
+  ESM & LSM & KBM & FBAM & FBM -->|"10초마다"| MON[("같은 ES의 .monitoring-*<br/>보존 3일")]
   MON --> GR["Grafana 로그 스택 규칙<br/>데이터 소스 es-monitoring"]
   MON --> KUI["Kibana Stack Monitoring 화면"]
   GR --> AM["Alertmanager"]

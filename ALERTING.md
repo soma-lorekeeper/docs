@@ -292,8 +292,10 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 | 켜는 곳 | ECK CR 5개(Elasticsearch `logs`, Kibana, Logstash, Beat `filebeat`, Beat `filebeat-aws`)의 `spec.monitoring.metrics.elasticsearchRefs: [{name: logs}]`. ECK가 파드마다 Metricbeat sidecar를 붙이고 설정한다 |
 | 켜지 않는 것 | `spec.monitoring.logs`. 구성요소 로그는 이미 Filebeat가 모아 `logs-*`에 넣는다 |
 | 저장 | 같은 ES의 `.monitoring-*`. dev는 감시 대상과 같은 ES를 쓴다. ES 자신이 죽은 경우는 Prometheus 파드 규칙과 LogIngestionStopped가 맡는다. prod는 prod 세팅 때 별도 모니터링 ES를 검토한다 |
-| 보존 | 7일. 기본 보존 기간은 구현 때 확인해 맞춘다 |
-| sidecar 자원 | ECK 기본값을 그대로 쓴다(Beat 컨테이너 기본은 메모리 요청·limit 300Mi). 줄이지 않는다. 켠 뒤 파드 spec에 실제로 들어간 값을 이 표에 적는다. 노드 CPU 요청이 이미 65~83%(로깅 노드 83%)라 자리가 모자라면 sidecar를 줄이지 않고 노드를 늘린다 |
+| 보존 | 3일. `.monitoring-*`는 Elastic 기본 ILM `.monitoring-8-ilm-policy`(3일 뒤 삭제)를 그대로 쓴다. 경보는 최근 5~15분만 보므로 충분하다 |
+| sidecar 자원 | ECK는 sidecar에 자원값을 넣지 않으므로 Elastic의 Metricbeat 참고 매니페스트 값을 쓴다: 요청 CPU 100m·메모리 100Mi, limit 메모리 200Mi. 실제 사용은 sidecar당 CPU 1~5m, 메모리 50~65Mi다(2026-11-04). 자리가 모자라면 sidecar를 줄이지 않고 노드를 늘린다(로깅 노드는 이때 r7i.large에서 r7i.xlarge로 교체) |
+| sidecar 이름 | podTemplate에서 자원값을 줄 컨테이너 이름이 구성요소마다 다르다. ES·Kibana·Logstash는 `metricbeat`, Beat(Filebeat)는 `metrics-monitoring-sidecar`다. 이름이 다르면 ECK가 sidecar와 합치지 못해 이미지 없는 컨테이너가 생기고 파드가 거부된다 |
+| `metricbeat-*` | ES sidecar는 Stack Monitoring 형식이 없는 `ingest_pipeline` 지표를 `metricbeat-<버전>` data stream에 쓴다. sidecar가 넣는 template은 사본 1·삭제 없는 ILM이라 1노드 ES가 yellow가 되므로, template Job이 우선순위가 더 높은 `metricbeat-sidecar` template(사본 0, 보존 3일)을 넣는다. 경보에는 쓰지 않는다 |
 | Grafana 읽기 | 데이터 소스 `es-monitoring`(index `.monitoring-*`). ES 역할 `grafana_reader`가 `.monitoring-*`도 읽는다 |
 | 화면 | Kibana → Stack Monitoring. 클러스터·노드 상태, 색인 속도, Logstash pipeline 흐름도, Beats 전송량 |
 
