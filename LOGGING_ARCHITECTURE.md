@@ -45,7 +45,7 @@ flowchart LR
     subgraph LOGNODE["로깅 노드 (taint dedicated=logging)"]
       FBA["aws-logs Filebeat<br/>Deployment 1대"]
       LS["Logstash<br/>pipeline app · aws · to-es · to-s3"]
-      ES[("Elasticsearch<br/>1노드 · 20Gi")]
+      ES[("Elasticsearch<br/>1노드 · 128Gi")]
       KB["Kibana"]
     end
   end
@@ -72,7 +72,7 @@ flowchart LR
 | Filebeat | Beat CR, DaemonSet | 모든 노드(로깅 노드 포함) | 컨테이너 로그 줄 읽기, CRI 형식 풀기, Kafka·Strimzi 여러 줄 묶기, `kubernetes.*` 붙이기 | 노드 hostPath registry |
 | aws-logs Filebeat | Beat CR, Deployment 1대 | 로깅 노드 | S3 원천 버킷(`alb/`, `cloudfront/`)과 CloudWatch 로그 그룹 3개 읽기. 같은 원천을 두 번 읽지 않게 1대만 둔다 | PVC 1Gi(registry) |
 | Logstash | Logstash CR, 1대 | 로깅 노드 | 파싱·정규화·마스킹·data stream 결정, ES·S3 출력 | PVC 5Gi(persistent queue, S3 임시 파일) |
-| Elasticsearch | Elasticsearch CR, 1노드 | 로깅 노드 | 색인과 검색. 레플리카 0 | PVC 20Gi |
+| Elasticsearch | Elasticsearch CR, 1노드 | 로깅 노드 | 색인과 검색. 레플리카 0 | PVC 128Gi(로그와 APM traces, 2026-11-04에 20Gi에서 늘림) |
 | Kibana | Kibana CR, 1대 | 로깅 노드 | 검색 화면 | — |
 | template Job | Job | 로깅 노드 | 첫 data stream이 생기기 전에 `logs@custom` component template을 넣는다 | — |
 

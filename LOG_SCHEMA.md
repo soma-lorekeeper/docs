@@ -578,7 +578,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | 형식 | W3C Trace Context `traceparent: 00-<trace-id 32 hex>-<span-id 16 hex>-<flags>` |
 | 헤더 이름 | HTTP와 Kafka 모두 `traceparent` (소문자 정확히. Kafka 헤더는 대소문자를 구분한다). [KAFKA_DESIGN.md](KAFKA_DESIGN.md)의 필수 헤더다. 자체 `traceId` 헤더는 쓰지 않는다. `tracestate`·`baggage`는 쓰지 않는다 |
 | ID 생성 | 추적 라이브러리가 만든다. 128비트 무작위라 번호 관리가 필요 없다. Spring은 `spring-boot-starter-opentelemetry`(Micrometer Tracing의 OpenTelemetry bridge), Python은 OpenTelemetry SDK다. W3C 형식만 읽고 쓴다 |
-| 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 추적 라이브러리가 읽기 전에 숨긴다. 스케줄·폴링 작업은 1회마다 새로 시작한다. 1초 relay처럼 자주 도는 폴링은 처리할 일이 있을 때만 시작해, 빈 순회는 span도 로그도 남기지 않는다 |
+| 시작점 | gateway가 외부 요청마다 새로 시작한다. 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 추적 라이브러리가 읽기 전에 숨긴다. 스케줄·폴링 작업은 1회마다 새로 시작한다. 1초 relay처럼 자주 도는 폴링은 빈 순회에 span도 로그도 남기지 않는다. 로그는 첫 줄 직전에 시작 줄을 남긴다. span은 graph-rag처럼 첫 줄 직전에 열거나, 프레임워크가 회차마다 여는 곳(Spring `@Scheduled`, ai-chat summarizer tick)은 빈 회차 span에 `loresentry.polling.idle=true`를 달고 EDOT Collector가 그 trace를 자식 span까지 통째로 버린다(`tail_sampling`) |
 | 서비스 간 HTTP | 계측 라이브러리(Spring RestClient observation, Python httpx 계측)가 `traceparent`를 붙인다. 라이브러리를 거치지 않는 호출(gateway의 채팅 SSE)은 코드가 직접 넣는다 |
 | outbox | 요청 트랜잭션에서 그때의 `traceparent`를 행(`outbox_events.traceparent`, content·authentication)에 저장하고, relay가 그 값으로 헤더를 붙여 발행한다. relay 시점의 값을 쓰면 흐름이 끊긴다. 그래서 KafkaTemplate observation은 켜지 않는다(헤더가 두 번 붙는다). relay가 행마다 남기는 발행 줄도 그 행에 저장된 trace로 남겨, 요청의 흐름 끝에 발행이 보인다 |
 | 저장했다 나중에 처리 | 저장한 시점의 trace를 잇는다. ai-chat `summary_queue.traceparent`, graph-rag Neptune `InboxEvent`의 `traceparent`가 해당한다. 행 단위 로그는 행에 저장된 trace로 남긴다 |
@@ -587,7 +587,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | 로그 필드 | `trace.id`, `span.id`. 로그 클래스로 찍은 줄은 시작점에서 받은 값이다. 프레임워크 로그는 바인딩 안이면 그 값(MDC), 밖이면 그때 열려 있는 span의 값이다 |
 | 응답 | 모든 서비스의 에러 응답 본문에 `trace_id`를 넣는다. gateway는 모든 응답에 헤더 `X-Trace-Id`를 붙이고 CORS로 브라우저에 노출한다. 문의 받은 값을 Kibana에서 바로 찾는다 |
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
-| span 저장 | 앱이 OTLP로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 전송은 collector를 세운 뒤 환경 변수로 켜고, 그 전에도 trace ID는 만들어지고 전파된다. sampling은 dev 100%, prod는 실측 후 정한다. span의 OTLP 지표·로그 전송은 끈다(Prometheus·Filebeat가 수집) |
+| span 저장 | 앱이 OTLP로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 전송은 overlay 환경 변수로 켠다(dev 켬: Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`, 공통 `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev`). 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%, prod는 실측 후 정한다. span의 OTLP 지표·로그 전송은 끈다(Prometheus·Filebeat가 수집) |
 
 ## 8. DB 로그
 
@@ -655,7 +655,8 @@ ES 내장 `logs` index template(`logs-*-*`)에 ES가 열어 둔 확장 지점 `l
 | 보존 | 30일 (data stream lifecycle), `prefer_ilm: false` | 내장 template의 ILM 정책 `logs`는 삭제 단계가 없다 |
 | 시각 | `@timestamp`는 date_nanos | 앱 줄과 CRI 시각은 나노초까지 있다. date(밀리초)로 색인하면 같은 밀리초에 찍힌 한 요청의 줄(service → client)이 정렬에서 섞인다 |
 | 필드 수 | 2000개, 넘는 새 필드는 저장만 하고 색인하지 않음 | 예상하지 못한 필드가 쏟아져 매핑이 끝없이 커지는 것을 막는다 |
-| keyword 명시 | `log.logger`, `log.layer`, `log.package`, `service.name`, `service.version`, `http.request.id`, `http.request.method`, `http.route`, `url.full`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
+| keyword 명시 | `log.logger`, `log.layer`, `log.package`, `http.request.id`, `http.request.method`, `http.route`, `url.full`, `error.code`, `error.type`, `user.id`, `orchestrator.type`, `postgresql.log.*`, `loresentry.*` | 동적 매핑은 처음 들어온 문서가 타입을 정한다. 걸러 보고 집계할 필드의 타입을 ES 내부 규칙이 아니라 이 파일로 보장한다 |
+| keyword(dynamic template) | `service.name`, `service.version`(`service_identity_as_keyword`) | 문자열이면 keyword다. property로 두면 OTel 문서(`logs-*.otel-*`, APM 오류)에서 `resource.attributes.*` 값이 보여야 할 이름을 빈 필드가 차지해 Kibana APM이 오류를 서비스에 붙이지 못한다 |
 | long 명시 | `http.response.status_code`, `event.duration`, `loresentry.kafka.partition`, `loresentry.kafka.offset` | 범위 검색과 정렬 |
 
 - `logs@custom`은 ES 내장 OTel template(`logs-otel@template`)에도 합쳐진다. 그쪽에서 field alias인 필드는 여기에 지정할 수
