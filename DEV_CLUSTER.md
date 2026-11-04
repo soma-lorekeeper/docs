@@ -61,7 +61,7 @@ dev:   dev.loresentry.com  → api-dev.loresentry.com  → EKS lore-sentry-dev-k
 | 관계형 DB | RDS `lore-sentry-dev-postgres` — 논리 DB 3개, 서비스 역할 3개, 마스터 비밀번호(Secrets Manager) 모두 별도. 로그용 파라미터 그룹 `lore-sentry-dev-postgres18` |
 | 그래프 DB | Neptune `lore-sentry-dev-neptune`. 로그용 파라미터 그룹 `lore-sentry-dev-neptune14`(slowquery 1초) |
 | 메시징 | Strimzi Kafka 브로커 3대와 토픽 10개 (클러스터 안) |
-| 디스크 | EBS 볼륨: Kafka 10Gi ×3, valkey 4Gi, Prometheus 20Gi, Elasticsearch 20Gi, Logstash 5Gi, aws-logs Filebeat 1Gi |
+| 디스크 | EBS 볼륨: Kafka 10Gi ×3, valkey 4Gi, Prometheus 20Gi, Elasticsearch 128Gi, Logstash 5Gi, aws-logs Filebeat 1Gi |
 | 파일 | S3 `loresentry-{media,refresh}-dev-<AWS_ACCOUNT_ID>`, 이미지 CloudFront(`media-dev.loresentry.com`). 로그 버킷 `loresentry-log-archive-dev-<AWS_ACCOUNT_ID>`(가공본 1년)·`loresentry-aws-logs-dev-<AWS_ACCOUNT_ID>`(ALB·CloudFront 원천 30일) |
 | 네트워크 | private 서브넷 `10.20.13.0/24`(2a)·`10.20.14.0/24`(2b), 라우팅 테이블 `lore-sentry-dev-private` |
 | 보안 그룹 | 클러스터 SG, DB SG 2개(`lore-sentry-dev-postgres-sg`, `lore-sentry-dev-neptune-sg`), ALB SG |

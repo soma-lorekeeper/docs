@@ -2,7 +2,7 @@
 
 > 최신화: 2026-11-04
 > 대상: gateway, authentication, content, ai-chat(API·summarizer), graph-rag가 만드는 trace(span)
-> 상태: **dev 인프라 세팅 단계.** EDOT Collector·template·쓰기 계정을 세우고, 앱의 span 전송은 아직 꺼져 있다([11절](#11-남은-일)).
+> 상태: **dev 운영 중(2026-11-04).** 서비스 6개가 span을 보내고 Kibana APM에서 본다. 남은 결정은 [11절](#11-남은-일).
 > prod는 prod 환경을 세팅할 때 같은 구성으로 옮긴다.
 > 관련: trace 규약은 [LOG_SCHEMA.md 7절](LOG_SCHEMA.md#7-trace), span 마스킹은 [4절](LOG_SCHEMA.md#4-금지-항목과-마스킹),
 > template은 [9절](LOG_SCHEMA.md#9-index-template-logscustom), 로그 흐름은 [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md),
@@ -97,7 +97,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
+  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"] --> TS["tail_sampling<br/>빈 폴링 trace 버리기"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
   P --> E[("elasticsearch exporter<br/>mapping otel")]
   P --> C["elasticapm connector<br/>집계 지표"] --> E
 ```
@@ -105,6 +105,7 @@ flowchart LR
 | 단계 | 하는 일 |
 |---|---|
 | `memory_limiter` | 컨테이너 메모리 한도의 80%에 가까워지면 받기를 잠시 거절한다. 앱 SDK가 다시 보낸다 |
+| `tail_sampling` | 빈 폴링 회차의 trace를 통째로 버리고 나머지는 모두 남긴다(아래 "빈 폴링 회차"). 판단하려고 trace를 5초 모았다가 내보낸다 |
 | `transform/privacy` | 로그에 남기지 않는 값을 지우고, 남은 값을 가린다(아래 표) |
 | `batch` | 묶어서 ES에 보낸다 |
 | `elasticapm` processor | span을 Kibana APM이 읽는 모양으로 보강한다(`transaction.*`·`span.*`, `processor.event`, 결과·성공 여부) |
@@ -121,6 +122,17 @@ flowchart LR
 - 예외는 `exception.type`만 남는다. 스택은 같은 `trace.id`의 앱 로그 `error.stack_trace`(메시지 없는 스택)로 본다.
 - HTTP 헤더와 요청·응답 본문은 계측 라이브러리가 기본으로 담지 않는다. 그 설정을 켜지 않는다.
 
+빈 폴링 회차([LOG_SCHEMA.md 7절](LOG_SCHEMA.md#7-trace) 시작점):
+
+| 서비스 | span을 여는 쪽 | 빈 회차 처리 |
+|---|---|---|
+| content(1초 relay, 1분 최신화 timeout), auth(1초 relay) | Spring이 `@Scheduled` 실행마다 연다. 회차 로그의 `trace.id`가 이 span이라 끌 수 없다 | `LogFlow.polling`이 줄 없는 회차의 span에 `loresentry.polling.idle=true`를 단다 |
+| ai-chat summarizer tick | `LogFlow.polling`이 회차마다 열고, 대기열 조회 DB span이 그 아래 생긴다 | 같은 표시를 단다 |
+| graph-rag relay | `LogFlow.polling`이 첫 줄 직전에만 연다 | span 자체가 없다 |
+
+- 표시가 붙은 trace는 `tail_sampling`의 `drop` 정책이 자식 span까지 버린다. span 하나만 거르면 자식 DB span이 부모 없이 남기 때문이다.
+- 확인(2026-11-04 부하 테스트 중 4분): content relay가 남긴 회차 span 29건, 같은 시간 relay 종료 로그 28건. 빈 회차 표시가 붙은 span은 ES에 0건이다.
+
 ## 5. 저장
 
 | data stream | 내용 | Kibana에서 |
@@ -133,7 +145,7 @@ flowchart LR
 |---|---|---|
 | 레플리카 | 0(1노드 ES) | `traces-otel@custom`, `metrics-otel@custom`, 예외 event는 `logs@custom` |
 | 보존 | 30일. 로그와 같다 | 같은 template. 내장 ILM 정책은 삭제 단계가 없어 `prefer_ilm: false`로 data stream lifecycle을 쓴다 |
-| 디스크 | 로그와 같은 ES 20Gi를 나눠 쓴다 | span 전송을 켠 뒤 하루 저장량을 재고, 모자라면 디스크를 늘린다(gp3는 그 자리에서 늘어난다) |
+| 디스크 | 로그와 같은 ES 128Gi를 나눠 쓴다(2026-11-04에 20Gi에서 늘림) | 부하 테스트 중 실측은 traces 하루 약 4GB, 로그 하루 약 1GB. 디스크가 95%를 넘으면 ES가 index를 읽기 전용으로 바꿔 로그 수집도 멈추므로 kps `KubePersistentVolumeFillingUp`이 마지막 경보다 |
 
 ## 6. 계정과 권한
 
@@ -156,8 +168,27 @@ flowchart LR
 | custom links | 안 된다(Gold) |
 
 - OTel 데이터의 제약: span의 스택 trace는 보이지 않는다(어차피 지운다). Kafka 소비 같은 messaging span은 transaction으로 보일 수 있다.
-- 자주 쓰는 길: 오류 줄의 `trace.id` → APM 검색창에 `trace.id : "<값>"` → 폭포 그림에서 느린 span 확인 → 그 span의 서비스 로그를
-  Discover에서 같은 `trace.id`로 본다.
+- 자주 쓰는 길: Discover의 앱 로그에서 `trace.id` 값을 누르면 그 trace의 폭포 그림이 새 탭으로 열린다(아래 링크 설정). 폭포 그림에서
+  느린 span을 찾고, 그 서비스 로그를 Discover에서 같은 `trace.id`로 본다.
+
+편의 설정(2026-11-04, Kibana API로 만듦. 매니페스트가 아니라 Kibana 저장 객체다):
+
+| 설정 | 내용 |
+|---|---|
+| `trace.id` 링크 | data view `loresentry-app-logs-dev`(앱 로그)·`dev-all-logs`(dev 전체)의 `trace.id`에 URL 형식 `/app/apm/link-to/trace/{{value}}` |
+| APM 기본 환경 | 고급 설정 `observability:apmDefaultServiceEnvironment` = `dev`(서비스가 `deployment.environment.name=dev`를 보낸다) |
+| data view | `loresentry-apm-traces` "APM trace (dev)"(`traces-*.otel-*`), `loresentry-apm-errors` "APM 오류 (dev)"(`logs-*.otel-*`) |
+
+대시보드(위쪽 Links 패널로 서로 오가고 APM 서비스 목록으로 간다. 기본 범위 24시간, 패널은 ES|QL):
+
+| 대시보드 | id | 패널 |
+|---|---|---|
+| LoreSentry 앱 (dev) | `loresentry-dash-app` | 서비스별 로그량, warn·error 추이, `request completed`의 p95(ms), 상태 클래스(2xx~5xx), 느린 `http.route`, 상위 `error.type`, `log.level: unknown` 수 |
+| Kafka (dev) | `loresentry-dash-kafka` | 토픽별 이벤트 처리 추이와 결과(`loresentry.result.outcome`), 처리 실패 `error.type`, outbox relay 발행·격리·실패 건수, 브로커·Strimzi warn·error |
+| DB (dev) | `loresentry-dash-db` | RDS 오류(SQLSTATE `error.code`), RDS·Neptune 느린 쿼리 수와 p95, 앱의 DB 관련 `error.type`(트랜잭션·JDBC·psycopg 등), Valkey warn·error |
+| APM (dev) | `loresentry-dash-apm` | 서비스별 처리량·p95 지연·실패율, span 유형 분포, 느린 트랜잭션, 예외 유형 |
+
+- 다시 만들 때 쓸 내보내기(NDJSON)와 생성 스크립트는 저장소에 두지 않았다. Kibana 저장 객체 내보내기(Stack Management → Saved objects)로 백업한다.
 
 ## 8. 자원과 배치
 
@@ -167,6 +198,7 @@ flowchart LR
 | 로깅 노드 | `r7i.large`(2 vCPU·16GiB) 1대에 ES·Logstash·Kibana·Filebeat·collector가 함께 뜬다 |
 | CPU 예약 | collector 전 1,610m/1,930m(83%). collector 요청을 작게 둔 이유다 |
 | 부하 테스트 때 최고치(2026-11-04) | 노드 CPU 1,950m(100%, Logstash 1,546m·ES 950m), ES 메모리 2,894Mi/3Gi, Kibana 1,506Mi/1,536Mi |
+| span 전송 뒤 실측(2026-11-04 부하 테스트 중) | span 초당 약 155개. traces 저장량 시간당 약 165MB(병합 전 크기). collector CPU 38m·메모리 217Mi. 노드 CPU 2,000m(103%) |
 
 노드는 그대로 두고 다음 부하 테스트 지표를 근거로 증설을 정한다. 관리형 노드 그룹은 인스턴스 타입을 그 자리에서 바꿀 수 없어,
 새 노드 그룹(같은 2b·label·taint)을 만들고 이전 노드를 drain한다.
@@ -189,7 +221,7 @@ flowchart LR
 | 지우기·가리기 규칙, 파이프라인 | `logging/base/otel-collector/otel.yml`(바꾸면 ConfigMap 이름이 바뀌어 collector가 다시 뜬다). LOG_SCHEMA 4절도 같이 고친다 |
 | 자원, 이미지 버전 | `logging/base/otel-collector/collector.yaml`. 버전은 ES·Kibana와 같게 둔다 |
 | 보존·레플리카 | `logging/base/elasticsearch/{traces,metrics}-otel-custom.json`(새 data stream·다음 rollover부터 적용) |
-| 앱 쪽 전송 | workload overlay의 환경 변수(Java), 앱 코드의 exporter 연결(Python)([11절](#11-남은-일)) |
+| 앱 쪽 전송 | `workload/overlays/dev/kustomization.yaml`의 환경 변수. Java는 `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED=true`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318/v1/traces`, Python은 `OTEL_EXPORTER_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318`(이 값이 있을 때만 `setup_tracing`이 exporter를 붙인다), 공통 `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev` |
 
 설정을 바꾼 뒤에는 로컬에서 ES 9.5.5(보안 켬)와 같은 collector 이미지에 시험 span을 보내, ES 문서에 지운 값이 없는지 확인한다.
 
@@ -207,8 +239,6 @@ flowchart LR
 
 | 일 | 내용 |
 |---|---|
-| Java 전송 켜기 | 앱 코드는 그대로 두고 workload dev overlay에 환경 변수(`MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED=true`, collector 주소)를 넣는다 |
-| Python 전송 켜기 | ai-chat·graph-rag는 SDK `TracerProvider`만 있고 exporter가 없다. OTLP exporter 패키지를 더하고, 환경 변수가 있을 때 `setup_tracing`이 exporter를 붙이게 고친 뒤 환경 변수를 넣는다 |
-| 빈 스케줄 span | Spring `@Scheduled`는 실행마다 span을 연다. 1초 relay도 빈 회차마다 span이 생겨, 전송을 켜면 하루 수십만 개가 쌓인다. LOG_SCHEMA 7절(빈 순회는 span도 남기지 않는다)과 맞추도록 끄거나 거른다 |
-| 확인 | Kibana APM에 서비스 6개, 최신화 흐름의 폭포 그림, traces·`logs-*.otel-*` 반대 검색(이메일·JWT·`code=`·검색어) 0건, 하루 저장량과 로깅 노드 자원 |
-| prod | prod 로깅 스택과 함께 collector·template·키를 만든다. sampling 비율은 prod 실측으로 정한다 |
+| 부모 없는 DB span | ai-chat API·summarizer에서 요청·흐름 밖의 psycopg 쿼리가 root span이 된다(4분에 수 건). 양이 적어 지켜본다 |
+| 로깅 노드 | span 전송 뒤 부하 테스트 중 노드 CPU가 103%였다. 다음 부하 테스트 지표로 증설을 정한다([8절](#8-자원과-배치)) |
+| prod | prod 로깅 스택과 함께 collector·template·키를 만들고 prod overlay에 전송 환경 변수를 넣는다. sampling 비율은 prod 실측으로 정한다 |
