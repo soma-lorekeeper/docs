@@ -106,16 +106,17 @@ sequenceDiagram
 
 | API | span 이름 | 종류 | 부모 |
 |---|---|---|---|
-| `LogFlow.call(target, …)` | `<target> call`(예: `google call`, `s3 call`, `upstream call`) | INTERNAL. 계측이 없는 대상은 CLIENT | 현재 span. 계측의 CLIENT span이 이 span의 자식 |
+| `LogFlow.call(target, …)` | `<target> call`(예: `google call`, `s3 call`, `upstream call`) | INTERNAL. 계측이 없는 대상(OpenAI)은 CLIENT | 현재 span. 계측의 CLIENT span이 이 span의 자식 |
 | `LogFlow.call("kafka", …, headers=…)`(Python) | `<topic> publish` | PRODUCER | 현재 span |
 | `LogFlow.task(name, …)` | `<name>` | INTERNAL | 현재 span. 흐름 밖에서 시작한 작업은 root |
+| `LogFlow.worker(name)`(Python graph-rag) | 열지 않음 | | 스레드 수명 루프라 시작·종료 줄만 남긴다. span은 그 안에서 레코드·회차마다 연다 |
 | `LogFlow.polling`·`schedule`(Python) | `<스케줄 이름>` | INTERNAL | root |
 | `LogFlow.kafka_record`(Python) | `<topic> process` | CONSUMER | 레코드 헤더 |
 | `LogScope.outboxEvent`(Python `outbox_event`) | `outbox <event type>` | INTERNAL | 행에 저장된 `traceparent` |
 | `LogScope.kafkaRecord` | `<topic> recover` | INTERNAL | 레코드 헤더 |
 | `LogScope.stored`(Python) | `<작업 이름>` | INTERNAL | 행에 저장된 `traceparent` |
 
-- Java의 요청, 스케줄 회차, Spring Kafka 소비, 발행, 쿼리 span은 agent가 연다. Python의 요청, HTTP·DB·AWS·OpenAI 호출 span은 계측이 연다.
+- Java의 요청, 스케줄 회차, Spring Kafka 소비, 발행, 쿼리 span은 agent가 연다. Python의 요청, HTTP·DB·AWS 호출 span은 계측이 연다. OpenAI 호출은 계측이 없어 `openai call`(CLIENT)이 그 의존 대상의 span이다.
 - 부모가 다른 서비스나 다른 시점(헤더, 저장된 값)에 있는 span은 Kibana APM에서 transaction으로 보인다. Kafka 소비, outbox 발행,
   요약 작업이 그렇다.
 
@@ -123,7 +124,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"] --> TS["tail_sampling<br/>빈 폴링·성공 헬스체크 trace 버리기"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
+  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"] --> TS["tail_sampling<br/>빈 폴링·성공 헬스체크·Redis handshake trace 버리기"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
   P --> E[("elasticsearch exporter<br/>mapping otel")]
   P --> C["elasticapm connector<br/>집계 지표"] --> E
 ```
@@ -131,7 +132,7 @@ flowchart LR
 | 단계 | 하는 일 |
 |---|---|
 | `memory_limiter` | 컨테이너 메모리 한도의 80%에 가까워지면 받기를 잠시 거절한다. 앱의 추적 엔진이 다시 보낸다 |
-| `tail_sampling` | 빈 폴링 회차와 성공한 헬스체크의 trace를 통째로 버리고 나머지는 모두 남긴다(아래 "버리는 trace"). 판단하려고 trace를 5초 모았다가 내보낸다 |
+| `tail_sampling` | 빈 폴링 회차, 성공한 헬스체크, 부모 없는 Redis handshake의 trace를 통째로 버리고 나머지는 모두 남긴다(아래 "버리는 trace"). 판단하려고 trace를 5초 모았다가 내보낸다 |
 | `transform/privacy` | 로그에 남기지 않는 값을 지우고, 남은 값을 가린다(아래 표) |
 | `batch` | 묶어서 ES에 보낸다 |
 | `elasticapm` processor | span을 Kibana APM이 읽는 모양으로 보강한다(`transaction.*`·`span.*`, `processor.event`, 결과·성공 여부) |
@@ -142,7 +143,7 @@ flowchart LR
 
 | 처리 | 대상 |
 |---|---|
-| 지우기 | URL 쿼리(`url.full`·`url.original`·`http.url`·`http.target`의 `?` 뒤, `url.query`), SQL과 Redis 명령(`db.statement`·`db.query.text`), 예외 event의 `exception.message`·`exception.stacktrace`, AWS 호출 span의 S3 객체 키(`url.full`·`url.path`·`aws.s3.key`·`aws.s3.copy_source`), GenAI 대화 내용(`gen_ai.prompt`·`gen_ai.completion`·`gen_ai.input.messages`·`gen_ai.output.messages`·`gen_ai.system_instructions`, `gen_ai.*` event) |
+| 지우기 | URL 쿼리(`url.full`·`url.original`·`http.url`·`http.target`의 `?` 뒤, `url.query`), SQL과 Redis 명령(`db.statement`·`db.query.text`), 예외 event의 `exception.message`·`exception.stacktrace`, 로깅 팩토리가 열지 않은 span의 상태 메시지(`status.message`, 예외 문자열), AWS 호출 span의 S3 객체 키(`url.full`·`url.path`·`aws.s3.key`·`aws.s3.copy_source`), GenAI 대화 내용(`gen_ai.prompt`·`gen_ai.completion`·`gen_ai.input.messages`·`gen_ai.output.messages`·`gen_ai.system_instructions`, `gen_ai.*` event) |
 | 가리기 | 남은 모든 span·event 문자열 속성. 이메일, OAuth `code`·`state`, 광고 클릭 ID, 서명 URL, 세션 쿠키, 인증 헤더, JWT, 비밀번호, DB 키 값 |
 
 - 예외는 `exception.type`만 남는다. 스택은 같은 `span.id`의 앱 로그 `error.stack_trace`(메시지 없는 스택)로 본다.
@@ -155,8 +156,9 @@ flowchart LR
 |---|---|---|
 | 빈 폴링 회차 | 회차 span에 `loresentry.polling.idle=true`가 있다 | 1초 relay의 빈 회차가 trace 대부분을 차지한다 |
 | 성공한 헬스체크 | root span이 `/health`·`/health/**` 요청이고 `http.response.status_code`가 400 미만이다 | kubelet probe가 파드마다 시간당 수백 번 부른다(2026-11-04 하루 약 10만 transaction). 성공 여부는 Prometheus와 파드 이벤트에 있다. 실패한 헬스체크는 남는다 |
+| Redis 연결 handshake | 부모 없는 Redis CLIENT span이고 이름이 `AUTH`·`HELLO`·`CLIENT`·`SELECT`로 시작한다 | Lettuce가 연결을 열 때 event loop에서 보내는 명령이라 흐름이 아니다. 흐름 안의 Redis 명령은 부모가 있어 걸리지 않는다 |
 
-- 두 경우 모두 `tail_sampling`의 `drop` 정책이 trace를 자식 span까지 통째로 버린다. span 하나만 거르면 자식 span(조회, 내부 서비스 헬스체크)이 부모 없이 남기 때문이다.
+- 모두 `tail_sampling`의 `drop` 정책이 trace를 자식 span까지 통째로 버린다. span 하나만 거르면 자식 span(조회, 내부 서비스 헬스체크)이 부모 없이 남기 때문이다.
 - 헬스체크 기준은 root span만 본다. gateway 헬스체크가 부른 내부 서비스 헬스체크가 성공해도 gateway가 실패로 답하면 trace가 남는다.
 
 빈 폴링 회차의 span을 여는 쪽:
@@ -299,11 +301,11 @@ flowchart LR
 | C2 | 외부 호출 결과 줄마다 같은 `span.id`인 `<target> call` span이 있고, span 길이가 `event.duration`과 맞는다(±5ms). 계측이 있는 대상은 CLIENT 자식이 있다 | 100% |
 | C3 | 흐름별 trace(파일 저장 → Kafka → graph-rag·summarizer, 최신화 요청 → 완료, 채팅 SSE → content·OpenAI, 로그인·로그아웃, 탈퇴 auth outbox → content)마다 root가 하나이고 부모 없는 span이 없다. 기대한 서비스와 span 종류(DB·Redis·AWS·Kafka·OpenAI)가 모두 있다 | 흐름마다 표본 20개 모두 |
 | C4 | outbox·`summary_queue`·`InboxEvent` 행에 저장된 trace와 소비 span의 trace가 같고, relay 회차 trace와는 다르다 | 100% |
-| C5 | 빈 폴링 회차 trace, 성공한 헬스체크 trace, 시작점이 아닌 부모 없는 span이 저장되지 않는다. 흐름 밖 DB 쿼리(기동, 연결 풀, Redis handshake)는 허용된 root로 따로 센다 | 0건 |
+| C5 | 빈 폴링 회차 trace, 성공한 헬스체크 trace, 시작점이 아닌 부모 없는 span이 저장되지 않는다. 흐름 밖 DB 쿼리(기동, 연결 풀)는 허용된 root로 따로 센다. 부모 없는 Redis handshake span은 collector가 버린다 | 0건 |
 | C6 | 서비스마다 쓰는 의존 대상([LOG_SCHEMA.md 계측 범위](LOG_SCHEMA.md#계측-범위))에 span이 있고, span 종류별 표준 속성 보유율이 99% 이상이다. 한 작업에 같은 종류의 span이 둘 있는 곳이 없다 | 기준 충족 |
 | C7 | 외부 `traceparent`를 붙여 보낸 gateway 요청이 새 trace로 시작한다 | 이어지지 않음 |
 | C8 | resource에 `service.name`·`service.version`·`service.instance.id`·`k8s.pod.name`·`deployment.environment.name`이 있다 | 100% |
-| C9 | traces·`logs-*.otel-*`에서 반대 검색(이메일, JWT, `code=`·`state=`, S3 객체 키 경로, SQL 문, 프롬프트)을 한다 | 0건 |
+| C9 | traces·`logs-*.otel-*`에서 반대 검색(이메일, JWT, `code=`·`state=`, S3 객체 키 경로, SQL 문, 프롬프트)을 한다. 로깅 팩토리 밖 span에 `status.message`가 남지 않는다 | 0건 |
 | C10 | 서비스 코드(로그 패키지 밖)에 추적 API import, `traceparent` 헤더 직접 설정이 없다(ArchUnit, ruff, grep) | 0건 |
 | C11 | 앱 로그의 `warn`·`error` 줄(로그 클래스 줄과 프레임워크 줄)에 `error.stack_trace`가 있다. 예외 메시지 반대 검색은 0건이다 | 100% |
 
@@ -317,10 +319,10 @@ EDOT로 옮기는 순서다. 각 단계는 dev에 배포한 뒤 11절 점검을 
 | 2 | collector, 점검 스크립트 | 성공한 헬스체크 drop, S3 객체 키·GenAI 대화 내용 지우기, `apm_consistency.py` | 완료(gitops #61·#63·#68). dev에서 성공한 헬스체크 root 0 |
 | 3 | authentication | EDOT Java agent, 로깅 팩토리 span(호출 감싸기, 작업, outbox 저장 문맥), 로그 `span.id` 규칙, warn·error 스택 | 완료(auth #15·#16·#17, gitops #65·#66). C1·C2·C5·C8·C9·C11 통과. Google 호출·UserDeleted 발행은 실제 로그인·탈퇴 E2E 때 본다 |
 | 4 | content | 같은 패턴과 Kafka 소비, 에러 처리기·DLQ 저장 문맥, S3·KMS | 완료(content #40, gitops #67). C1·C2·C4·C9·C11 통과. 문서 생성 요청 → `kms call` → `Kms.GenerateDataKey`, `outbox FileChanged` → 발행 → summarizer·graph-rag 소비가 한 trace로 이어진다 |
-| 5 | gateway | inject-only 전파기 확장, RestClient interceptor 감싸는 span, 채팅 SSE, Valkey | 예정 |
-| 6 | ai-chat | EDOT Python, summarizer 작업 저장 문맥(요청 밖에서 생기던 부모 없는 DB span이 없어진다), messaging 속성, OpenAI·KMS | 예정 |
-| 7 | graph-rag | 폴링 회차 span을 시작할 때 열기, `InboxEvent` 저장 문맥과 발행 헤더, Neptune httpx 계측, 내부 ASGI span 빼기 | 예정 |
-| 8 | Kibana, 부하 테스트 | APM 대시보드를 표준 속성으로 고치기, 전체 점검, 오버헤드와 로깅 노드 자원 재기 | 예정 |
+| 5 | gateway | inject-only 전파기 확장, RestClient interceptor 감싸는 span, 채팅 SSE, Valkey | 완료(gateway #33, gitops #69·#70). C1·C2·C3·C5·C6·C7·C8·C9·C11 통과. 부모 없는 Redis handshake span은 collector가 버린다 |
+| 6 | ai-chat | EDOT Python, summarizer 작업 저장 문맥(요청 밖에서 생기던 부모 없는 DB span이 없어진다), messaging 속성, OpenAI·KMS | 완료(ai-chat #30·#31, gitops #71·#72). API·summarizer 모두 C1~C6·C8·C9·C11 통과. 채팅 한 턴에 content·KMS·OpenAI span, 문서 저장 → 소비 → `summary job`(저장 trace) → KMS·DB·OpenAI가 한 trace. OpenAI에는 `traceparent`가 가지 않는다 |
+| 7 | graph-rag | 폴링 회차 span을 시작할 때 열기, `InboxEvent` 저장 문맥과 발행 헤더, Neptune httpx 계측, 내부 ASGI span 빼기 | 완료(graph-rag #14, gitops #73·#75). 최신화 요청 → 소비 → S3·OpenAI·Neptune → 완료 이벤트 발행(저장 trace, relay 회차와 다른 trace) → content 소비가 한 trace. C1~C6·C8·C9·C11 통과. Neptune IAM 서명은 `traceparent`가 서명 대상 헤더 밖이라 dev에서 200 |
+| 8 | Kibana, 부하 테스트 | APM 대시보드를 표준 속성으로 고치기, 전체 점검, 오버헤드와 로깅 노드 자원 재기 | 예정. 전환 뒤 발견해 고친 것: Java agent 기본 sampler의 `tracestate: ot=th:0`(auth #18·content #41·gateway #34, `parentbased_always_on`), 계측 span 상태 메시지의 예외 문자열(gitops #74). 배포 뒤 6개 서비스 span에서 둘 다 0건 |
 
 | 남은 일 | 내용 |
 |---|---|
