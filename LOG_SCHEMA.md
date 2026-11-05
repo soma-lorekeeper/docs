@@ -1,6 +1,6 @@
 # 로그 스키마 — ECS 필드·레벨·마스킹·data stream 규약
 
-> 최신화: 2026-11-03
+> 최신화: 2026-11-06
 > 대상: 클러스터 안 모든 파드 로그와 AWS 관리형 리소스(ALB·CloudFront·RDS·Neptune·EKS) 로그, 앱이 보내는 trace(span)
 > 상태: **규약 확정.** 로그 수집 스택(ECK)은 dev에 배포했다. 앱이 이 규약대로 로그·trace를 내는 작업은 dev부터 적용 중이다.
 > 관련: 매니페스트와 index template은 `loresentry-gitops/logging/`(`base/elasticsearch/logs-custom.json`)
@@ -23,7 +23,7 @@ AWS(ALB·CloudFront·RDS·Neptune·EKS) ─▶ S3·CloudWatch ─▶ Filebeat(aw
                                      ├─▶ Elasticsearch (30일, 길이 상한 적용)
                                      └─▶ S3 보관 (1년, 마스킹된 전문)
 
-앱 span (OTLP) ─▶ EDOT Collector: APM 가공 · 마스킹 ─▶ Elasticsearch traces·metrics (30일) ─▶ Kibana APM
+앱 span·지표 (OTLP) ─▶ EDOT Collector: APM 가공 · 마스킹 ─▶ Elasticsearch traces·metrics (30일) ─▶ Kibana APM
 ```
 
 | 단계 | 하는 일 | 하지 않는 일 |
@@ -31,7 +31,7 @@ AWS(ALB·CloudFront·RDS·Neptune·EKS) ─▶ S3·CloudWatch ─▶ Filebeat(aw
 | 앱 | 아래 [앱 로그 규약](#5-앱-로그-규약)대로 로그 클래스로만 ECS JSON 한 줄씩 stdout에 쓴다. 금지 항목을 찍지 않는다. [7절](#7-trace)대로 span을 만들고 전파한다 | 마스킹을 Logstash·collector에 기대지 않는다 |
 | Filebeat | 줄 읽기, CRI 해제, 여러 줄 묶기, `kubernetes.*` 붙이기 | 파싱·가공 |
 | Logstash | 파싱, `log.level` 정규화, 필수 필드 채우기, 마스킹, 소음 제거, data stream 선택 | — |
-| EDOT Collector | span 받기(OTLP), APM 화면용 지표 만들기, span 속성 지우기·마스킹 | 로그를 받지 않는다 |
+| EDOT Collector | span·앱 지표 받기(OTLP), APM 화면용 지표 만들기, span·지표 속성 지우기·마스킹 | 로그를 받지 않는다 |
 | ES | 필드 타입(`logs@custom`, traces·metrics `@custom`), 보존 기간, 거부된 문서 보관(failure store) | ingest pipeline을 두지 않는다 |
 
 ## 2. 공통 필드
@@ -196,7 +196,10 @@ OAuth `login_request_id`·`state`)은 그 값만으로 로그인 과정을 이�
 - 요청 span의 `client.address`·`user_agent.original`은 남긴다. ALB 접근 로그([6절](#6-data-stream))와 같은 기준이다.
 - 계측을 새로 켜면 dev에서 span 속성 표본을 뽑아 이 표로 덮이는지 확인한다.
 - traces·`logs-*.otel-*`(예외 event)에도 같은 반대 검색을 돌린다.
-- 규칙은 gitops `logging/base/otel-collector/otel.yml`의 `transform/privacy`에 있다. 바꾸면 이 표도 같은 시점에 고친다.
+- 앱 지표([ALERTING.md 7절](ALERTING.md#7-앱-지표-규약))는 datapoint 속성의 `url.full`·`url.path`·`url.query`·`http.target`·`http.url`을
+  지우고, 남은 문자열 속성의 이메일을 같은 규칙으로 가린다. 계측은 경로 템플릿(`http.route`)과 대상 주소만 담으므로 두 번째 방어선이다.
+- 규칙은 gitops `logging/base/otel-collector/otel.yml`의 `transform/privacy`(span)·`transform/metric-privacy`(앱 지표)에 있다. 바꾸면
+  이 표도 같은 시점에 고친다.
 
 ### 길이 상한
 
@@ -620,7 +623,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | 형식 | W3C Trace Context `traceparent: 00-<trace-id 32 hex>-<span-id 16 hex>-<flags>` |
 | 헤더 이름 | HTTP와 Kafka 모두 `traceparent` (소문자 정확히. Kafka 헤더는 대소문자를 구분한다). [KAFKA_DESIGN.md](KAFKA_DESIGN.md)의 필수 헤더다. 자체 `traceId` 헤더는 쓰지 않는다. `tracestate`·`baggage`는 쓰지 않는다. 그래서 sampler는 표준 `parentbased_always_on`이다(Java agent 설정 파일, Python 시작 스크립트). EDOT Java 기본 sampler는 root span에 `tracestate: ot=th:0`을 넣어 HTTP·Kafka 헤더로 모든 내부 서비스에 퍼뜨린다 |
 | 추적 엔진 | EDOT(Elastic Distribution of OpenTelemetry). Java는 `elastic-otel-javaagent`(OpenTelemetry Java agent 기반)를 `-javaagent`로, Python은 `elastic-opentelemetry`를 `opentelemetry-instrument`로 띄운다. trace·span ID는 엔진이 만든다(128비트 무작위). Spring Boot OTel starter와 Micrometer Tracing은 쓰지 않는다. 엔진이 둘이면 같은 작업의 span이 두 번 생긴다 |
-| 계측 | 서비스가 쓰는 라이브러리만 켠다([계측 범위](#계측-범위)). 지표·로그 계측과 로그 MDC 계측은 끈다. 지표는 Prometheus, 로그는 Filebeat가 모으고, 로그 줄의 ID는 로깅 팩토리가 넣는다 |
+| 계측 | 서비스가 쓰는 라이브러리와 지표 계측(JVM·런타임·DB 연결 풀)만 켠다([계측 범위](#계측-범위)). 로그 계측과 로그 MDC 계측은 끈다. 앱 지표는 span과 같은 collector를 거쳐 ES에 쌓인다(이미지 기본은 보내지 않고 dev overlay가 켠다, [ALERTING.md 7절](ALERTING.md#7-앱-지표-규약)). 로그는 Filebeat가 모으고, 로그 줄의 ID는 로깅 팩토리가 넣는다 |
 | 서비스 코드 | 추적 API를 쓰지 않는다([5절 만들기](#로그-클래스)). span 열기, 현재 문맥 바꾸기, 헤더 넣기는 계측과 로깅 팩토리가 한다 |
 | 시작점 | gateway가 외부 요청마다 새로 시작한다. gateway의 전파기는 나가는 호출에 넣기만 하고 들어온 값을 읽지 않는다(inject-only). 그래서 인터넷에서 온 `traceparent`·`tracestate`·`baggage`는 무시된다. 스케줄·폴링 작업은 1회마다, 헤더가 없거나 형식이 틀린 Kafka 레코드는 레코드마다 새로 시작한다 |
 | 흐름 밖 DB 쿼리 | 기동 중의 쿼리(Flyway, Hibernate 검증, `main` 스레드), 연결 풀이 연결을 만들고 살필 때의 쿼리(`HikariPool-*`), Redis 연결 handshake(HELLO, CLIENT SETINFO, Lettuce event loop)는 흐름이 아니다. 부모 없는 DB span이 되는 것이 맞고, 허용된 root다. 그중 부모 없는 Redis handshake span(`AUTH`·`HELLO`·`CLIENT`·`SELECT`)은 연결마다 생기고 볼 일이 없어 collector가 버린다(`tail_sampling`). 흐름 안의 쿼리와 Redis 명령은 같은 스레드에서 돌아도 부르는 쪽 span을 부모로 갖는다 |
@@ -637,7 +640,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | ALB와 잇기 | ALB가 붙이는 `X-Amzn-Trace-Id`를 gateway가 모든 로그 줄의 `http.request.id`로 남긴다. ALB 접근 로그의 `trace_id`도 같은 필드에 넣는다 |
 | 속성 이름 | OpenTelemetry semantic conventions의 안정 이름이다(`OTEL_SEMCONV_STABILITY_OPT_IN=http,database`). HTTP는 `http.request.method`·`url.path`·`http.route`·`http.response.status_code`로 로그 필드와 이름이 같다. 서버 span은 5xx, 클라이언트 span은 4xx 이상이면 상태가 ERROR다. 그래서 앱이 정상으로 처리하는 응답(S3 없는 키 404, 조건부 쓰기 412)도 계측의 CLIENT span은 ERROR이고 Kibana APM 오류에 `handled` 예외로 보인다. 호출이 성공했는지는 감싸는 `<target> call` span과 결과 줄로 본다 |
 | resource | `service.name`(Kubernetes 이름, `OTEL_SERVICE_NAME`), `service.version`(이미지 태그, 시작 스크립트가 `APP_VERSION`으로 넣는다), `service.instance.id`·`k8s.pod.name`(파드 이름), `k8s.namespace.name`, `deployment.environment.name`. 로그 줄의 `service.*`와 같은 값이다. Python 시작 스크립트는 클라우드 resource detector를 끈다(`OTEL_EXPERIMENTAL_RESOURCE_DETECTORS`를 네트워크를 쓰지 않는 기본 목록으로). EKS에서 distro가 켜는 `aws_eks`는 파드 서비스 계정으로 클러스터 정보를 읽다가 403을 받고 stderr에 평문 줄을 남긴다. 필요한 값은 overlay가 환경 변수로 넣는다 |
-| span 저장 | 앱이 OTLP(HTTP protobuf)로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 기본값(보내지 않음, prod 포함)은 이미지에 있다. Java는 agent 설정 파일(`docker/otel-agent.properties`), Python은 이미지 시작 스크립트다. overlay가 환경 변수로 traces만 `otlp`로 켠다(dev 켬, 환경 변수가 설정 파일보다 먼저다). agent가 설정 파일보다 먼저 읽는 값(agent 자신의 로그를 앱 로깅으로 보내기, DB 안정 속성 이름)은 Java 시작 스크립트의 `-D`로 넘긴다. 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%(`parentbased_always_on`), prod는 실측 후 정한다 |
+| span 저장 | 앱이 OTLP(HTTP protobuf)로 EDOT Collector에 보내고, collector가 마스킹([4절](#4-금지-항목과-마스킹))과 APM 가공을 거쳐 ES traces·metrics data stream에 쓴다. 보존 30일. 기본값(보내지 않음, prod 포함)은 이미지에 있다. Java는 agent 설정 파일(`docker/otel-agent.properties`), Python은 이미지 시작 스크립트다. overlay가 환경 변수로 traces와 metrics(앱 지표)를 `otlp`로 켜고 logs는 켜지 않는다(dev 켬, 환경 변수가 설정 파일보다 먼저다). agent가 설정 파일보다 먼저 읽는 값(agent 자신의 로그를 앱 로깅으로 보내기, DB 안정 속성 이름)은 Java 시작 스크립트의 `-D`로 넘긴다. 끈 곳에서도 trace ID는 만들어지고 전파된다. sampling은 dev 100%(`parentbased_always_on`), prod는 실측 후 정한다 |
 
 ### 계측 범위
 
@@ -649,7 +652,7 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
 | ai-chat API·summarizer | FastAPI, httpx(content), psycopg, botocore(KMS) |
 | graph-rag | FastAPI, httpx(content, Neptune), botocore(S3·KMS) |
 
-- Java는 agent 기본 계측을 모두 끄고(`otel.instrumentation.common.default-enabled=false`) 표의 것만 켠다. 로깅 팩토리가
+- Java는 agent 기본 계측을 모두 끄고(`otel.instrumentation.common.default-enabled=false`) 표의 것과 아래 지표 계측만 켠다. 로깅 팩토리가
   OpenTelemetry API로 연 span이 agent에 이어지도록 API bridge(`opentelemetry-api`)도 켠다. 설정은 서비스 저장소의 agent 설정
   파일이고 이미지에 함께 들어간다.
 - Python은 표의 계측 패키지만 설치한다. FastAPI는 자동 계측을 끄고, 로깅 팩토리의 설정 함수가 내부 ASGI span(`receive`·`send`)을
@@ -659,6 +662,13 @@ AWS 로그의 주요 필드는 아래와 같다. ECS에 있는 필드는 ECS 이
   않아 설치하지 않는다. OpenAI 호출 span은 `LogFlow.call`의 `openai call`(CLIENT)이다.
 - Python threading 계측은 쓰지 않는다. Kafka 레코드는 빈 문맥에서 헤더로, 회차는 root로 열어 스레드 사이로 넘길 문맥이 없다.
 - EDOT Java의 span 스택(`code.stacktrace`)은 끈다. 원인 경로는 로그의 `error.stack_trace`로 본다.
+- 지표만 내는 계측(span은 만들지 않는다)도 켠다. Java 3개는 `runtime-telemetry`(JVM)와
+  `runtime-telemetry.emit-experimental-metrics`(direct buffer·시스템 CPU·파일 디스크립터), `http.server.emit-experimental-telemetry`
+  (동시 요청 수), content·authentication은 `hikaricp`(DB 연결 풀)다. Python 3개는 distro가 함께 설치하는 `system_metrics`(프로세스·GC)를
+  켜 둔다(`OTEL_PYTHON_DISABLED_INSTRUMENTATIONS`에 넣지 않는다). 표의 계측도 지표 전송을 켜면 HTTP·DB 지표를 함께 낸다.
+- 계측이 내지 않는 지표는 로깅 팩토리(Java `…logging`, Python `app/logs`)가 OpenTelemetry API로 기록한다. `loresentry.*`(outbox 적체,
+  Kafka 도착 지연, event loop 지연, graph-rag 처리 스레드), Python의 `gen_ai.client.*`(LLM 토큰·호출 시간)·`messaging.*`(Kafka 처리·발행
+  시간)·psycopg 연결 풀 `db.client.connection.*`이다. 지표 이름과 켜는 곳 전체는 [ALERTING.md 7절](ALERTING.md#7-앱-지표-규약)에 있다.
 - 표에 없는 라이브러리·의존 대상을 새로 쓰면 이 표에 먼저 더한다. dev 정합성 점검([APM_ARCHITECTURE.md 11절](APM_ARCHITECTURE.md#11-정합성-점검))이
   span이 없는 의존 대상을 잡는다.
 
@@ -751,7 +761,7 @@ collector보다 먼저 넣는다.
 | --- | --- | --- |
 | 레플리카 | 0 | 1노드 ES |
 | 보존 | 30일, `prefer_ilm: false` | 로그와 같은 기간. 호출 그림을 로그와 같은 기간 동안 본다. 내장 ILM 정책(`traces@lifecycle` 등)은 삭제 단계가 없어 data stream lifecycle을 쓴다 |
-| template | `traces-otel@custom`(span, `traces-*.otel-*`), `metrics-otel@custom`(APM 집계 지표, `metrics-*.otel-*`) | `traces@custom`·`metrics@custom`은 OTel 밖 data stream에도 걸려 OTel 전용 hook을 쓴다. span의 예외 event(`logs-*.otel-*`, APM 오류)는 `logs@custom`이 맡는다 |
+| template | `traces-otel@custom`(span, `traces-*.otel-*`), `metrics-otel@custom`(APM 집계 지표와 앱 지표, `metrics-*.otel-*`) | `traces@custom`·`metrics@custom`은 OTel 밖 data stream에도 걸려 OTel 전용 hook을 쓴다. span의 예외 event(`logs-*.otel-*`, APM 오류)는 `logs@custom`이 맡는다 |
 | 쓰기 계정 | API key `edot-collector` | `*.otel-*` data stream 만들기·쓰기(`auto_configure`, `create_doc`)만. 읽기와 앱 로그 data stream 쓰기는 안 된다 |
 
 - `error.stack_trace`는 로그 인덱스가 logsdb 모드라 기본 `ignore_above`가 8191자다. 더 긴 스택이 ES|QL·exists·wildcard에서

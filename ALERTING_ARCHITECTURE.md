@@ -1,21 +1,25 @@
 # 경보 아키텍처 — Prometheus·Grafana에서 Alertmanager를 거쳐 Slack까지
 
-> 최신화: 2026-11-05
+> 최신화: 2026-11-06
 > 대상: 클러스터 지표·앱 지표·Elasticsearch 로그로 평가하는 경보와 그 전달 경로
-> 상태: **dev 운영 중. 앱 지표만 아직 없다(APM 세팅 뒤).** prod는 prod 환경을 세팅할 때 같은 구성으로 붙인다. AI 진단은 이 경로 위에
-> 나중에 얹는다.
-> 관련: severity·라벨·규칙 목록은 [ALERTING.md](ALERTING.md), 로그 수집 경로는 [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md),
-> 매니페스트는 `loresentry-gitops/alerting/`과 `argocd-apps-dev/kube-prometheus-stack.yaml`
+> 상태: **dev 운영 중.** 앱 지표는 EDOT agent → EDOT Collector → Elasticsearch로 받아 Grafana가 평가한다(2026-11-05). prod는 prod
+> 환경을 세팅할 때 같은 구성으로 붙인다. AI 진단은 이 경로 위에 나중에 얹는다.
+> 관련: severity·라벨·규칙 목록과 앱 지표 목록은 [ALERTING.md](ALERTING.md), 로그 수집 경로는 [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md),
+> EDOT Collector는 [APM_ARCHITECTURE.md](APM_ARCHITECTURE.md), 매니페스트는 `loresentry-gitops/alerting/`,
+> `argocd-apps-dev/kube-prometheus-stack.yaml`, `logging/base/otel-collector/otel.yml`(앱 지표를 받는 collector)
 
 경보는 두 곳에서 평가되고 한 곳으로 나간다.
 
-- **지표 경보**: Prometheus가 지표를 30초마다 수집하고 규칙(PrometheusRule)을 평가한다. 앱 지표(예정), 파드·Deployment 상태, 노드
-  자원, Kafka, Argo CD를 본다.
+- **지표 경보**: Prometheus가 지표를 30초마다 수집하고 규칙(PrometheusRule)을 평가한다. 파드·Deployment 상태, 노드 자원, Kafka,
+  Argo CD를 본다.
 - **로그 경보**: Grafana가 1분마다 Elasticsearch에 개수 쿼리를 보내 규칙을 평가한다. 앱 error·warn, 의존 서비스 실패, ALB 5xx,
   DB 오류·느린 쿼리, 로그 수집 멈춤을 본다.
 - **로그 스택 경보**: ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인 Metricbeat sidecar가 각 구성요소의 상태를 ES
   `.monitoring-*`에 쓰고(Elastic Stack Monitoring), Grafana가 같은 방식으로 읽어 평가한다. 클러스터 상태, heap, 거부, 디스크,
   Logstash 큐 적체, Filebeat 전송 실패를 본다.
+- **앱 지표 경보**: 서비스 안의 EDOT agent가 앱 지표를 1분마다 OTLP로 EDOT Collector에 보내고, collector가 ES
+  `metrics-generic.otel-*`에 쓴다. Grafana가 같은 방식으로 읽어 평가한다. 5xx 비율, 경로별 지연, JVM heap·GC, DB 연결 풀, outbox
+  적체, event loop 지연, Kafka 도착 지연, 외부 연동 지연, 지표 끊김을 본다. Prometheus는 앱을 수집하지 않는다.
 - **출구는 kps Alertmanager 하나다.** 묶기·억제·silence·경로를 여기서만 하고, Slack에는 Alertmanager만 쓴다.
 
 ## 1. 전체 구조
@@ -23,7 +27,6 @@
 ```mermaid
 flowchart LR
   subgraph SRC["지표 출처"]
-    APP["앱 HTTP API 5개<br/>:9464/metrics (예정)"]
     KSM["kube-state-metrics<br/>파드 · Deployment 상태"]
     NE["node-exporter<br/>노드 자원"]
     KUBELET["kubelet<br/>컨테이너 자원"]
@@ -31,10 +34,16 @@ flowchart LR
     ARGO["Argo CD"]
   end
 
+  subgraph APPM["앱 지표 경로 (ALERTING.md 7절)"]
+    APP["앱 6개의 EDOT agent<br/>JVM · 런타임 · HTTP · DB 풀 · 우리 지표"] -->|"OTLP 1분마다"| COL["EDOT Collector<br/>계열 거르기 · URL 속성 지우기"]
+  end
+
   subgraph LOGS["로그 경로 (LOGGING_ARCHITECTURE.md)"]
-    FB["Filebeat · aws-logs Filebeat"] --> LS["Logstash"] --> ES[("Elasticsearch<br/>logs-* · failure store<br/>.monitoring-*")]
+    FB["Filebeat · aws-logs Filebeat"] --> LS["Logstash"] --> ES[("Elasticsearch<br/>logs-* · failure store<br/>.monitoring-* · metrics-generic.otel-*")]
     MB["Metricbeat sidecar<br/>ES · Kibana · Logstash · Filebeat 파드마다"] -->|"상태 10초마다"| ES
   end
+
+  COL -->|"metrics-generic.otel-*"| ES
 
   subgraph MON["namespace monitoring · kube-prometheus-stack"]
     PROM["Prometheus<br/>수집 30초 · 규칙 평가 30초"]
@@ -42,8 +51,8 @@ flowchart LR
     AM["Alertmanager<br/>경로 · 묶기 · 억제 · silence"]
   end
 
-  APP & KSM & NE & KUBELET & KAFKA & ARGO -->|scrape| PROM
-  GRAF -->|"개수 · 최댓값 쿼리"| ES
+  KSM & NE & KUBELET & KAFKA & ARGO -->|scrape| PROM
+  GRAF -->|"개수 · 최댓값 · 백분위 쿼리"| ES
   PROM -->|"firing 경보"| AM
   GRAF -->|"contact point<br/>firing 동안 1분마다"| AM
   AM -->|"chat.postMessage<br/>chat.update"| SLACK["Slack 채널 alerts-dev"]
@@ -65,9 +74,10 @@ silence를 건다. Slack 메시지의 링크도 Grafana로 간다.
 | Prometheus | kps Helm chart 91.8.2 | 지표 수집, PrometheusRule 평가, 경보를 Alertmanager로 보냄. 보존 15일 | `argocd-apps-dev/kube-prometheus-stack.yaml` |
 | Prometheus Operator | kps | PrometheusRule·ServiceMonitor CR을 Prometheus 설정으로 바꾼다. 클러스터의 모든 CR을 읽는다 | 같은 곳 |
 | kube-state-metrics, node-exporter, kubelet | kps | 쿠버네티스 상태, 노드 자원, 컨테이너 자원 지표 | 같은 곳 |
-| 앱 `/metrics` (예정) | 각 서비스 코드 | 요청 수·응답 시간·상태 코드(`http_server_requests_seconds`), Spring은 JVM·HikariCP | 서비스 저장소, gitops `workload/base/<svc>/` |
-| Grafana | kps 하위 chart | ES 로그·로그 스택 규칙 평가, Alertmanager로 넘김, 경보·silence 화면 | `argocd-apps-dev/kube-prometheus-stack.yaml`(데이터 소스·규칙 sidecar), `alerting/base/grafana/`(규칙, contact point `kps-alertmanager`·policy) |
-| Elasticsearch | ECK | 로그(`logs-*`)와 로그 스택 모니터링 데이터(`.monitoring-*`) 저장. Grafana는 읽기 전용 역할 `grafana_reader`로 읽는다 | `logging/base/elasticsearch/` |
+| 앱 지표 (EDOT agent) | 각 서비스 이미지의 agent와 로깅 팩토리 | JVM·런타임·HTTP·DB 풀·외부 연동·Kafka·LLM·우리 지표를 1분마다 OTLP로 보낸다. 이미지 기본은 보내지 않고 dev overlay가 켠다. 지표 목록은 [ALERTING.md](ALERTING.md) 7절 | 서비스 저장소(Java `docker/otel-agent.properties`, Python `docker-entrypoint.sh`), gitops `workload/overlays/dev` |
+| EDOT Collector | Deployment 1대(span과 같은 collector) | `metrics` 파이프라인이 앱 지표를 받아 쓰지 않는 계열을 버리고 URL 속성을 지우고 이메일을 가린 뒤 ES `metrics-generic.otel-default`에 쓴다 | `logging/base/otel-collector/otel.yml` |
+| Grafana | kps 하위 chart | ES 로그·로그 스택·앱 지표 규칙 평가, Alertmanager로 넘김, 경보·silence 화면 | `argocd-apps-dev/kube-prometheus-stack.yaml`(데이터 소스·규칙 sidecar), `alerting/base/grafana/`(규칙, contact point `kps-alertmanager`·policy) |
+| Elasticsearch | ECK | 로그(`logs-*`), 로그 스택 모니터링 데이터(`.monitoring-*`), 앱 지표(`metrics-generic.otel-*`) 저장. Grafana는 읽기 전용 역할 `grafana_reader`로 읽는다 | `logging/base/elasticsearch/` |
 | Metricbeat sidecar | ECK가 만든다(`spec.monitoring`) | ES·Kibana·Logstash·Filebeat 파드마다 하나. 각 구성요소의 상태 API를 10초마다 읽어 `.monitoring-*`에 쓴다 | `logging/base/`의 각 CR |
 | Alertmanager | kps, v0.34.1 | 경로·묶기·억제·silence, Slack 전송과 메시지 수정. 받는 곳은 `slack`(그리고 보내지 않는 `null`) 하나다. 저장소는 emptyDir | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles` |
 | Slack app | Slack | bot token 하나로 경보 메시지를 쓰고 고친다. 나중에 진단 답글도 단다 | token은 Git 밖 Secret `monitoring/alertmanager-slack` |
@@ -140,6 +150,8 @@ sequenceDiagram
 - 로그 경보는 수집 지연만큼 늦다. 앱 로그는 몇 초, RDS·Neptune은 2~3분, ALB는 4~7분이 더 걸린다
   ([LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md) §4).
 - ES가 응답하지 않으면 개수 규칙은 직전 상태를 유지하고, LogIngestionStopped 하나만 오류 경보를 낸다.
+- 앱 지표 규칙(`loresentry-app`)도 같은 길이다. 데이터 소스가 `es-app-metrics`(`metrics-generic.otel-*`)이고, 지연은 histogram의
+  백분위(p95·p99)로 본다. agent가 1분마다 모아 보내므로 그만큼 늦게 들어온다. 지표가 아예 끊기면 AppMetricsMissing이 울린다.
 
 ## 5. 로그 스택 자신을 보는 길
 
@@ -340,8 +352,8 @@ dev와 prod는 클러스터가 다르고, 클러스터마다 자기 Argo CD가 �
 ```text
 alerting/
 ├── base/            # 두 환경이 같이 쓰는 규칙
-│   ├── prometheus/  # loresentry-infra (loresentry-app · ServiceMonitor는 앱 지표 때)
-│   └── grafana/     # 로그 · 로그 스택 규칙, contact point · policy ConfigMap
+│   ├── prometheus/  # loresentry-infra
+│   └── grafana/     # 로그 · 로그 스택 · 앱 지표(app-rules.yaml, loresentry-app) 규칙, contact point · policy ConfigMap
 └── overlays/
     ├── dev/         # argocd-apps-dev/alerting.yaml이 읽는다
     └── prod/        # argocd-apps/alerting.yaml이 읽는다 (prod 세팅 때 만든다)
@@ -357,10 +369,10 @@ alerting/
 
 | Argo CD Application | 경보와 관련된 것 | 바뀌면 |
 |---|---|---|
-| `kube-prometheus-stack` (`argocd-apps-dev/kube-prometheus-stack.yaml`의 Helm values) | Alertmanager 설정(경로·받는 곳·억제·메시지 템플릿), Slack Secret 마운트. Grafana 설정(ES 데이터 소스 3개, 규칙 sidecar, ES 비밀번호 환경 변수·CA 마운트) | Alertmanager 설정은 재시작 없이 다시 읽는다. Secret 마운트를 처음 넣을 때는 Alertmanager 파드가 한 번 재시작한다. Grafana의 환경 변수·마운트·sidecar를 바꾸면 Grafana 파드가 재시작한다(DB가 emptyDir이지만 설정은 모두 provisioning이라 그대로 돌아온다) |
-| `alerting` (`alerting/overlays/ENV`, wave -2) | PrometheusRule `loresentry-infra`, Grafana 규칙과 contact point·policy ConfigMap(label `grafana_alert`), Grafana 대시보드 ConfigMap(label `grafana_dashboard`). 앱 지표 때 `loresentry-app`·앱 ServiceMonitor가 더해진다 | 재시작 없음. Prometheus Operator가 규칙·수집 대상을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
-| `logging` (`logging/overlays/ENV`) | ES 역할 `grafana_reader`와 file realm 사용자, ES·Kibana·Logstash·Filebeat CR의 `spec.monitoring`(Metricbeat sidecar) | 역할·사용자는 재시작 없음(1~2분 안에 반영). **`spec.monitoring`을 처음 켜면 sidecar가 붙으면서 ES·Kibana·Logstash·Filebeat 파드가 모두 재시작한다.** ES가 1노드라 1~3분 동안 색인·검색이 멈추고, 그동안 로그는 Logstash 큐에 쌓였다가 이어서 들어간다 |
-| `workload-ENV` (`workload/overlays/ENV`) | 앱 Deployment·Service의 `metrics` 포트(9464), 앱 이미지 태그, Kafka PrometheusRule | 앱 파드가 롤링 업데이트된다. 서비스 중단은 없다 |
+| `kube-prometheus-stack` (`argocd-apps-dev/kube-prometheus-stack.yaml`의 Helm values) | Alertmanager 설정(경로·받는 곳·억제·메시지 템플릿), Slack Secret 마운트. Grafana 설정(ES 데이터 소스 4개, 규칙 sidecar, ES 비밀번호 환경 변수·CA 마운트) | Alertmanager 설정은 재시작 없이 다시 읽는다. Secret 마운트를 처음 넣을 때는 Alertmanager 파드가 한 번 재시작한다. Grafana의 환경 변수·마운트·sidecar를 바꾸면 Grafana 파드가 재시작한다(DB가 emptyDir이지만 설정은 모두 provisioning이라 그대로 돌아온다) |
+| `alerting` (`alerting/overlays/ENV`, wave -2) | PrometheusRule `loresentry-infra`, Grafana 규칙(로그·로그 스택·앱 지표 `loresentry-app`)과 contact point·policy ConfigMap(label `grafana_alert`), Grafana 대시보드 ConfigMap(label `grafana_dashboard`) | 재시작 없음. Prometheus Operator가 규칙을 Prometheus에 다시 읽히고, Grafana sidecar가 규칙을 다시 읽힌다 |
+| `logging` (`logging/overlays/ENV`) | ES 역할 `grafana_reader`(`logs-*`·`traces-*`·`metrics-*`·`.monitoring-*` 읽기)와 file realm 사용자, ES·Kibana·Logstash·Filebeat CR의 `spec.monitoring`(Metricbeat sidecar), EDOT Collector의 앱 지표 `metrics` 파이프라인(`otel-collector/otel.yml`) | 역할·사용자는 재시작 없음(1~2분 안에 반영). **`spec.monitoring`을 처음 켜면 sidecar가 붙으면서 ES·Kibana·Logstash·Filebeat 파드가 모두 재시작한다.** ES가 1노드라 1~3분 동안 색인·검색이 멈추고, 그동안 로그는 Logstash 큐에 쌓였다가 이어서 들어간다. `otel.yml`을 바꾸면 ConfigMap 이름이 바뀌어 collector가 다시 뜬다 |
+| `workload-ENV` (`workload/overlays/ENV`) | 앱 이미지 태그, 앱 지표 전송을 켜는 `OTEL_METRICS_EXPORTER=otlp`(dev overlay), Kafka PrometheusRule | 앱 파드가 롤링 업데이트된다. 서비스 중단은 없다 |
 
 ### 9.3 Git 밖 Secret
 
@@ -386,19 +398,23 @@ flowchart LR
     E1 --> G1["kube-prometheus-stack<br/>Grafana 데이터 소스 · 규칙 sidecar"]
     G1 --> G2["alerting<br/>Grafana 규칙 · contact point"]
   end
-  subgraph ST4["4. 앱 지표 (예정)"]
-    M1["서비스 저장소 dev 머지<br/>CI가 이미지 태그 갱신"] --> M2["workload<br/>metrics 포트"]
-    M2 --> M3["alerting<br/>ServiceMonitor · loresentry-app"]
+  subgraph ST4["4. 앱 지표"]
+    M0["logging · kube-prometheus-stack<br/>collector metrics 파이프라인 · grafana_reader<br/>데이터 소스 es-app-metrics"] --> M1["서비스 저장소 dev 머지<br/>CI가 이미지 태그 갱신"]
+    M1 --> M2["workload<br/>dev overlay OTEL_METRICS_EXPORTER=otlp"]
+    M2 --> M3["alerting<br/>Grafana 규칙 loresentry-app"]
   end
   A1 --> R1
   A1 --> E1
-  A1 --> M1
+  G1 --> M0
 ```
 
-- **1이 먼저다.** 출구가 있어야 뒤 단계의 경보가 실제로 Slack에 오는지 확인할 수 있다. 2·3·4는 1 뒤에 서로 따로 진행할 수 있다.
+- **1이 먼저다.** 출구가 있어야 뒤 단계의 경보가 실제로 Slack에 오는지 확인할 수 있다. 2·3은 1 뒤에 서로 따로 진행할 수 있다.
+  4는 3의 Grafana ES 계정·규칙 sidecar와 EDOT Collector([APM_ARCHITECTURE.md](APM_ARCHITECTURE.md))를 쓴다.
 - **3에서는 logging을 Grafana 규칙보다 먼저 배포한다.** sidecar를 켤 때 ES가 1~3분 멈추는데, 그때 Grafana 규칙이 이미 있으면
   LogIngestionStopped가 데이터 소스 오류로 울린다. 규칙이 생기기 전에 재시작을 끝낸다.
-- **4에서는 앱 이미지가 먼저다.** 9464를 아직 열지 않은 앱에 ServiceMonitor가 먼저 붙으면 수집이 실패해 AppMetricsDown이 울린다.
+- **4에서는 collector 파이프라인이 먼저고 규칙이 마지막이다.** collector에 `metrics` 파이프라인이 없으면 agent가 보낸 지표를 받을
+  곳이 없다. 새 이미지는 기본으로 지표를 보내지 않으므로 먼저 나가도 아무 일이 없고, overlay의 `OTEL_METRICS_EXPORTER=otlp`가
+  전송을 켠다. 지표가 ES에 들어오기 전에 규칙을 넣으면 AppMetricsMissing이 울린다.
 - 각 PR은 머지한 뒤 Argo CD가 Synced·Healthy인지, 파드 재시작이 예상한 것뿐인지, 경보가 의도대로 오는지 보고 다음으로 간다.
 
 ### 9.5 바꾸는 것과 위치
@@ -408,10 +424,12 @@ flowchart LR
 | Slack 채널·묶기·반복·억제·메시지 형식 | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles` |
 | Grafana 데이터 소스 | `argocd-apps-dev/kube-prometheus-stack.yaml`의 `grafana` |
 | Grafana가 Alertmanager로 넘기는 설정(contact point·policy) | `alerting/base/grafana/notifications.yaml` |
-| 지표 규칙 | `alerting/base/prometheus/` |
-| 로그·로그 스택 규칙 | `alerting/base/grafana/` |
+| Prometheus 지표 규칙 | `alerting/base/prometheus/` |
+| 로그·로그 스택·앱 지표 규칙 | `alerting/base/grafana/`(앱 지표는 `app-rules.yaml`) |
 | Grafana 대시보드(경보 현황·ArgoCD) | `alerting/base/grafana/dashboards/`의 JSON. 폴더는 kps values의 `grafana.sidecar.dashboards.folderAnnotation` |
-| 수집 대상 (앱 지표 때) | `alerting/base/prometheus/servicemonitor.yaml`, 앱 Service의 `metrics` 포트 |
+| 앱이 내보내는 지표 | 서비스 저장소의 agent 설정(Java `docker/otel-agent.properties`, Python `docker-entrypoint.sh`)과 로깅 팩토리의 지표 코드 |
+| 앱 지표 전송 켜기 | `workload/overlays/ENV`의 `OTEL_METRICS_EXPORTER` |
+| 앱 지표 거르기·지우기 | `logging/base/otel-collector/otel.yml`의 `filter/metric-noise`·`transform/metric-privacy` |
 | Grafana가 읽는 ES 범위 | `logging/base/elasticsearch/`의 역할 정의 |
 | 로그 스택 모니터링 sidecar | `logging/base/`의 Elasticsearch·Kibana·Logstash·Beat CR `spec.monitoring` |
 | prod | `argocd-apps/kube-prometheus-stack.yaml`과 `*/overlays/prod`. prod 환경을 세팅할 때 만든다 |
@@ -421,7 +439,8 @@ flowchart LR
 | 상황 | 동작 |
 |---|---|
 | Slack API가 실패함 | Alertmanager가 다시 시도한다. 계속 실패하면 `AlertmanagerFailedToSendAlerts`가 울리지만 Slack으로는 못 가므로 Grafana 경보 화면에서 보인다 |
-| Grafana가 내려감 | 로그 경보만 멈춘다. 지표 경보는 Prometheus → Alertmanager로 그대로 간다. Grafana 파드 재시작은 kps 기본 규칙이 알린다 |
+| Grafana가 내려감 | Grafana 규칙(로그·로그 스택·앱 지표)이 멈춘다. Prometheus 지표 경보는 Prometheus → Alertmanager로 그대로 간다. Grafana 파드 재시작은 kps 기본 규칙이 알린다 |
+| EDOT Collector나 agent 전송이 멈춤 | 앱 지표가 끊겨 10분 안에 서비스마다 AppMetricsMissing(warning). 그동안 다른 앱 지표 규칙은 결과가 비어 울리지 않는다 |
 | Elasticsearch가 응답하지 않음 | 개수 규칙은 직전 상태를 유지하고, LogIngestionStopped가 오류 경보로 알린다. `.monitoring-*`도 함께 끊기므로 ES 파드 상태는 Prometheus 파드 규칙이 알린다 |
 | Metricbeat sidecar가 멈춤 | 그 구성요소의 `.monitoring-*`가 끊겨 5분 안에 StackMonitoringDataMissing(warning) |
 | 로그 수집이 멈춤(Filebeat·Logstash) | 10분 안에 LogIngestionStopped(critical) |

@@ -1,13 +1,15 @@
 # 경보 규약 — severity·Slack 전달·라벨·규칙 목록
 
-> 최신화: 2026-11-05
+> 최신화: 2026-11-06
 > 대상: 클러스터 안 Prometheus 경보(kps 기본·Kafka·우리 규칙), Grafana가 Elasticsearch 로그와 로그 스택 모니터링 데이터로
 > 평가하는 경보, 앱이 내보내는 지표
-> 상태: **dev 운영 중. 앱 지표만 아직 없다.** 앱 지표([6.6](#66-앱-지표-규칙-loresentry-app)·[7절](#7-앱-지표-규약))는 APM 세팅이
-> 끝난 뒤 붙인다. prod는 prod 환경을 세팅할 때 같은 규약으로 붙인다([10절](#10-아직-없는-것)).
+> 상태: **dev 운영 중.** 앱 지표([6.6](#66-앱-지표-규칙-loresentry-app)·[7절](#7-앱-지표-규약))는 2026-11-05에 Prometheus `/metrics`
+> 대신 Elastic APM 경로(EDOT agent → EDOT Collector → Elasticsearch)로 붙였다. prod는 prod 환경을 세팅할 때 같은 규약으로 붙인다
+> ([10절](#10-아직-없는-것)).
 > 관련: 구성과 흐름 그림은 [ALERTING_ARCHITECTURE.md](ALERTING_ARCHITECTURE.md), 로그 필드는 [LOG_SCHEMA.md](LOG_SCHEMA.md),
-> 매니페스트는 `loresentry-gitops/alerting/`(규칙, Grafana가 Alertmanager로 넘기는 설정)과
-> `argocd-apps-dev/kube-prometheus-stack.yaml`(Alertmanager·Grafana 설정)
+> 매니페스트는 `loresentry-gitops/alerting/`(규칙, Grafana가 Alertmanager로 넘기는 설정),
+> `argocd-apps-dev/kube-prometheus-stack.yaml`(Alertmanager·Grafana 설정), `logging/base/otel-collector/otel.yml`(앱 지표를 받는
+> collector)과 서비스 저장소의 agent 설정(Java `docker/otel-agent.properties`, Python `docker-entrypoint.sh`)
 
 경보를 만들고 보내는 모든 곳이 따르는 규약이다. Prometheus 규칙, Grafana 로그 규칙, Alertmanager 설정, 앱의 지표 코드가 이 문서를
 기준으로 한다.
@@ -21,9 +23,10 @@
 ## 1. 경로와 책임
 
 ```text
-앱 /metrics(예정) · kube-state-metrics · node-exporter · kubelet · Kafka ─▶ Prometheus ─(PrometheusRule)─┐
+kube-state-metrics · node-exporter · kubelet · Kafka ─▶ Prometheus ─(PrometheusRule)──────────────────────┐
 앱·AWS 로그 ─▶ Filebeat ─▶ Logstash ─▶ Elasticsearch logs-* ◀─┐                                    │
 ES·Kibana·Logstash·Filebeat 상태 ─▶ Metricbeat sidecar ─▶ Elasticsearch .monitoring-* ◀─┤            │
+앱 지표 ─▶ EDOT agent ─(OTLP, 1분)─▶ EDOT Collector ─▶ Elasticsearch metrics-generic.otel-* ◀─┤            │
                                                        (ES 쿼리, 1분마다) Grafana 경보 규칙 ─────────┤
                                                                                                     ▼
                                                      kps Alertmanager: 묶기 · 억제 · silence · 경로
@@ -33,14 +36,15 @@ ES·Kibana·Logstash·Filebeat 상태 ─▶ Metricbeat sidecar ─▶ Elasticse
 
 | 단계 | 하는 일 | 하지 않는 일 |
 | --- | --- | --- |
-| 앱 (예정) | [7절](#7-앱-지표-규약)대로 요청 지표를 `:9464/metrics`에 내보낸다 | 경보를 직접 보내지 않는다 |
+| 앱 | 서비스 안의 EDOT agent가 [7절](#7-앱-지표-규약)의 지표(JVM·런타임·HTTP·DB 풀·외부 연동·Kafka·LLM·우리 지표)를 1분마다 OTLP로 EDOT Collector에 보낸다. dev만 켠다 | 경보를 직접 보내지 않는다. `/metrics` 포트를 열지 않는다(Prometheus는 앱을 수집하지 않는다) |
+| EDOT Collector | 앱 지표를 받아 쓰지 않는 계열을 버리고 URL 속성을 지운 뒤 ES `metrics-generic.otel-*`에 쓴다(span과 같은 collector) | 평가하지 않는다 |
 | Prometheus | 지표 수집(30초), 규칙 평가(30초), firing 경보를 Alertmanager로 보낸다 | Slack에 보내지 않는다 |
 | Metricbeat sidecar | ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인다. 각 구성요소의 상태 API를 10초마다 읽어 ES `.monitoring-*`에 쓴다(Elastic Stack Monitoring) | 경보를 평가하지 않는다. 구성요소의 로그는 모으지 않는다(이미 Filebeat가 모은다) |
-| Grafana | ES 로그 규칙과 로그 스택 규칙 평가(1분), firing 경보를 contact point로 Alertmanager에 넘긴다 | 묶기·반복·Slack 전송(Grafana 내장 Alertmanager는 쓰지 않는다) |
+| Grafana | ES 로그 규칙·로그 스택 규칙·앱 지표 규칙 평가(1분), firing 경보를 contact point로 Alertmanager에 넘긴다 | 묶기·반복·Slack 전송(Grafana 내장 Alertmanager는 쓰지 않는다) |
 | Alertmanager | 묶기, 억제, silence, severity별 경로, Slack 전송과 메시지 수정 | 조회·평가 |
 | Slack | 사람이 받는 곳. 경보 메시지는 나중에 진단 답글이 달리는 자리다 | — |
 
-Kibana는 로그 탐색과 Stack Monitoring 화면에만 쓴다. Basic 라이선스의 Kibana 규칙은 Slack·webhook connector가 없어(Gold 이상)
+Kibana는 로그·APM·앱 지표 탐색과 Stack Monitoring 화면에만 쓴다. Basic 라이선스의 Kibana 규칙은 Slack·webhook connector가 없어(Gold 이상)
 경보에 쓰지 않는다. Stack Monitoring 화면을 처음 열 때 Kibana가 기본 규칙을 만들자고 묻는데 만들지 않는다. 같은 내용을 Grafana
 규칙으로 둔다([6.5](#65-로그-스택-규칙-grafana-stack-monitoring)).
 
@@ -151,6 +155,8 @@ Alertmanager `update_message: true`로, 같은 묶음의 후속 알림(반복, �
   `service: '{{ index $$labels "service.name" }}'`, `namespace: '{{ index $$labels "service.environment" }}'`로 옮긴다.
 - **Grafana 규칙의 `$`**: provisioning이 라벨 안의 `$이름`을 환경 변수로 바꾸므로, 라벨의 템플릿 변수는 `$$labels`·`$$values`로
   적는다. annotation(summary·description·kibana_url)은 바꾸지 않으므로 `$labels`·`$values` 그대로 적는다.
+- 앱 지표 규칙([6.6](#66-앱-지표-규칙-loresentry-app))은 `namespace: dev`(고정), `service`는 지표 resource의 `service.name`이다.
+  규칙에 따라 `pod`(`k8s.pod.name`)·`route`(`http.route`)·`target`(호출 대상 주소·DB 종류)·`topic`·`partition`을 더 단다.
 - 로그 스택 규칙([6.5](#65-로그-스택-규칙-grafana-stack-monitoring))은 `namespace: monitoring`, `service`는 구성요소 이름
   (`elasticsearch`·`logstash`·`filebeat`)이다. 로그의 `service.name`과 같은 값이다. ES 노드·Filebeat처럼 여러 대일 수 있는 것은
   `pod` 라벨로 어느 것인지 구분한다. StackMonitoringDataMissing만 `.monitoring-*`의 `event.module` 값(`elasticsearch`·`kibana`·
@@ -246,7 +252,7 @@ data stream만 보는 규칙이라 걸리지 않는다.
 | severity가 두 단계인 규칙 | 한 규칙에서 값에 따라 `severity` 라벨을 정한다 | Grafana는 같은 폴더에 같은 이름의 규칙을 둘 수 없다 |
 | Alertmanager로 넘기기 | contact point `kps-alertmanager`(종류 prometheus-alertmanager, `http://kps-alertmanager.monitoring:9093`) + 루트 policy `group_by ['...']`, `group_wait 0s`, `group_interval 1m`, `repeat_interval 1m`. `alerting/base/grafana/notifications.yaml`(ConfigMap)에 있다 | Grafana는 경보 끝 시각을 약 4분 뒤로 찍어 보내므로 1분마다 다시 보내야 Alertmanager가 해소로 오해하지 않는다. 묶기·반복은 Alertmanager가 한다 |
 | Kibana 링크 | 앱·ALB·RDS·Neptune 규칙은 annotation `kibana_url`에 같은 조건(앱 규칙은 그 `service.name`까지)의 Discover 링크(최근 30분)를 단다 | Slack 메시지에서 바로 해당 로그로 간다 |
-| 규칙 파일 | `alerting/base/grafana/log-rules.yaml`(로그 12개), `log-stack-rules.yaml`(로그 스택 7개). Grafana sidecar가 label `grafana_alert: "1"`인 ConfigMap을 재시작 없이 다시 읽는다 | |
+| 규칙 파일 | `alerting/base/grafana/log-rules.yaml`(로그 12개), `log-stack-rules.yaml`(로그 스택 7개), `app-rules.yaml`(앱 지표 12개). Grafana sidecar가 label `grafana_alert: "1"`인 ConfigMap을 재시작 없이 다시 읽는다 | |
 
 ### 6.5 로그 스택 규칙 (Grafana, Stack Monitoring)
 
@@ -271,40 +277,84 @@ ECK가 ES·Kibana·Logstash·Filebeat 파드마다 붙인 Metricbeat sidecar가 
 
 ### 6.6 앱 지표 규칙 (`loresentry-app`)
 
-> **아직 없다.** 앱이 [7절](#7-앱-지표-규약)의 지표를 내보낸 뒤(APM 세팅이 끝난 다음) 이 표대로 붙인다.
-
-[7절](#7-앱-지표-규약)의 지표로 계산한다. 대상은 HTTP API 5개(gateway·content·authentication·ai-chat·graph-rag)다.
-ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailable이 덮는다.
+[7절](#7-앱-지표-규약)의 지표를 Grafana가 ES에서 읽어 평가한다(데이터 소스 `es-app-metrics`, index `metrics-generic.otel-*`).
+지연 histogram은 ES `percentiles`로 p95·p99를 내고, 건수는 histogram 문서의 `_doc_count`(관측 수 = 요청·호출 수)를 센다. 1분 칸마다
+계산해 창 안의 평균·합으로 줄인다. 기준값은 2026-11-05 dev 평소 값으로 정했고, 부하 테스트 뒤 다시 본다.
 
 | 규칙 | 조건 | for | severity | 근거 |
 | --- | --- | --- | --- | --- |
-| AppMetricsDown | 지표 수집 실패(`up == 0`) | 3m | warning | 파드는 있는데 지표가 안 나오면 아래 규칙이 모두 눈을 감는다 |
-| AppHigh5xxRatio | 5xx 비율 5% 초과이면서 5분 5xx 5건 이상 / 20% 초과이면서 20건 이상 | 5m | warning / critical | 트래픽이 적은 dev에서 1건이 비율을 튀게 하지 않도록 건수 하한을 둔다 |
-| AppLatencyP95High | 경로별 p95 1초 초과. 초당 0.05건 이상일 때만 | 10m | warning | dev 4일 실측 일반 경로 p99 1.4초 이하 |
-| AppLatencyP99High | 같은 조건에서 p99 2.5초 초과 | 10m | warning | |
-| JvmHeapHigh | JVM heap 사용량이 최대의 90% 초과(Spring 3개) | 10m | warning | |
-| DbPoolPending | HikariCP 연결을 기다리는 요청이 있음(content·authentication) | 5m | warning | 연결 풀이 모자라 요청이 줄 서 있다 |
+| AppMetricsMissing | 서비스별 앱 지표 10분 0건 | 0 | warning | agent·collector가 지표를 보내지 못하면 아래 규칙이 모두 눈을 감는다. 0건인 서비스도 결과에 남도록 terms에 `min_doc_count 0`을 쓴다. index에 남은 서비스 이름을 기준으로 하므로 서비스를 없애면 30일 동안 울린다 |
+| AppHigh5xxRatio | 5분 5xx 비율 5% 초과이면서 5xx 5건 이상 / 20% 초과이면서 20건 이상(헬스체크 제외) | 5m | warning / critical | 트래픽이 적은 dev에서 1건이 비율을 튀게 하지 않도록 건수 하한을 둔다 |
+| AppLatencyP95High | 서비스·경로별 10분 p95 1초 초과. 10분 30건(초당 0.05건) 이상인 경로만 | 5m | warning | dev 실측: 일반 경로 p99 1.4초 이하(gateway 로그 4일, 2026-11-04). 부하 테스트 중에는 gateway 경로들의 p95가 약 2초까지 올랐다(trace) |
+| AppLatencyP99High | 같은 조건에서 p99 2.5초 초과 | 5m | warning | 기본 버킷이 10초까지라 그 아래 기준만 쓴다 |
+| JvmHeapHigh | GC 직후 heap(`jvm.memory.used_after_last_gc`, heap 영역 합) / heap 최대 > 90%(파드별, 10분 평균) | 10m | warning | 순간 사용량은 GC 때문에 톱니처럼 오르내려, GC가 회수하지 못한 양으로 본다. 평소 약 6% |
+| JvmGcTimeHigh | 10분 중 GC 시간(`jvm.gc.duration` 합) 10% 초과(파드별) | 5m | warning | 이 서비스들은 CPU 1개 이하라 JVM이 Serial GC를 쓴다. GC 동안 요청이 모두 멈춘다. 평소 0.1% 안팎 |
+| DbPoolPending | DB 연결을 기다리는 요청(`db.client.connection.pending_requests`)이 5분 내내 0 초과 | 5m | warning | 연결 풀이 모자라 요청이 줄 서 있다(Java HikariCP, Python psycopg 풀) |
+| OutboxBacklog | 가장 오래된 미발행 행 5분 초과, 또는 relay 마지막 회차 이후 5분 초과(content·authentication) | 5m | warning | 이벤트가 Kafka로 나가지 못해 다른 서비스가 바뀐 것을 모른다. relay는 1초 주기라 평소 둘 다 1초 안쪽 |
+| EventLoopLagHigh | Python event loop 지연 p95 0.5초 초과(파드별, 5분 평균) | 5m | warning | 루프 하나가 모든 요청을 처리하므로 막힌 만큼 모든 요청이 늦다. 평소 5ms 아래 |
+| KafkaConsumeDelayHigh | 서비스·topic·partition별 Kafka 도착 지연 p95 5분 초과(10분 평균) | 10m | warning | 바뀐 내용이 늦게 반영된다(graph-rag면 그래프·검색). partition별로 본다(사용자 결정, 알려진 graph-rag partition 굶주림). 처리를 시작할 때 재므로 partition이 아예 멈추면 값이 없고, 그때는 KafkaConsumerGroupLagHigh가 울린다 |
+| DependencyLatencyHigh | 나가는 HTTP 호출(내부 서비스·Google·Neptune) 서비스·대상 주소별 10분 p95 1초 초과, 30건 이상. OpenAI 제외 | 10m | warning | Neptune p95 약 20~50ms(2026-11-05). LLM 호출은 원래 수 초라 뺀다(대시보드에서 본다) |
+| DbLatencyHigh | DB·Redis 명령 서비스·DB 종류별 10분 p95 1초 초과, 30건 이상 | 10m | warning | PostgreSQL p95 약 1~4ms, Valkey 1ms 아래(2026-11-05) |
 
-지연 규칙에서 빼는 경로: LLM 답을 기다리는 채팅 메시지 경로(`/chat/sessions/{sessionId}/messages` 등, dev p95 8.8초)와 샘플 프로젝트
-생성(`/projects/sample`, p99 2.0초). 정확한 목록은 규칙 파일에 둔다.
+- 지연 규칙(AppLatency)에서 빼는 경로: 헬스체크(`/health*`), LLM 답을 기다리는 채팅 메시지(`*/chat/sessions/*/messages*`, dev p95 약
+  11초), 샘플 프로젝트 생성(`/projects/sample*`).
+- 외부 연동 지연은 HTTP와 DB·Redis를 두 규칙으로 나눈다. 쿼리할 지표 필드와 나누는 라벨이 달라 한 규칙의 조건 식으로 합칠 수 없다.
+- graph-rag의 Kafka 처리 스레드 대기(`loresentry.kafka.handler.queue`)는 경보를 걸지 않는다. 레코드를 하나 맡기면 끝날 때까지 다음을
+  받지 않는 구조라 대기는 늘 0에 가깝고, 밀림은 도착 지연이 보여 준다.
+- 동시 요청 수·LLM 토큰·LLM 호출 시간·Kafka 처리 시간은 화면에서만 본다([7.1](#71-화면)).
+- 공통 설정은 [6.4](#64-로그-규칙-grafana-es-쿼리)의 표와 같다. 결과 없음(NoData)은 OK(오류·지연이 없으면 결과가 비어 있다),
+  AppMetricsMissing만 Alerting이다. AppDeploymentUnavailable이 울리면 같은 서비스의 이 warning들은 억제된다([5절](#5-억제)).
 
 ## 7. 앱 지표 규약
 
-> **아직 구현 전이다.** 서비스 5개가 이 규약대로 `/metrics`를 열 때 따른다.
-
 | 항목 | 규약 |
 | --- | --- |
-| 노출 | 전용 포트 **9464**의 `GET /metrics`(Prometheus 텍스트 형식). Kubernetes Service의 `metrics` 포트로만 열고 Ingress에는 걸지 않는다 |
-| 수집 | ServiceMonitor 하나가 `app.kubernetes.io/part-of: lore-sentry`이면서 `metrics` 포트가 있는 Service를 모두 수집한다(30초). `service`·`namespace`·`pod` 라벨은 Prometheus Operator가 단다 |
-| 요청 지표 | `http_server_requests_seconds` histogram(`_bucket`·`_count`·`_sum`) |
-| 라벨 | `method`, `uri`(경로 템플릿. 매칭되는 경로가 없으면 고정값), `status`(숫자), `outcome`(`SUCCESS`·`CLIENT_ERROR`·`SERVER_ERROR` 등) |
-| 버킷 | 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60초. Spring 설정은 `50ms,100ms,250ms,500ms,1s,2500ms,5s,10s,30s,60s`로 쓴다. 숫자만 쓰면 ms로 읽히고, `2.5s`는 기동이 실패한다 |
-| 빼는 요청 | `/health`·`/health/db`, 그리고 `/metrics` 수집 요청 자체 |
-| 로그 | 수집 요청은 로그를 남기지 않는다(30초마다 파드당 한 줄씩 쌓이지 않게) |
-| Spring | `spring-boot-starter-actuator`와 `micrometer-registry-prometheus`. `management.server.port: 9464`, 경로 `/metrics`, 노출은 `prometheus`만. JVM·HikariCP 지표는 함께 나온다 |
-| Python | `prometheus-client`. histogram은 모듈 수준에서 한 번 정의하고 ASGI 미들웨어로 기록하며, 9464 서버는 진입점에서 한 번만 띄운다 |
+| 경로 | 서비스 안의 EDOT agent(Java 1.14.0, Python distro 1.19.0)가 1분마다 OTLP/HTTP로 EDOT Collector(`edot-collector.monitoring.svc:4318`, span과 같은 주소)에 보낸다 → ES `metrics-generic.otel-default`(보존 30일, 레플리카 0, `metrics-otel@custom`). 앱은 지표 포트를 열지 않고 Prometheus는 앱을 수집하지 않는다 |
+| 켜는 곳 | 이미지 기본은 보내지 않는다(prod 포함, `otel.metrics.exporter=none`, `OTEL_METRICS_EXPORTER=none`). dev overlay(`workload/overlays/dev`)의 `OTEL_METRICS_EXPORTER=otlp`가 켠다 |
+| 이름 | OpenTelemetry 표준 이름을 쓴다(`http.server.request.duration`, `jvm.*`, `db.client.*`, `gen_ai.client.*`, `messaging.*`). 표준이 없는 것만 `loresentry.*`로 둔다 |
+| 시간 단위 | 초(`s`). histogram은 delta로 보내고(Java·Python SDK 기본), ES에는 `histogram` 필드로 쌓인다 |
+| 라벨(속성) | 원문 값(사용자 입력, ID가 들어간 실제 경로, 쿼리스트링, 대화 내용)을 넣지 않는다. 경로는 템플릿(`http.route`)만 쓴다. collector가 두 번째 방어선으로 datapoint의 `url.*`·`http.target`·`http.url`을 지우고 이메일을 가린다 |
+| 코드 | 우리 지표의 도구(instrument)는 로깅 팩토리 패키지 안에만 둔다(Java `…logging`, Python `app/logs`). 그 패키지만 OpenTelemetry API를 쓴다(ArchUnit·ruff TID251). 서비스 코드는 팩토리에 값·람다만 넘긴다. 지표를 기록하는 일은 로그 줄과 span을 만들지 않는다 |
 
-라벨에 원문 값(사용자 입력, ID가 들어간 실제 경로)을 넣지 않는다. 경로는 템플릿(`/projects/{projectId}`)만 쓴다.
+서비스별로 나오는 지표:
+
+| 대상 | 지표 | 켜는 곳 |
+| --- | --- | --- |
+| Java 3개(gateway·content·authentication) | JVM: `jvm.memory.*`(영역별 used·committed·limit·used_after_last_gc), `jvm.gc.duration`, `jvm.thread.count`, `jvm.class.*`, `jvm.cpu.*` | agent `otel.instrumentation.runtime-telemetry.enabled` |
+| Java 3개 | JVM 실험 지표: `jvm.buffer.*`(direct buffer), `jvm.system.cpu.*`, `jvm.file_descriptor.*` | `runtime-telemetry.emit-experimental-metrics` |
+| Java 3개 | HTTP: `http.server.request.duration`, `http.server.active_requests`(동시 요청 수). 요청은 가상 스레드로 처리해(`spring.threads.virtual.enabled`) Tomcat 스레드 풀이 없으므로 막힘은 동시 요청 수로 본다 | tomcat·servlet 계측(기본), `http.server.emit-experimental-telemetry` |
+| content·authentication | DB 연결 풀: `db.client.connection.count`(`db.client.connection.state` used·idle), `.max`·`.idle.min`, `.pending_requests`, `.wait_time` 등 | `hikaricp` 계측 |
+| Java 3개 | 외부 연동: PostgreSQL(JDBC)·Valkey(Lettuce) `db.client.operation.duration`, 나가는 HTTP `http.client.request.duration`, Kafka client 지표 4개(`kafka.consumer.fetch_latency_avg`·`records_lag_max`, `kafka.producer.request_latency_avg`·`record_error_rate`) | 기존 계측. S3·KMS(aws-sdk)는 지표가 없어 span으로 본다 |
+| content·authentication | outbox: `loresentry.outbox.pending`(미발행 행), `loresentry.outbox.oldest_age`(가장 오래된 미발행 행의 나이, 초), `loresentry.outbox.relay.last_run_age`(relay 마지막 회차 이후 초) | 코드. relay가 회차마다 "돌았다"를, 15초마다 미발행 행 수를 알린다 |
+| content | Kafka 도착 지연 `loresentry.kafka.consume.delay`(발행 시각부터 처리 시작까지, topic·consumer group·partition별) | 코드(`LogFlow.kafkaRecord`). 재시도마다 따로 기록된다 |
+| Python 3개(ai-chat API·summarizer, graph-rag) | 프로세스: `process.runtime.cpython.{memory,cpu_time,cpu.utilization,thread_count,context_switches,gc_count}`, `cpython.gc.*` | `system_metrics` 계측 |
+| ai-chat API·graph-rag | HTTP: `http.server.request.duration`, `http.server.active_requests` / 나가는 HTTP `http.client.request.duration`(graph-rag → Neptune·content) | FastAPI·httpx 계측 |
+| ai-chat API·summarizer | DB: `db.client.operation.duration`(psycopg), 연결 풀 `db.client.connection.*`(Java와 같은 이름) | psycopg 계측, 풀은 코드(`get_stats()`) |
+| Python 3개 | event loop 지연 `loresentry.event_loop.lag` | 코드 |
+| ai-chat·graph-rag | LLM: `gen_ai.client.token.usage`(입력·출력), `gen_ai.client.operation.duration`(모델별) | 코드(`openai call` span을 여는 팩토리) |
+| ai-chat summarizer·graph-rag | Kafka: `loresentry.kafka.consume.delay`, `messaging.process.duration`(topic·partition별), graph-rag 발행 `messaging.client.operation.duration`, graph-rag 처리 스레드 `loresentry.kafka.handler.queue`(처리 중·대기) | 코드(`LogFlow.kafka_record` 등) |
+
+- **collector가 버리는 계열**(`filter/metric-noise`): HTTP 요청·응답 본문 크기 histogram, 위 4개를 뺀 Kafka client 내부 지표(content 혼자
+  10분에 문서 258개, JVM 지표의 약 4배였다).
+- **psycopg 버킷**: psycopg 계측은 histogram 경계를 정하지 않아 SDK 기본 경계(ms용 0·5·10…)에 초 단위 값을 넣는다. 그래서 거의 모든
+  명령이 첫 칸에 들어가 p95가 늘 2.5로 나왔다. ai-chat의 `app/logs`가 첫 DB 연결 전에 계측의 histogram 생성 함수를 바꿔 끼워 Java JDBC와
+  같은 경계(0.001·0.005·0.01·0.05·0.1·0.5·1·5·10초)를 넘긴다. 계측이 경계를 넘기게 되면 이 우회는 지운다(테스트가 경계를 확인한다).
+- **버킷**: 표준 지표는 semconv 권장 경계를 쓴다(HTTP 0.005~10초, DB 0.001~10초). 우리 지표: event loop 지연 0.005~10초, Kafka 도착 지연
+  0.01~3600초, LLM 호출 0.01~81.92초, 토큰 1~4,194,304.
+
+### 7.1 화면
+
+| 곳 | 내용 |
+| --- | --- |
+| Kibana → Observability → Applications → Service Inventory → 서비스 → **Metrics** | EDOT 내장 화면. Java는 JVM(heap·non-heap·GC·스레드·CPU), Python은 런타임. Kibana가 고정한 화면이라 고치지 않는다 |
+| 서비스 → **Dashboards** | 아래 대시보드를 그 서비스 값만 보이게 연결했다(서비스·환경 필터 켬). Java 3개에는 Java, Python 3개에는 Python 대시보드 |
+| 대시보드 "앱 지표 · Java (dev)" `loresentry-dash-metrics-java` | 서비스 요약(요청 수·5xx 비율·p95·p99), 처리량·p95·5xx 추이, 느린 경로, 동시 요청 수, 나가는 HTTP·DB·Redis p95, heap·GC 직후 heap 사용률·heap 밖 메모리, GC 시간, 스레드, CPU, HikariCP, outbox, Kafka 도착 지연 |
+| 대시보드 "앱 지표 · Python (dev)" `loresentry-dash-metrics-python` | 같은 HTTP·외부 연동 패널, RSS·CPU·event loop 지연·GC 횟수·스레드, psycopg 풀, Kafka 도착 지연·처리 시간, graph-rag 처리 스레드, LLM 토큰·호출 p95 |
+
+두 대시보드는 Kibana API로 만든 저장 객체라 Git에 없다(2026-11-05, [8.1](#81-kibana-화면-모니터링-dev)과 같은 방식). 패널은 ES|QL이고,
+histogram은 `TO_TDIGEST`로 바꿔 `PERCENTILE`(지연)·`COUNT`(관측 수)를 낸다. 다른 대시보드의 Links 패널에서 "APM (dev)" 다음에 있다.
+지표가 한 번도 들어오지 않은 필드(예: LLM 호출이 없던 환경의 `gen_ai.*`)를 읽는 패널은 그 지표가 처음 들어올 때까지 "Unknown column"
+오류를 보인다.
 
 ## 8. 로그 스택 모니터링 규약 (ECK Stack Monitoring)
 
@@ -335,7 +385,7 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
   `kube-prometheus-stack-`로 시작하는 것(Grafana·Prometheus·Alertmanager·Prometheus Operator·node-exporter)이다.
 - Grafana·Prometheus·Alertmanager의 **지표**는 ES에 없다(Prometheus가 스스로 수집한다). Kibana에서는 그 로그만 보이고, 지표는 Grafana의 kps 기본 대시보드에서 본다.
 - 지표는 3일만 남으므로 그보다 넓은 시간 범위에서는 지표 패널이 비고 로그 패널만 보인다.
-- 다른 대시보드 9개와 위쪽 Links 패널로 오간다("APM (dev)" 다음).
+- 다른 대시보드와 위쪽 Links 패널로 오간다("앱 지표 · Python (dev)" 다음).
 
 ## 9. 운영
 
@@ -364,8 +414,8 @@ ai-chat-summarizer는 HTTP가 없어 Kafka lag 규칙과 AppDeploymentUnavailabl
 
 | 항목 | 상태 |
 | --- | --- |
-| 앱 지표 | APM 세팅이 끝난 뒤 붙인다. 서비스 5개의 `:9464/metrics`([7절](#7-앱-지표-규약)), workload의 `metrics` 포트, ServiceMonitor, 규칙 `loresentry-app`([6.6](#66-앱-지표-규칙-loresentry-app)) 순서다. 붙이기 전까지 앱 장애는 AppDeploymentUnavailable과 로그 규칙(AppErrorLogs·DependencyUnavailable·AlbServerErrors)이 덮는다 |
-| APM 경보 | APM(EDOT Collector → ES traces)을 세팅한 뒤, 같은 방식으로 Grafana 규칙을 붙인다 |
+| APM 경보 | trace(`traces-*.otel-*`) 기준 Grafana 규칙. 앱 지표 규칙([6.6](#66-앱-지표-규칙-loresentry-app))이 요청·외부 연동 지연을 덮으므로, trace에만 있는 것(S3·KMS 호출, 오류 trace)이 필요할 때 붙인다 |
+| 앱 지표 기준값 | 2026-11-05 dev 평소 값으로 정했다. 부하 테스트(오버헤드·collector 자원·로깅 노드와 함께) 뒤 다시 본다 |
 | AI 진단 | Alertmanager webhook으로 진단 서비스를 부르고, 결과를 경보 메시지의 스레드 답글로 단다. 알림 경로와 별도로 붙인다 |
 | `Watchdog` 외부 감시 | Alertmanager나 Prometheus 자체가 죽으면 알릴 곳이 없다. 외부 dead man's switch를 붙이기 전까지는 빈 곳이다 |
 | prod | prod 환경을 세팅할 때 아래를 붙인다. 지금 prod Alertmanager는 받는 곳이 `null` 하나뿐이다 |
@@ -382,7 +432,9 @@ prod에서 할 일:
    - ECK CR의 `spec.monitoring`(sidecar)
    - Grafana 로그·로그 스택 규칙
    - Kibana 화면 prod판
-5. 앱 지표를 붙인 뒤 prod overlay에 ServiceMonitor와 `loresentry-app`을 넣는다. 5xx 최소 건수 같은 기준값은 prod 트래픽을 보고 정한다.
+5. prod EDOT Collector가 생긴 뒤 prod overlay에서 `OTEL_METRICS_EXPORTER=otlp`를 켜고, Grafana 데이터 소스 `es-app-metrics`와
+   `loresentry-app`을 넣는다(`namespace` 라벨은 prod). 5xx 최소 건수 같은 기준값은 prod 트래픽을 보고 정한다. trace를 표본 추출해도
+   앱 지표는 영향을 받지 않는다(지표는 agent가 모든 요청으로 센다).
 
 ## 바꾸는 절차
 
@@ -393,6 +445,8 @@ prod에서 할 일:
    - Slack·묶기·억제·메시지 형식: `argocd-apps-dev/kube-prometheus-stack.yaml`의 `alertmanager.config`·`alertmanager.templateFiles`
    - Grafana 데이터 소스: 같은 파일의 `grafana`
    - 로그 스택 모니터링 sidecar: `logging/base/`의 각 CR
+   - 앱 지표: 서비스 저장소의 agent 설정·로깅 팩토리 지표 코드, collector의 `filter/metric-noise`·`transform/metric-privacy`
+     (`logging/base/otel-collector/otel.yml`)
 3. 확인한다. Prometheus 규칙은 `promtool test rules`, Alertmanager 설정은 `amtool check-config`·`amtool config routes test`,
    Grafana 규칙은 규칙 미리보기로 쿼리 결과를 본다.
 4. docs PR과 gitops PR을 함께 올린다.
