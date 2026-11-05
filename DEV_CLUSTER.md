@@ -110,7 +110,7 @@ dev를 만들 때 EIP 쿼터(5개 중 4개 사용) 증설 없이 만들기 위�
 | 애드온 | vpc-cni·coredns·kube-proxy·ebs-csi·pod-identity-agent·metrics-server·node-monitoring-agent, 같은 버전 |
 | RDS | PostgreSQL 18.6 `db.t4g.micro`, gp3 20GB, Single-AZ **2b**, 백업 7일 |
 | Neptune | 1.4.8.0 `db.t4g.medium` writer 1대 **2b** |
-| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Telepresence — 차트 버전 동일. values는 dev에만 경보 설정이 더 있다: Alertmanager Slack 전송, Grafana의 Elasticsearch 데이터 소스 3개(Loki 대신)와 경보 규칙 sidecar(docs `ALERTING.md`) |
+| 클러스터 구성요소 | Argo CD v3.5.2, LBC 3.5.0, Strimzi 1.2.0 / Kafka 4.3.1, kube-prometheus-stack·Telepresence — 차트 버전 동일. values는 dev에만 경보 설정이 더 있다: Alertmanager Slack 전송, Grafana의 Elasticsearch 데이터 소스 4개(Loki 대신)와 경보 규칙 sidecar(docs `ALERTING.md`) |
 | 워크로드 | `workload/base` 그대로. replica·CPU·메모리 request/limit 동일 |
 | 오토스케일 | 없음 (HPA·Cluster Autoscaler 모두 없음, prod와 같음) |
 
@@ -455,7 +455,7 @@ kubectl --context lore-sentry-dev -n monitoring get secret grafana-admin -o json
 ## 12. prod 대비 점검 — 2026-10-31
 
 prod와 dev의 실제 상태를 계층별로 꺼내 비교했다(prod는 조회만). 환경 이름·버킷 이름처럼 당연히 다른 값은 맞춘 뒤 비교했다.
-dev 로깅 전환(2026-11-01)과 경보 작업(2026-11-04~05) 뒤 달라진 행은 그 기준으로 고쳤다.
+dev 로깅 전환(2026-11-01)과 경보 작업(2026-11-04~06) 뒤 달라진 행은 그 기준으로 고쳤다.
 
 | 계층 | 결과 |
 |---|---|
@@ -465,7 +465,7 @@ dev 로깅 전환(2026-11-01)과 경보 작업(2026-11-04~05) 뒤 달라진 행�
 | Argo CD | 버전·구성요소·설정 같다(SSO·URL 제외). Application은 dev 10개·prod 9개다. dev만 `eck-operator`·`logging`·`alerting`, prod만 `loki`·`alloy`가 있다. 나머지 7개는 정의·상태 같다 |
 | 워크로드 | replica·리소스·probe·볼륨·보안 설정 같다. env 차이는 §5의 의도한 것뿐 |
 | Service·PDB·NetworkPolicy·PVC·StorageClass·ConfigMap·Secret 키·Kafka·토픽 | 같다. prod에만 쓰이지 않는 옛 `auth-valkey` Secret이 남아 있다 |
-| 모니터링 | dev는 PrometheusRule 32·ServiceMonitor 10·PodMonitor 2, 규칙 233개, 수집 대상 36/36 정상(2026-11-05). prod(33·12·2, 251개)와의 차이는 prod에만 있는 Loki·Alloy 차트의 것과 dev에만 있는 `loresentry-infra`(5개)다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)는 같다(2026-10-31). dev는 Slack `#alerts-dev`로 경보를 보내고 prod는 아직 받는 곳이 없다 |
+| 모니터링 | dev는 PrometheusRule 32·ServiceMonitor 10·PodMonitor 2, 규칙 233개, 수집 대상 36/36 정상(2026-11-05). prod(33·12·2, 251개)와의 차이는 prod에만 있는 Loki·Alloy 차트의 것과 dev에만 있는 `loresentry-infra`(5개)다. 울리는 경보(`Watchdog`, `KubeCPUOvercommit`)는 같다(2026-10-31). dev에만 Grafana 경보 규칙 31개(로그 12·로그 스택 7·앱 지표 12)가 있다. 앱 지표는 Prometheus가 아니라 EDOT Collector → Elasticsearch로 가므로 앱 ServiceMonitor·수집 대상은 없다. dev는 Slack `#alerts-dev`로 경보를 보내고 prod는 아직 받는 곳이 없다 |
 | ALB | 리스너·헬스체크·대상 그룹 설정 같다. 속성은 dev만 접근 로그가 켜져 있다 |
 | RDS·Neptune | 엔진·사양·스토리지·암호화·AZ 같다. 파라미터 그룹과 로그 내보내기는 dev만 켜져 있다(§5). 백업·점검 시간대는 **달랐다 → 맞췄다** |
 | S3·CloudFront·Lambda | 같다(CORS 주소·태그 제외). dev는 로그 버킷 2개와 CloudFront 로그 전달이 더 있다 |

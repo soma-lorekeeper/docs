@@ -11,7 +11,7 @@
 | [LOG_SCHEMA.md](LOG_SCHEMA.md) | **로그 스키마.** 앱·Kafka·Valkey·AWS(ALB·CloudFront·RDS·Neptune·EKS authenticator) 로그의 ECS 필드 규약, `log.level` 7개 값과 출처별 매핑, 금지 항목·마스킹·길이 상한, data stream 15개, trace(`traceparent`) 규약, DB 에러 분류, index template |
 | [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md) | **로깅 아키텍처.** ELK(ECK) 구성요소와 배치, 파드 로그·AWS 관리형 로그가 Filebeat → Logstash → Elasticsearch·S3 → Kibana로 가는 흐름(Mermaid), 출처별 지연, 저장·보존, Kibana 검색 예시, 배포 순서, 장애 시 동작 |
 | [APM_ARCHITECTURE.md](APM_ARCHITECTURE.md) | **APM 아키텍처.** 앱 span이 EDOT Collector를 거쳐 Elasticsearch·Kibana APM까지 가는 구조와 흐름(Mermaid), collector 안의 지우기·가리기와 APM 가공, data stream·보존, 쓰기 전용 API key, Basic 라이선스에서 되는 화면, 로깅 노드 자원, 배포, 장애 시 동작, 남은 일 |
-| [ALERTING.md](ALERTING.md) | **경보 규약.** severity 4단계와 Slack 전달(채널·멘션·묶기·반복·메시지 수정·형식), 라벨, 억제, 규칙 목록(kps 기본·인프라·Kafka·로그·로그 스택·앱 지표(예정))과 근거, 앱 지표 규약(`:9464/metrics`), 로그 스택 모니터링과 Kibana 화면 "모니터링 (dev)", 운영, prod에서 할 일, 바꾸는 절차 |
+| [ALERTING.md](ALERTING.md) | **경보 규약.** severity 4단계와 Slack 전달(채널·멘션·묶기·반복·메시지 수정·형식), 라벨, 억제, 규칙 목록(kps 기본·인프라·Kafka·로그·로그 스택·앱 지표)과 근거, 앱 지표 규약(EDOT agent → EDOT Collector → Elasticsearch, 서비스별 지표)과 화면(Kibana APM Metrics 탭·앱 지표 대시보드), 로그 스택 모니터링과 Kibana 화면 "모니터링 (dev)", 운영, prod에서 할 일, 바꾸는 절차 |
 | [ALERTING_ARCHITECTURE.md](ALERTING_ARCHITECTURE.md) | **경보 아키텍처.** Prometheus·Grafana가 평가한 경보가 kps Alertmanager를 거쳐 Slack까지 가는 구조와 흐름(Mermaid), Alertmanager 안의 경로·억제, Slack 메시지의 생애, AI 진단이 붙는 자리, 배포, 장애 시 동작 |
 | [LORE_SENTRY_PROJECT_CONTEXT.md](LORE_SENTRY_PROJECT_CONTEXT.md) | 서비스 아키텍처와 도메인 설계 |
 | [CORE_FEATURE_REQUIREMENTS.md](CORE_FEATURE_REQUIREMENTS.md) | 서비스가 제공해야 할 핵심 기능 요구사항과 용어 정의 |

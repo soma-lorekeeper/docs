@@ -287,13 +287,14 @@ done
 | k6 HTML 리포트 | 단계별 p95·p99, 오류율, 초당 요청 수 | 합격 판정 |
 | Grafana-dev | 노드 CPU, 파드 CPU·**CPU throttling**·메모리·재시작 | 어떤 파드가 먼저 limit에 닿나 |
 | Grafana-dev | Kafka consumer lag | 저장 뒤 그래프 반영이 밀리나 |
+| Kibana 대시보드 "앱 지표 · Java (dev)"·"앱 지표 · Python (dev)" | 서비스·경로별 처리량·p95·p99·5xx, 동시 요청 수, heap·GC, DB 연결 풀, Kafka 도착 지연 | 어느 서비스·경로가 먼저 느려지나, 연결 풀이 차나 |
 | CloudWatch ALB (`k8s-loresentrydev-…`) | `RequestCount`, `TargetResponseTime`, `HTTPCode_Target_5XX_Count` | 서버 쪽 지연. k6 지연과의 차이는 네트워크와 발생기 몫이다 |
 | CloudWatch RDS `lore-sentry-dev-postgres` | `CPUUtilization`, `DatabaseConnections`, `ReadLatency`·`WriteLatency`, `CPUCreditBalance` | DB가 병목인지 |
 | CloudWatch Neptune | `CPUUtilization` | 그래프 조회·갱신 |
 | Loki | `{namespace="dev"} |= "ERROR"`, `Connection is not available` | 오류의 원인, DB 커넥션 풀 고갈 |
 | EC2 | CPU | 70% 넘으면 그 단계 무효 |
 
-앱 자체의 HTTP 지표(ServiceMonitor)는 없다. 엔드포인트별 서버 지연은 ALB와 k6로 본다.
+엔드포인트별 서버 지연은 앱 지표 대시보드([ALERTING.md 7.1](ALERTING.md#71-화면))와 ALB, k6로 본다.
 
 RDS·Neptune은 T 계열(버스트형)이다. 크레딧이 바닥났을 때 느려지는지(Standard 모드) 초과 요금이 붙는지(Unlimited 모드)는 아직
 확인하지 않았다. 단계당 6분인 이번 테스트에는 영향이 작지만, `CPUCreditBalance`는 같이 기록한다.

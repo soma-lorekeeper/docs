@@ -1,12 +1,14 @@
 # APM 아키텍처 — span을 모아 Kibana APM에서 호출 그림 보기까지
 
-> 최신화: 2026-11-05
-> 대상: gateway, authentication, content, ai-chat(API·summarizer), graph-rag가 만드는 trace(span)
+> 최신화: 2026-11-06
+> 대상: gateway, authentication, content, ai-chat(API·summarizer), graph-rag가 만드는 trace(span)와, 같은 collector를 지나는 앱 지표
 > 상태: **dev 운영 중(2026-11-04).** 서비스 6개가 span을 보내고 Kibana APM에서 본다. 2026-11-05부터 앱 쪽 추적 엔진을
 > EDOT(Java agent, Python distro)로 옮기며, 로그와 APM이 같은 span을 가리키고 흐름에 빈 구간이 없게 고친다. 이 문서는 옮긴 뒤의
-> 구성을 적고, 서비스별 진행은 [12절](#12-전환-상태와-남은-일)에 있다. prod는 prod 환경을 세팅할 때 같은 구성으로 옮긴다.
+> 구성을 적고, 서비스별 진행은 [12절](#12-전환-상태와-남은-일)에 있다. 2026-11-05부터 같은 agent·collector로 앱 지표도 보낸다(dev).
+> prod는 prod 환경을 세팅할 때 같은 구성으로 옮긴다.
 > 관련: trace 규약은 [LOG_SCHEMA.md 7절](LOG_SCHEMA.md#7-trace), span 마스킹은 [4절](LOG_SCHEMA.md#4-금지-항목과-마스킹),
 > template은 [9절](LOG_SCHEMA.md#9-index-template-logscustom), 로그 흐름은 [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md),
+> 앱 지표 목록·경보·화면은 [ALERTING.md 6.6·7절](ALERTING.md#7-앱-지표-규약),
 > 매니페스트는 `loresentry-gitops/logging/base/otel-collector/`(설명은 `logging/README.md`의 "APM")
 
 로그와 trace는 같은 `trace.id`로 묶이지만 하는 일이 다르다.
@@ -18,6 +20,8 @@
 - 로그 줄의 `trace.id`·`span.id`는 그 줄을 찍는 순간의 현재 span이다. 그래서 로그 줄 하나에서 APM의 그 span으로, span에서 그
   안에서 찍힌 줄로 오간다.
 - span은 Logstash를 거치지 않는다. 그래서 개인정보 처리(지우기·가리기)는 collector가 한다.
+- **앱 지표**: JVM·런타임·HTTP·DB 풀·Kafka·LLM·우리 지표. 같은 agent가 1분마다 같은 collector로 보내 ES
+  `metrics-generic.otel-*`에 쌓인다. Kibana APM 서비스의 Metrics 탭과 앱 지표 대시보드, Grafana 앱 경보가 읽는다.
 
 ## 1. 전체 구조
 
@@ -39,7 +43,7 @@ flowchart LR
     LS["Logstash"]
   end
 
-  GW & AUTH & CT & AC & SUM & GR -- "OTLP span" --> COL
+  GW & AUTH & CT & AC & SUM & GR -- "OTLP span · 앱 지표" --> COL
   COL -- "API key(쓰기 전용)" --> ES
   GW & AUTH & CT & AC & SUM & GR -.->|"stdout 로그 → Filebeat"| LS
   LS -- "logs-loresentry.*" --> ES
@@ -49,20 +53,20 @@ flowchart LR
 
 - 서비스 사이에서는 W3C `traceparent` 헤더(HTTP·Kafka)로 trace가 이어진다. 그래서 서비스마다 따로 보낸 span이 ES에서
   한 trace로 모인다. 전파는 span 전송과 상관없이 지금도 동작한다.
-- collector는 받은 span을 ES에 쓰기만 한다. 앱은 collector가 멈춰도 영향을 받지 않는다([10절](#10-장애가-나면)).
+- collector는 받은 span과 앱 지표를 ES에 쓰기만 한다. 앱은 collector가 멈춰도 영향을 받지 않는다([10절](#10-장애가-나면)).
 
 ## 2. 구성요소
 
 | 구성요소 | 종류 | 어디서 | 하는 일 |
 |---|---|---|---|
-| Java 서비스 3개 | EDOT Java agent `co.elastic.otel:elastic-otel-javaagent` 1.14.0(OpenTelemetry Java agent 2.32.0 기반). 이미지에 넣고 시작 스크립트가 `-javaagent`로 띄운다 | namespace dev | 요청·호출·쿼리·Kafka 소비와 발행·스케줄마다 span을 만들고 OTLP로 보낸다. 켜는 계측은 [LOG_SCHEMA.md 7절 계측 범위](LOG_SCHEMA.md#계측-범위), 전송 설정은 환경 변수 |
+| Java 서비스 3개 | EDOT Java agent `co.elastic.otel:elastic-otel-javaagent` 1.14.0(OpenTelemetry Java agent 2.32.0 기반). 이미지에 넣고 시작 스크립트가 `-javaagent`로 띄운다 | namespace dev | 요청·호출·쿼리·Kafka 소비와 발행·스케줄마다 span을 만들고 OTLP로 보낸다. 앱 지표도 1분마다 보낸다. 켜는 계측은 [LOG_SCHEMA.md 7절 계측 범위](LOG_SCHEMA.md#계측-범위), 전송 설정은 환경 변수 |
 | Python 서비스 3개 | EDOT Python `elastic-opentelemetry` 1.19.0(SDK 1.45.2, 계측 0.66b2). `opentelemetry-instrument`로 띄운다 | namespace dev | 같은 일 |
-| 로깅 팩토리 | 서비스마다 로그 패키지(Java `logging`, authentication은 `adapter/out/logging`도, Python `app/logs`) | 앱 안 | 엔진 위에서 우리 span(아래 [3절](#우리가-여는-span))을 열고, 로그 줄에 그 순간의 span ID를 넣는다. 서비스 코드는 추적 API를 쓰지 않는다 |
+| 로깅 팩토리 | 서비스마다 로그 패키지(Java `logging`, authentication은 `adapter/out/logging`도, Python `app/logs`) | 앱 안 | 엔진 위에서 우리 span(아래 [3절](#우리가-여는-span))을 열고, 로그 줄에 그 순간의 span ID를 넣는다. 계측이 내지 않는 앱 지표(`loresentry.*`, Python의 `gen_ai.client.*`·`messaging.*`·DB 연결 풀)도 여기서 기록한다. 서비스 코드는 추적·지표 API를 쓰지 않는다 |
 | gateway 전파기 확장 | gateway 저장소의 agent 확장(`otel.javaagent.extensions`) | gateway | `traceparent`를 나가는 호출에 넣기만 하고 들어온 값은 읽지 않는다. 외부 요청이 늘 새 trace로 시작한다 |
-| EDOT Collector | Deployment 1대, 이미지 `elastic-agent:9.5.5`(`ELASTIC_AGENT_OTEL=true`) | 로깅 노드 | span 받기, 민감한 값 지우기·가리기, APM 필드 보강, 집계 지표 만들기, ES 쓰기 |
+| EDOT Collector | Deployment 1대, 이미지 `elastic-agent:9.5.5`(`ELASTIC_AGENT_OTEL=true`) | 로깅 노드 | span·앱 지표 받기, 민감한 값 지우기·가리기, APM 필드 보강, 집계 지표 만들기, 쓰지 않는 지표 계열 버리기, ES 쓰기 |
 | template Job | Job(Argo CD Sync hook) | 로깅 노드 | collector보다 먼저 `traces-otel@custom`·`metrics-otel@custom`을 ES에 넣는다(로그용 `logs@custom`과 같은 Job) |
 | 쓰기 계정 | ES API key `edot-collector`, Secret `monitoring/edot-collector-es` | ES | `*.otel-*` data stream 만들기·쓰기만 한다 |
-| Kibana APM | Kibana 9.5.5 Observability → APM | 로깅 노드 | 서비스·트랜잭션·trace·오류 화면. 따로 설정할 것이 없다(기본 APM 인덱스에 `*.otel-*`가 들어 있다) |
+| Kibana APM | Kibana 9.5.5 Observability → APM | 로깅 노드 | 서비스·트랜잭션·trace·오류 화면, 서비스의 Metrics 탭(앱 지표의 JVM·런타임). 따로 설정할 것이 없다(기본 APM 인덱스에 `*.otel-*`가 들어 있다) |
 
 ## 3. span이 만들어지고 이어지는 길
 
@@ -124,9 +128,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"] --> TS["tail_sampling<br/>빈 폴링·성공 헬스체크·Redis handshake trace 버리기"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
+  R["otlp receiver<br/>4317 · 4318"] --> M["memory_limiter<br/>한도 80%"]
+  M -->|"span"| TS["tail_sampling<br/>빈 폴링·성공 헬스체크·Redis handshake trace 버리기"] --> T["transform/privacy<br/>지우기 · 가리기"] --> BT["batch<br/>1,000개 · 1초"] --> P["elasticapm processor<br/>APM 필드 보강"]
   P --> E[("elasticsearch exporter<br/>mapping otel")]
   P --> C["elasticapm connector<br/>집계 지표"] --> E
+  M -->|"앱 지표"| FM["filter/metric-noise<br/>쓰지 않는 계열 버리기"] --> TM["transform/metric-privacy<br/>URL 속성 지우기 · 이메일 가리기"] --> BM["batch/metrics<br/>요청을 쪼개지 않음 · 1초"] --> E
 ```
 
 | 단계 | 하는 일 |
@@ -137,6 +143,9 @@ flowchart LR
 | `batch` | 묶어서 ES에 보낸다 |
 | `elasticapm` processor | span을 Kibana APM이 읽는 모양으로 보강한다(`transaction.*`·`span.*`, `processor.event`, 결과·성공 여부) |
 | `elasticapm` connector | span으로 서비스·트랜잭션·호출 대상별 지연·건수·오류율을 1분·10분·60분 단위로 집계한다. APM 목록 화면이 이것을 읽는다 |
+| `filter/metric-noise` | 앱 지표 중 화면·경보 어디에서도 보지 않는 계열을 버린다. HTTP 요청·응답 본문 크기 histogram, Kafka client 내부 지표 중 4개(`kafka.consumer.fetch_latency_avg`·`records_lag_max`, `kafka.producer.request_latency_avg`·`record_error_rate`)를 뺀 나머지 |
+| `transform/metric-privacy` | 앱 지표 datapoint 속성의 두 번째 방어선. `url.full`·`url.path`·`url.query`·`http.target`·`http.url`을 지우고, 남은 문자열 속성의 이메일을 가린다 |
+| `batch/metrics` | 앱 지표를 묶어 보낸다. 같은 시각의 계열이 여러 요청으로 나뉘지 않게 요청을 쪼개지 않는다 |
 | `elasticsearch` exporter | OTel 원래 모양(`mapping.mode: otel`)으로 data stream에 쓴다 |
 
 민감한 값 처리([LOG_SCHEMA.md 4절](LOG_SCHEMA.md#4-금지-항목과-마스킹)):
@@ -178,10 +187,11 @@ flowchart LR
 | `traces-<dataset>.otel-<namespace>` | span. 서비스가 받은 요청·소비한 레코드는 transaction, 그 안의 호출·쿼리는 span | trace 폭포 그림, 트랜잭션 목록 |
 | `logs-<dataset>.otel-<namespace>` | span의 예외 event | APM 오류 |
 | `metrics-{service_summary,service_transaction,transaction,service_destination}.{1m,10m,60m}.otel-*` | connector가 만든 집계 | 서비스 목록, 지연·처리량·오류율 그래프, 호출 대상 |
+| `metrics-generic.otel-default` | 앱 지표(agent가 보낸 JVM·런타임·HTTP·DB 풀·Kafka·LLM·우리 지표, [ALERTING.md 7절](ALERTING.md#7-앱-지표-규약)) | APM 서비스의 Metrics 탭, 대시보드 "앱 지표 · Java (dev)"·"앱 지표 · Python (dev)". Grafana 앱 경보(데이터 소스 `es-app-metrics`)도 읽는다 |
 
 | 설정 | 값 | 정하는 곳 |
 |---|---|---|
-| 레플리카 | 0(1노드 ES) | `traces-otel@custom`, `metrics-otel@custom`, 예외 event는 `logs@custom` |
+| 레플리카 | 0(1노드 ES) | `traces-otel@custom`, `metrics-otel@custom`(집계와 앱 지표), 예외 event는 `logs@custom` |
 | 보존 | 30일. 로그와 같다 | 같은 template. 내장 ILM 정책은 삭제 단계가 없어 `prefer_ilm: false`로 data stream lifecycle을 쓴다 |
 | 디스크 | 로그와 같은 ES 128Gi를 나눠 쓴다(2026-11-04에 20Gi에서 늘림) | 부하 테스트 중 실측은 traces 하루 약 4GB, 로그 하루 약 1GB. 디스크가 95%를 넘으면 ES가 index를 읽기 전용으로 바꿔 로그 수집도 멈추므로 kps `KubePersistentVolumeFillingUp`이 마지막 경보다 |
 
@@ -202,6 +212,7 @@ flowchart LR
 | 기능 | Basic |
 |---|---|
 | 서비스 목록, 트랜잭션, trace 폭포 그림, 오류, 지연·처리량·오류율 그래프 | 된다 |
+| 서비스의 Metrics 탭(Java는 JVM heap·non-heap·GC·스레드·CPU, Python은 런타임), Dashboards 탭에 연결한 대시보드 | 된다 |
 | service map, 이상 탐지(ML), correlations | 안 된다(Platinum) |
 | custom links | 안 된다(Gold) |
 
@@ -226,7 +237,10 @@ flowchart LR
 | Kafka (dev) | `loresentry-dash-kafka` | 토픽별 이벤트 처리 추이와 결과(`loresentry.result.outcome`), 처리 실패 `error.type`, outbox relay 발행·격리·실패 건수, 브로커·Strimzi warn·error |
 | DB (dev) | `loresentry-dash-db` | RDS 오류(SQLSTATE `error.code`), RDS·Neptune 느린 쿼리 수와 p95, 앱의 DB 관련 `error.type`(트랜잭션·JDBC·psycopg 등), Valkey warn·error |
 | APM (dev) | `loresentry-dash-apm` | 서비스별 처리량·p95 지연·실패율, span 유형 분포, 느린 트랜잭션, 예외 유형 |
+| 앱 지표 · Java (dev) | `loresentry-dash-metrics-java` | 앱 지표(`metrics-generic.otel-*`). 패널은 [ALERTING.md 7.1절](ALERTING.md#71-화면) |
+| 앱 지표 · Python (dev) | `loresentry-dash-metrics-python` | 같다 |
 
+- 앱 지표 대시보드는 APM 서비스의 Dashboards 탭에도 그 서비스 값만 보이게 연결했다(Java 3개에는 Java, Python 3개에는 Python).
 - 다시 만들 때 쓸 내보내기(NDJSON)와 생성 스크립트는 저장소에 두지 않았다. Kibana 저장 객체 내보내기(Stack Management → Saved objects)로 백업한다.
 
 ## 8. 자원과 배치
@@ -269,11 +283,11 @@ flowchart LR
 
 | 바꾸는 것 | 위치 |
 |---|---|
-| 지우기·가리기 규칙, 파이프라인 | `logging/base/otel-collector/otel.yml`(바꾸면 ConfigMap 이름이 바뀌어 collector가 다시 뜬다). LOG_SCHEMA 4절도 같이 고친다 |
+| 지우기·가리기 규칙, 파이프라인(span·앱 지표) | `logging/base/otel-collector/otel.yml`(바꾸면 ConfigMap 이름이 바뀌어 collector가 다시 뜬다). LOG_SCHEMA 4절도 같이 고친다. 앱 지표 계열 거르기(`filter/metric-noise`)를 바꾸면 ALERTING.md 7절도 고친다 |
 | 자원, 이미지 버전 | `logging/base/otel-collector/collector.yaml`. 버전은 ES·Kibana와 같게 둔다 |
 | 보존·레플리카 | `logging/base/elasticsearch/{traces,metrics}-otel-custom.json`(새 data stream·다음 rollover부터 적용) |
-| 앱 쪽 전송 | 기본값(보내지 않음, 서비스 이름, 전파기, 계측 범위)은 이미지에 있다. Java는 `docker/otel-agent.properties`와 `docker/entrypoint.sh`(설정 파일보다 먼저 읽히는 `-Dotel.javaagent.logging=application`·`-Dotel.semconv-stability.opt-in=database`, CDS 경고를 막는 `-Xshare:off`, `service.version`), Python은 이미지 시작 스크립트다. `workload/overlays/dev`가 `OTEL_TRACES_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_RESOURCE_ATTRIBUTES`(`deployment.environment.name`, Downward API의 `k8s.namespace.name`·`k8s.pod.name`, 파드 이름을 `service.instance.id`로도)를 켠다. gateway는 `OTEL_PROPAGATORS`로 inject-only 전파기를 고른다. 옮기기 전 서비스는 이전 변수(Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`)를 쓴다 |
-| 계측 범위 | 서비스 저장소. Java는 agent 설정 파일(이미지에 들어간다), Python은 requirements의 계측 패키지와 `OTEL_PYTHON_DISABLED_INSTRUMENTATIONS`. [LOG_SCHEMA.md 7절 계측 범위](LOG_SCHEMA.md#계측-범위)도 같이 고친다 |
+| 앱 쪽 전송 | 기본값(보내지 않음, 서비스 이름, 전파기, 계측 범위)은 이미지에 있다. Java는 `docker/otel-agent.properties`와 `docker/entrypoint.sh`(설정 파일보다 먼저 읽히는 `-Dotel.javaagent.logging=application`·`-Dotel.semconv-stability.opt-in=database`, CDS 경고를 막는 `-Xshare:off`, `service.version`), Python은 이미지 시작 스크립트다. `workload/overlays/dev`가 `OTEL_TRACES_EXPORTER=otlp`, `OTEL_METRICS_EXPORTER=otlp`(앱 지표), `OTEL_EXPORTER_OTLP_ENDPOINT=http://edot-collector.monitoring.svc:4318`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_RESOURCE_ATTRIBUTES`(`deployment.environment.name`, Downward API의 `k8s.namespace.name`·`k8s.pod.name`, 파드 이름을 `service.instance.id`로도)를 켠다. gateway는 `OTEL_PROPAGATORS`로 inject-only 전파기를 고른다. 옮기기 전 서비스는 이전 변수(Java `MANAGEMENT_TRACING_EXPORT_OTLP_ENABLED`·`MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT`, Python `OTEL_EXPORTER_OTLP_ENDPOINT`)를 쓴다 |
+| 계측 범위 | 서비스 저장소. Java는 agent 설정 파일(이미지에 들어간다), Python은 requirements의 계측 패키지와 `OTEL_PYTHON_DISABLED_INSTRUMENTATIONS`. [LOG_SCHEMA.md 7절 계측 범위](LOG_SCHEMA.md#계측-범위)도 같이 고친다. 지표를 바꾸면 [ALERTING.md 7절](ALERTING.md#7-앱-지표-규약)도 고친다 |
 
 설정을 바꾼 뒤에는 로컬에서 ES 9.5.5(보안 켬)와 같은 collector 이미지에 시험 span을 보내, ES 문서에 지운 값이 없는지 확인한다.
 
@@ -281,10 +295,10 @@ flowchart LR
 
 | 상황 | 동작 |
 |---|---|
-| collector가 멈춤·재시작 | 앱의 추적 엔진이 잠시 다시 보내다가 못 보낸 span은 버린다. 요청 처리와 로그는 영향이 없다. collector 메모리 안의 보내기 대기분은 사라진다 |
+| collector가 멈춤·재시작 | 앱의 추적 엔진이 잠시 다시 보내다가 못 보낸 span·지표는 버린다. 요청 처리와 로그는 영향이 없다. collector 메모리 안의 보내기 대기분은 사라진다. 앱 지표가 10분 끊기면 Grafana AppMetricsMissing이 울린다 |
 | Java agent를 읽지 못함 | `-javaagent`의 jar가 없거나 깨졌으면 JVM이 시작하지 않는다. 이미지 빌드에서 jar를 받으며 확인한다. collector에 닿지 못하는 것은 시작을 막지 않는다 |
 | 기동 직후 첫 연결이 시간 제한을 넘김 | agent가 처음 읽는 클래스에 계측을 붙이는 동안 첫 연결이 느리다. 시간 제한이 짧은 연결(auth Redis)은 기동할 때 미리 연다. 미리 열지 못해도 기동은 계속하고, 첫 요청이 연결한다 |
-| ES가 멈춤 | exporter가 메모리 큐에서 다시 시도하다가, 큐가 차면 span을 버린다. 로그는 Logstash 디스크 큐에 따로 쌓인다 |
+| ES가 멈춤 | exporter가 메모리 큐에서 다시 시도하다가, 큐가 차면 span·지표를 버린다. 로그는 Logstash 디스크 큐에 따로 쌓인다 |
 | 메모리 한도 근처 | `memory_limiter`가 받기를 거절하고 앱의 추적 엔진이 다시 보낸다 |
 | API key 무효·만료 | ES가 401을 돌려주고 span이 버려진다. collector 로그(`logs-kubernetes.container-*`의 `edot-collector` 파드)에 남는다 |
 | Secret 없음 | collector 파드가 `CreateContainerConfigError`로 기다린다 |
@@ -323,6 +337,12 @@ EDOT로 옮기는 순서다. 각 단계는 dev에 배포한 뒤 11절 점검을 
 | 6 | ai-chat | EDOT Python, summarizer 작업 저장 문맥(요청 밖에서 생기던 부모 없는 DB span이 없어진다), messaging 속성, OpenAI·KMS | 완료(ai-chat #30·#31, gitops #71·#72). API·summarizer 모두 C1~C6·C8·C9·C11 통과. 채팅 한 턴에 content·KMS·OpenAI span, 문서 저장 → 소비 → `summary job`(저장 trace) → KMS·DB·OpenAI가 한 trace. OpenAI에는 `traceparent`가 가지 않는다 |
 | 7 | graph-rag | 폴링 회차 span을 시작할 때 열기, `InboxEvent` 저장 문맥과 발행 헤더, Neptune httpx 계측, 내부 ASGI span 빼기 | 완료(graph-rag #14, gitops #73·#75). 최신화 요청 → 소비 → S3·OpenAI·Neptune → 완료 이벤트 발행(저장 trace, relay 회차와 다른 trace) → content 소비가 한 trace. C1~C6·C8·C9·C11 통과. Neptune IAM 서명은 `traceparent`가 서명 대상 헤더 밖이라 dev에서 200 |
 | 8 | Kibana, 부하 테스트 | APM 대시보드를 표준 속성으로 고치기, 전체 점검, 오버헤드와 로깅 노드 자원 재기 | 대시보드·전체 점검 완료, 부하 테스트 남음. APM 대시보드는 상태 코드를 `http.response.status_code`, 실패를 `event.outcome`으로 본다(Java도 서버 5xx가 실패). 로그인·로그아웃·탈퇴 E2E(2026-11-05): 탈퇴 요청 하나가 gateway → ai-chat·auth·content → auth outbox `UserDeleted` → content 소비 → content outbox `ProjectDeleted` → graph-rag·summarizer 소비까지 root 하나의 trace로 이어졌다. 6개 서비스 C1·C3·C4·C5·C7·C8·C9·C11 통과, C6은 흐름별로 모든 의존 대상 확인(auth Google 호출·UserDeleted 발행·relay 포함). 전환 뒤 발견해 고친 것: Java agent 기본 sampler의 `tracestate: ot=th:0`(auth #18·content #41·gateway #34, `parentbased_always_on`), 계측 span 상태 메시지의 예외 문자열(gitops #74). 배포 뒤 6개 서비스 span에서 둘 다 0건 |
+
+전환 뒤 같은 agent·collector로 앱 지표를 붙였다(2026-11-05~06, dev). collector `metrics` 파이프라인·계열 거르기와 Grafana 데이터 소스
+(gitops #78·#80), dev overlay의 전송 켜기(gitops #79), 서비스의 agent 지표 설정과 로깅 팩토리 지표(authentication #19, gateway #35,
+content #42·#43, ai-chat #32·#33·#34, graph-rag #15), Grafana 앱 경보 12개(gitops #82)다. Kibana APM 서비스의 Metrics 탭이
+JVM·런타임 지표를 보여 준다. 지표 목록·경보·화면은 [ALERTING.md 6.6·7절](ALERTING.md#7-앱-지표-규약)에 있다. 8의 부하 테스트에서
+앱 지표 전송의 오버헤드와 collector 자원도 함께 잰다.
 
 | 남은 일 | 내용 |
 |---|---|
