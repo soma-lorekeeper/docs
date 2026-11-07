@@ -14,7 +14,7 @@
   ├─ Google로 계속하기            기존 OAuth 흐름 그대로
   └─ 아이디 · 비밀번호 폼
        ├─ 로그인      POST /auth/password/login   {login_id, password}
-       └─ 계정 만들기 POST /auth/password/signup  {login_id, password, display_name?}
+       └─ 계정 만들기 POST /auth/password/signup  {login_id, password}  (화면은 비밀번호 확인 칸을 더 받는다)
             → 200 {status: AUTHENTICATED}   세션 쿠키 → GET /auth/users/me → /projects (신규는 /welcome/)
             → 200 {status: TERMS_REQUIRED}  동의 쿠키 → /login?result=terms_required → 약관 동의 모달 → 세션
 ```
@@ -30,7 +30,7 @@
 | `password_credentials` (V12) | `user_id` PK·FK(ON DELETE CASCADE), `password_hash`(bcrypt cost 12), `created_at` |
 
 아이디 규칙은 영문 소문자·숫자·`._-` 3~32자(대문자는 소문자로 정규화), 비밀번호는 공백 없이 8자 이상 72바이트 이하다.
-이름은 선택이고 비우면 아이디를 쓴다. 이메일은 받지 않으므로 계정 설정에서 이메일 칸이 숨고, 이메일로 확인하는 탈퇴는 아이디 계정에서 쓸 수 없다.
+이름은 받지 않고 아이디로 시작해 온보딩에서 정한다. 이메일은 받지 않으므로 계정 설정에서 이메일 칸이 숨고, 이메일로 확인하는 탈퇴는 아이디 계정에서 쓸 수 없다.
 
 ## API
 
@@ -65,11 +65,11 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.loresentry.com/auth
 ```bash
 API=https://api.loresentry.com
 create() {
-  local id="$1" pw="$2" name="$3" jar
+  local id="$1" pw="$2" jar
   jar=$(mktemp)
   curl -s -c "$jar" -X POST "$API/auth/password/signup" \
     -H 'Origin: https://loresentry.com' -H 'X-LS-CSRF: 1' -H 'Content-Type: application/json' \
-    -d "{\"login_id\":\"$id\",\"password\":\"$pw\",\"display_name\":\"$name\"}"; echo
+    -d "{\"login_id\":\"$id\",\"password\":\"$pw\"}"; echo
   local version
   version=$(curl -s -b "$jar" "$API/auth/terms?locale=ko" | sed -E 's/.*"terms_version_id":"([^"]+)".*/\1/')
   curl -s -b "$jar" -c "$jar" -o /dev/null -w 'accept %{http_code}\n' -X POST "$API/auth/terms/accept" \
@@ -78,14 +78,14 @@ create() {
   curl -s -b "$jar" "$API/auth/users/me"; echo
   rm -f "$jar"
 }
-create judge1 '<비밀번호1>' '평가관 1'
-create judge2 '<비밀번호2>' '평가관 2'
+create judge1 '<비밀번호1>'
+create judge2 '<비밀번호2>'
 ```
 
-| 아이디 | 이름 | 상태 |
-|---|---|---|
-| `judge1` | 평가관 1 | 배포 뒤 생성 예정 |
-| `judge2` | 평가관 2 | 배포 뒤 생성 예정 |
+| 아이디 | 상태 |
+|---|---|
+| `judge1` | 배포 뒤 생성 예정 |
+| `judge2` | 배포 뒤 생성 예정 |
 
 처음 로그인하면 온보딩(`/welcome/`)이 뜨고, 예시 프로젝트 "유리 정원의 기록"을 만들어 볼 수 있다.
 발표 전에 한 번 로그인해 온보딩을 넘기고 예시 프로젝트를 만들어 두면 평가관은 바로 작업공간을 본다.
