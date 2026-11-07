@@ -28,6 +28,7 @@
 | [CONTENT_PROJECT_API.md](CONTENT_PROJECT_API.md) | **Content API 구현 현황.** 동작하는 엔드포인트 26개, 구현되지 않은 기능과 막는 것, gateway 중계, 남은 작업 |
 | [TABLE_AND_LOGIC.md](TABLE_AND_LOGIC.md) | Authentication·Content·AI Chat 테이블(Flyway로 운영 DB 반영됨)과 3-way 문서 최신화·diff·저장 흐름 |
 | [GOOGLE_ADS.md](GOOGLE_ADS.md) | **Google Ads 검색 광고 진행 상황.** 선불 계정, 캠페인 설정·키워드·광고 문구, 가입 전환 측정, 남은 일 |
+| [PASSWORD_LOGIN.md](PASSWORD_LOGIN.md) | **아이디·비밀번호 로그인.** Google 없이 가입·로그인하는 흐름, 저장 모양(`password` 신원 + `password_credentials`), API·오류, 배포 순서, 평가관 계정 만들기 |
 
 ## 새로 합류했다면
 
