@@ -71,7 +71,7 @@ Google 로그인 → (신규·재동의) 약관 동의 모달 → /projects
 
 ## 예시 프로젝트
 
-`POST /projects/sample` 이 content 에서 "유리 정원의 기록"을 원고 7개·설정 문서 14개·관계 46개로 한 트랜잭션에 만든다. 이름이 겹치면 "(2)" 를 붙인다. mock 은 시드 빌더를 새 id 로 한 벌 더 돌린다(`addSampleProject`).
+`POST /projects/sample` 이 content 에서 "별이 없는 세자"를 원고 30개·설정 문서 26개·관계 241개로 한 트랜잭션에 만든다. 이름이 겹치면 "(2)" 를 붙인다. 작품 구성과 발표 시연 장치는 [../SAMPLE_PROJECT.md](../SAMPLE_PROJECT.md). 영어(`?locale=en`)는 아직 "The Glass Garden Records"다. mock 은 예전 시드("유리 정원의 기록")를 새 id 로 한 벌 더 돌린다(`addSampleProject`).
 
 ## 와이어프레임과 다르게 한 점
 
