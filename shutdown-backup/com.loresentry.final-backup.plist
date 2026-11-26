@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.loresentry.final-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>/bin/zsh</string>
+    <string>-c</string>
+    <string>PREV="$HOME/loresentry-backup/prod-2026-11-26" exec "$HOME/loresentry-backup/tools/backup.sh"</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Month</key>
+    <integer>11</integer>
+    <key>Day</key>
+    <integer>29</integer>
+    <key>Hour</key>
+    <integer>0</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/loresentry-final-backup.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/loresentry-final-backup.out</string>
+</dict>
+</plist>
