@@ -76,13 +76,14 @@ if [[ "$SKIP_UNWRAP" != 1 ]]; then
   trap - EXIT
 
   PROBE=$(mktemp)
-  pg_restore -a -t project_keys -f - "$DEST/db/content.dump" | awk -F'\t' '/^[0-9a-f]{8}-/{print $1" "$2; exit}' > "$PROBE.txt"
+  pg_restore -a -t project_keys -f - "$DEST/db/content.dump" | awk -F'\t' '/^[0-9a-f]+-/{print $1" "$2; exit}' > "$PROBE.txt"
   PROBE_ID=$(cut -d' ' -f1 "$PROBE.txt")
   cut -d' ' -f2 "$PROBE.txt" | sed 's/\\\\x//' | xxd -r -p > "$PROBE"
   DENIED=0
   for i in {1..18}; do
     sleep 10
-    if aws kms decrypt --key-id "$KEY" --ciphertext-blob "fileb://$PROBE" --encryption-context "project_id=$PROBE_ID" --query KeyId --output text 2>&1 | grep -q AccessDenied; then
+    PROBE_OUT=$(aws kms decrypt --key-id "$KEY" --ciphertext-blob "fileb://$PROBE" --encryption-context "project_id=$PROBE_ID" --query KeyId --output text 2>&1 || true)
+    if [[ "$PROBE_OUT" == *AccessDenied* ]]; then
       DENIED=$((DENIED + 1))
       [[ $DENIED -ge 3 ]] && break
     else

@@ -56,10 +56,12 @@ for pid, ws in sorted(wrapped.items()):
     elif len(plains) > 1:
         failed.append((pid, "different keys for one project"))
 
+stale = set(keys) - set(wrapped)
+keys = {p: k for p, k in keys.items() if p in wrapped}
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as f:
     json.dump(keys, f, indent=1)
-print(f"projects with wrapped keys: {len(wrapped)}, unwrapped: {len(keys)}, failed: {len(failed)}")
+print(f"projects with wrapped keys: {len(wrapped)}, unwrapped: {len(keys)}, dropped stale: {len(stale)}, failed: {len(failed)}")
 for x in failed[:5]:
     print("FAILED", x)
 sys.exit(1 if failed else 0)
